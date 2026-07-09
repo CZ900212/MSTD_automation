@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 export function createInbox(db, { botOpenId }) {
   function normalize(raw) {
+    // lark-cli event consume 输出扁平形状（真机验证）：{type, event_id, message_id, chat_id, chat_type, sender_id, content, mentions?}
+    if (raw?.type && !raw?.header) return normalizeFlat(raw);
     const type = raw?.header?.event_type;
     if (type === "im.message.receive_v1") {
       const m = raw.event.message;
@@ -27,6 +29,34 @@ export function createInbox(db, { botOpenId }) {
     }
     if (type?.startsWith("minutes.")) {
       return { eventId: raw.header.event_id, kind: "minutes", raw: raw.event, ts: Date.now() };
+    }
+    return null;
+  }
+
+  function normalizeFlat(raw) {
+    if (raw.type === "im.message.receive_v1") {
+      if (raw.message_type && raw.message_type !== "text") return null; // 非文本先不进管道
+      const mentions = raw.mentions ?? [];
+      const mentionIds = mentions.map((m) => (typeof m === "string" ? m : m?.id?.open_id ?? m?.open_id ?? m?.id)).filter(Boolean);
+      return {
+        eventId: raw.event_id,
+        kind: "message",
+        chatId: raw.chat_id,
+        chatType: raw.chat_type,
+        senderOpenId: raw.sender_id ?? null,
+        senderType: raw.sender_type ?? (raw.sender_id ? "user" : "app"),
+        senderName: raw.sender_name ?? null,
+        content: typeof raw.content === "string" ? raw.content : "",
+        mentionsBot: mentionIds.includes(botOpenId),
+        topicId: raw.thread_id ?? null,
+        ts: Number(raw.create_time ?? raw.timestamp ?? Date.now()),
+      };
+    }
+    if (raw.type === "card.action.trigger") {
+      return { eventId: raw.event_id, kind: "card_action", raw, ts: Number(raw.timestamp ?? Date.now()) };
+    }
+    if (raw.type?.startsWith("minutes.")) {
+      return { eventId: raw.event_id, kind: "minutes", raw, ts: Number(raw.timestamp ?? Date.now()) };
     }
     return null;
   }

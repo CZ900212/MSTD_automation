@@ -1,5 +1,5 @@
 // lark-cli event consume 一次只接受一个 EventKey（真机验证），因此每个事件各起一个长连接子进程。
-export function createGatewayConsumer({ spawnFn, larkCliPath, events, onEvent, restartDelayMs = 5000, setTimeoutFn = setTimeout, profile = "" }) {
+export function createGatewayConsumer({ spawnFn, larkCliPath, events, onEvent, restartDelayMs = 5000, setTimeoutFn = setTimeout, profile = "", log = console.error }) {
   const children = new Map(); // eventKey -> child
   let stopped = false;
 
@@ -13,7 +13,8 @@ export function createGatewayConsumer({ spawnFn, larkCliPath, events, onEvent, r
     const args = [];
     if (profile) args.push("--profile", profile);
     args.push("event", "consume", eventKey, "--as", "bot", "--quiet");
-    const child = spawnFn(larkCliPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // stdin 必须保持打开（pipe）：lark-cli 将 stdin EOF 视作优雅关停（真机 code=0 即退）
+    const child = spawnFn(larkCliPath, args, { stdio: ["pipe", "pipe", "pipe"] });
     children.set(eventKey, child);
     let buf = "";
     child.stdout.on("data", (chunk) => {
@@ -27,8 +28,12 @@ export function createGatewayConsumer({ spawnFn, larkCliPath, events, onEvent, r
         catch { onEvent({ __parse_error: line }); }
       }
     });
-    child.on("exit", () => {
-      if (!stopped) setTimeoutFn(() => spawnOne(eventKey), restartDelayMs);
+    child.stderr?.on?.("data", (d) => log(`[gateway:${eventKey}] ${String(d).trimEnd()}`));
+    child.on("error", (e) => log(`[gateway:${eventKey}] spawn 失败: ${e}`));
+    child.on("exit", (code) => {
+      if (stopped) return;
+      log(`[gateway:${eventKey}] consumer 退出(code=${code})，${restartDelayMs}ms 后重启`);
+      setTimeoutFn(() => spawnOne(eventKey), restartDelayMs);
     });
   }
 

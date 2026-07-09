@@ -18,6 +18,33 @@ const rawMsg = (over = {}) => ({
 });
 
 describe("inbox", () => {
+  it("归一化 lark-cli 扁平事件（真机形状）", () => {
+    const inbox = createInbox(freshDb(), { botOpenId: "ou_bot" });
+    const evt = inbox.normalize({
+      type: "im.message.receive_v1",
+      event_id: "93f54e90",
+      timestamp: "1783594348044",
+      message_id: "om_x1",
+      create_time: "1783594347617",
+      chat_id: "oc_11b7",
+      chat_type: "p2p",
+      message_type: "text",
+      sender_id: "ou_aca75",
+      content: "事件形状探测",
+    });
+    expect(evt).toMatchObject({
+      eventId: "93f54e90", kind: "message", chatId: "oc_11b7", chatType: "p2p",
+      senderOpenId: "ou_aca75", senderType: "user", content: "事件形状探测",
+      mentionsBot: false, ts: 1783594347617,
+    });
+    const group = inbox.normalize({
+      type: "im.message.receive_v1", event_id: "e2", chat_id: "oc_2", chat_type: "group",
+      message_type: "text", sender_id: "ou_x", content: "@bot 在吗", mentions: ["ou_bot"],
+      create_time: "1000",
+    });
+    expect(group.mentionsBot).toBe(true);
+  });
+
   it("归一化文本消息并识别 @bot", () => {
     const inbox = createInbox(freshDb(), { botOpenId: "ou_bot" });
     const evt = inbox.normalize(rawMsg());
