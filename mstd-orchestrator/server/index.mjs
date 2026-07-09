@@ -8,14 +8,23 @@ import { createEventBus } from "./jobs/event-bus.mjs";
 import { createEventBuffer } from "./jobs/event-buffer.mjs";
 import { createRuntimeRegistry } from "./jobs/runtime.mjs";
 import { makeFeishuClient } from "./auth/feishu-client.mjs";
-import { makeRunLark } from "./execute/run-lark.mjs";
+import { makeRunLark, DEFAULT_LARK_CLI } from "./execute/run-lark.mjs";
 import { testTargetFromEnv } from "./execute/write-target.mjs";
 import { startPi } from "../supervisor/pi-client.mjs";
 import { reconcileOnBoot } from "./execute/reconcile-startup.mjs";
 import { createJobLauncher } from "./jobs/launcher.mjs";
+import { startMinutesConsumer } from "./triggers/minutes-consumer.mjs";
+import { backfillMinutes } from "./triggers/backfill.mjs";
+import { startLarkHealth, makeDmAlert } from "./health/lark-profile.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
+
+if (config.enableWrite && !process.env.MSTD_SESSION_SECRET) {
+  console.error("[mstd] 致命：MSTD_ENABLE_WRITE=1 时必须配置 MSTD_SESSION_SECRET（否则重启丢会话且审批链不可信）");
+  process.exit(1);
+}
+
 const dbPath = process.env.MSTD_DB_PATH || join(ROOT, "db", "mstd.sqlite");
 const db = openDb(dbPath);
 migrate(db);
@@ -48,6 +57,30 @@ const launcher = createJobLauncher({
   piCwd: ROOT,
 });
 
+let larkHealth = null;
+if (config.larkProfile && bootLark) {
+  larkHealth = startLarkHealth({
+    runLark: bootLark,
+    alert: makeDmAlert({ runLark: bootLark, openId: config.alertOpenId }),
+  });
+  larkHealth.checkOnce().catch(() => {});
+}
+
+if (config.enableTrigger && config.larkProfile) {
+  startMinutesConsumer({
+    db,
+    launcher,
+    larkCli: DEFAULT_LARK_CLI,
+    profile: config.larkProfile,
+  });
+  console.error(`[mstd] trigger consumer on (${config.larkProfile})`);
+  if (config.backfill && bootLark) {
+    backfillMinutes({ db, launcher, runLark: bootLark }).catch((e) =>
+      console.error(`[backfill] ${e}`)
+    );
+  }
+}
+
 const app = createApp({
   db,
   config,
@@ -60,6 +93,7 @@ const app = createApp({
   extensions,
   piCwd: ROOT,
   launcher,
+  larkHealth,
   writeDeps: {
     runLark: makeRunLark({ profile: config.larkProfile }),
     testTarget: testTargetFromEnv(process.env),
@@ -71,5 +105,7 @@ const app = createApp({
 
 const port = config.port;
 app.listen(port, () => {
-  console.error(`[mstd] listening on :${port} (enableWrite=${config.enableWrite}, maxPi=${config.maxConcurrentPi})`);
+  console.error(
+    `[mstd] listening on :${port} (enableWrite=${config.enableWrite}, enableTrigger=${config.enableTrigger}, maxPi=${config.maxConcurrentPi})`
+  );
 });

@@ -9,6 +9,9 @@ export function loadServerConfig(env = process.env) {
     sessionTtlSeconds: sessionTtlSeconds(env),
     maxConcurrentPi: maxConcurrentPi(env),
     enableWrite: String(env.MSTD_ENABLE_WRITE ?? "") === "1",
+    enableTrigger: String(env.MSTD_ENABLE_TRIGGER ?? "") === "1",
+    backfill: String(env.MSTD_BACKFILL ?? "") === "1",
+    alertOpenId: String(env.MSTD_ALERT_OPEN_ID ?? "").trim(),
     feishu: resolveFeishuConfig(env),
     pi: {
       provider: env.PI_PROVIDER ?? "cz-gpt",
