@@ -69,10 +69,17 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
   }
 }
 
-// 第②段真写：Phase 4 才启用。Phase 3 恒 gated。
-export function runWritePhase({ config }) {
+// 第②段真写：默认 gated；enableWrite 时委托 server/execute/write-phase.mjs
+export async function runWritePhase(opts) {
+  const { config } = opts ?? {};
   if (!config?.enableWrite) {
     return { gated: true, reason: "写执行在 Phase 4 启用（MSTD_ENABLE_WRITE 未开）" };
   }
-  throw new Error("runWritePhase 尚未实现（Phase 4：executeApprovedAction + buildWriteArgs + 对账）");
+  const { runWritePhase: executeWrite } = await import("../execute/write-phase.mjs");
+  return executeWrite(opts.db, opts.jobId, {
+    spawnPi: opts.spawnPi,
+    runLark: opts.runLark,
+    testTarget: opts.testTarget,
+    timeoutMs: opts.timeoutMs,
+  });
 }

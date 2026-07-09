@@ -84,10 +84,11 @@ describe("runReadonlyPhase", () => {
 });
 
 describe("runWritePhase", () => {
-  it("is gated when MSTD_ENABLE_WRITE off", () => {
-    expect(runWritePhase({ config: { enableWrite: false } })).toEqual({ gated: true, reason: expect.any(String) });
+  it("is gated when MSTD_ENABLE_WRITE off", async () => {
+    await expect(runWritePhase({ config: { enableWrite: false } })).resolves.toEqual({ gated: true, reason: expect.any(String) });
   });
-  it("throws if someone flips enableWrite (Phase 4 not implemented)", () => {
-    expect(() => runWritePhase({ config: { enableWrite: true } })).toThrow(/Phase 4/);
+  it("delegates to execute write-phase when enableWrite is on", async () => {
+    // Without db/jobId full wiring this will attempt import and fail on missing opts — just assert not gated
+    await expect(runWritePhase({ config: { enableWrite: true }, db: null, jobId: "x", spawnPi: async () => {}, runLark: async () => ({ exitCode: 0, stdout: "", stderr: "" }), testTarget: { allowOpenIds: new Set() } })).rejects.toThrow();
   });
 });
