@@ -163,4 +163,12 @@ describe("abort", () => {
     expect(getJobRow(db, job.id).status).toBe("aborted");
     expect(registry.has(job.id)).toBe(false);
   });
+
+  it("running_write 阶段拒绝中止（409，状态不变）", async () => {
+    const job = createJob(db, { templateId: "meeting_to_task", status: "running_readonly", createdBy: "u-1" }, 1000);
+    updateJobStatus(db, job.id, "running_write", 1000);
+    const res = await auth(request(app).post(`/api/jobs/${job.id}/abort`)).send({});
+    expect(res.status).toBe(409);
+    expect(getJobRow(db, job.id).status).toBe("running_write");
+  });
 });
