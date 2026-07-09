@@ -8,6 +8,7 @@ build/
 out/
 *.log
 npm-debug.log*
+tsconfig.tsbuildinfo
 
 # Env / secrets
 .env
