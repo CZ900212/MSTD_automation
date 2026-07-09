@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { requireUser } from "../http/auth-middleware.mjs";
-import { createJob, getJobRow, getJob, listJobs, updateJobStatus, saveJobDraft } from "../store/jobs.mjs";
+import { getJobRow, getJob, listJobs, updateJobStatus, saveJobDraft } from "../store/jobs.mjs";
 import { TEMPLATES } from "./templates.mjs";
-import { runReadonlyPhase } from "./orchestrator.mjs";
+import { createJobLauncher } from "./launcher.mjs";
 import { runWriteFlow } from "./write-flow.mjs";
 import { issueApprovalToken, consumeApprovalToken } from "../safety/approval.mjs";
 import { streamJobEvents } from "../http/sse.mjs";
@@ -34,27 +34,8 @@ function blockingActions(db2, jobId) {
 }
 
 export function mountJobRoutes(app, ctx) {
-  const { db, config, startPi, semaphore, bus, buffer, registry, extensions = [], piCwd, now = () => Date.now() } = ctx;
-  const queue = [];
-
-  async function launch(jobId) {
-    const job = getJobRow(db, jobId);
-    try {
-      await runReadonlyPhase({
-        db, startPi, bus, buffer, registry, job, extensions,
-        piOptions: { ...(config.pi ?? {}), cwd: piCwd },
-        now,
-      });
-    } finally {
-      semaphore.release();
-      pump();
-    }
-  }
-  function pump() {
-    while (queue.length > 0 && semaphore.tryAcquire()) {
-      launch(queue.shift()).catch(() => { /* 内部已落 failed */ });
-    }
-  }
+  const { db, config, startPi, bus, buffer, registry, now = () => Date.now() } = ctx;
+  const launcher = ctx.launcher ?? createJobLauncher(ctx);
 
   app.get("/api/templates", requireUser, (_req, res) => {
     res.json({ templates: Object.values(TEMPLATES).map((t) => ({ id: t.id, title: t.title, name: t.title })) });
@@ -63,15 +44,8 @@ export function mountJobRoutes(app, ctx) {
   app.post("/api/jobs", requireUser, (req, res) => {
     const { templateId, params = {} } = req.body ?? {};
     if (!TEMPLATES[templateId]) return res.status(400).json({ error: `未知模板: ${templateId}` });
-    const canRun = semaphore.tryAcquire();
-    const status = canRun ? "running_readonly" : "queued";
-    const job = createJob(db, {
-      templateId, title: params.title ?? TEMPLATES[templateId].title,
-      paramsJson: JSON.stringify(params), status, createdBy: req.user.id,
-    }, now());
-    if (canRun) launch(job.id).catch(() => { /* 内部已落 failed */ });
-    else queue.push(job.id);
-    res.status(201).json({ jobId: job.id, status });
+    const job = launcher.submit({ templateId, params, createdBy: req.user.id });
+    res.status(201).json({ jobId: job.id, status: job.status });
   });
 
   app.get("/api/jobs", requireUser, (req, res) => {
@@ -176,5 +150,5 @@ export function mountJobRoutes(app, ctx) {
     res.json({ ok: true, status: "aborted" });
   });
 
-  return { queue };
+  return { launcher };
 }

@@ -12,6 +12,7 @@ import { makeRunLark } from "./execute/run-lark.mjs";
 import { testTargetFromEnv } from "./execute/write-target.mjs";
 import { startPi } from "../supervisor/pi-client.mjs";
 import { reconcileOnBoot } from "./execute/reconcile-startup.mjs";
+import { createJobLauncher } from "./jobs/launcher.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -30,6 +31,23 @@ const bootLark = config.larkProfile ? makeRunLark({ profile: config.larkProfile 
 const boot = await reconcileOnBoot(db, { runLark: config.enableWrite ? bootLark : null });
 console.error(`[mstd] boot reconcile: ${JSON.stringify(boot)}`);
 
+const extensions = [
+  join(ROOT, "pi-ext", "providers.ts"),
+  join(ROOT, "pi-ext", "lark-read.ts"),
+  join(ROOT, "pi-ext", "draft.ts"),
+];
+const launcher = createJobLauncher({
+  db,
+  config,
+  startPi,
+  semaphore,
+  bus,
+  buffer,
+  registry,
+  extensions,
+  piCwd: ROOT,
+});
+
 const app = createApp({
   db,
   config,
@@ -39,12 +57,9 @@ const app = createApp({
   bus,
   buffer,
   registry,
-  extensions: [
-    join(ROOT, "pi-ext", "providers.ts"),
-    join(ROOT, "pi-ext", "lark-read.ts"),
-    join(ROOT, "pi-ext", "draft.ts"),
-  ],
+  extensions,
   piCwd: ROOT,
+  launcher,
   writeDeps: {
     runLark: makeRunLark({ profile: config.larkProfile }),
     testTarget: testTargetFromEnv(process.env),
