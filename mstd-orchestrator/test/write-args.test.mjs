@@ -64,3 +64,33 @@ describe("buildWriteArgs", () => {
     ]);
   });
 });
+
+// ---- D1: create_event / send_group_msg argv 构造 ----
+describe("buildWriteArgs D1 扩类", () => {
+  it("create_event argv 白名单", () => {
+    const argv = buildWriteArgs({
+      kind: "create_event",
+      payload: { summary: "评审会", start_time: "2026-07-10T14:00:00+08:00", end_time: "2026-07-10T15:00:00+08:00", attendee_open_ids: ["ou_a", "ou_b"] },
+    }, "job1:e1");
+    expect(argv).toEqual([
+      "calendar", "+create", "--as", "user",
+      "--summary", "评审会",
+      "--start", "2026-07-10T14:00:00+08:00", "--end", "2026-07-10T15:00:00+08:00",
+      "--attendee-ids", "ou_a,ou_b", "--json",
+    ]);
+  });
+  it("create_event 非法时间 fail-closed", () => {
+    expect(() => buildWriteArgs({ kind: "create_event", payload: { summary: "x", start_time: "后天", end_time: "2026-07-10T15:00:00Z", attendee_open_ids: [] } }, "k")).toThrow();
+  });
+  it("send_group_msg argv 白名单（含幂等 key）", () => {
+    const argv = buildWriteArgs({ kind: "send_group_msg", payload: { chat_id: "oc_9", card_ref: "j:c" } }, "job1:g1");
+    expect(argv).toEqual([
+      "im", "+messages-send", "--as", "bot", "--chat-id", "oc_9",
+      "--msg-type", "interactive", "--content", JSON.stringify({ ref: "j:c" }),
+      "--idempotency-key", "job1:g1",
+    ]);
+  });
+  it("send_group_msg 非法 chat_id fail-closed", () => {
+    expect(() => buildWriteArgs({ kind: "send_group_msg", payload: { chat_id: "ou_x", card_ref: "c" } }, "k")).toThrow();
+  });
+});

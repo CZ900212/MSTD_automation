@@ -100,3 +100,46 @@ describe("canonicalizeActions", () => {
     expect(dm.target_open_id).toBe(actions.find((a) => a.kind === "create_task").payload.assignee_open_id);
   });
 });
+
+// ---- D1: agent 意图通用规范化（create_event / send_group_msg / create_task / send_dm）----
+import { buildAgentAction } from "../server/safety/action-dsl.mjs";
+
+describe("buildAgentAction（D1 扩类）", () => {
+  it("create_event 正常规范化；attendee 排序保证同意图同 hash", () => {
+    const a = buildAgentAction({
+      jobId: "j1", kind: "create_event", ordinal: 0,
+      payload: { summary: "评审会", start_time: "2026-07-10T14:00:00+08:00", end_time: "2026-07-10T15:00:00+08:00", attendee_open_ids: ["ou_b", "ou_a"] },
+    });
+    const b = buildAgentAction({
+      jobId: "j1", kind: "create_event", ordinal: 0,
+      payload: { summary: "评审会", start_time: "2026-07-10T14:00:00+08:00", end_time: "2026-07-10T15:00:00+08:00", attendee_open_ids: ["ou_a", "ou_b"] },
+    });
+    expect(a.payload_hash).toBe(b.payload_hash);
+    expect(a.payload.attendee_open_ids).toEqual(["ou_a", "ou_b"]);
+    // 改一字变 hash
+    const c = buildAgentAction({ jobId: "j1", kind: "create_event", ordinal: 0, payload: { ...a.payload, summary: "评审会2" } });
+    expect(c.payload_hash).not.toBe(a.payload_hash);
+  });
+
+  it("create_event 非法时间/open_id fail-closed", () => {
+    expect(() => buildAgentAction({ jobId: "j", kind: "create_event", payload: { summary: "x", start_time: "明天", end_time: "2026-07-10T15:00:00Z", attendee_open_ids: [] } })).toThrow();
+    expect(() => buildAgentAction({ jobId: "j", kind: "create_event", payload: { summary: "x", start_time: "2026-07-10T14:00:00Z", end_time: "2026-07-10T15:00:00Z", attendee_open_ids: ["not_ou"] } })).toThrow();
+  });
+
+  it("send_group_msg 校验 oc_ 前缀", () => {
+    const a = buildAgentAction({ jobId: "j", kind: "send_group_msg", payload: { chat_id: "oc_123", card_ref: "j:c" } });
+    expect(a.kind).toBe("send_group_msg");
+    expect(() => buildAgentAction({ jobId: "j", kind: "send_group_msg", payload: { chat_id: "evil;rm", card_ref: "c" } })).toThrow();
+  });
+
+  it("create_task 缺 assignee → requires_open_id=true（卡片补选人）", () => {
+    const a = buildAgentAction({ jobId: "j", kind: "create_task", payload: { title: "交周报", description: "", due_date: null, assignee_open_id: null } });
+    expect(a.requires_open_id).toBe(true);
+    const b = buildAgentAction({ jobId: "j", kind: "create_task", payload: { title: "交周报", description: "", due_date: null, assignee_open_id: "ou_x" } });
+    expect(b.requires_open_id).toBe(false);
+  });
+
+  it("未知 kind 拒绝（类型封闭）", () => {
+    expect(() => buildAgentAction({ jobId: "j", kind: "drop_table", payload: {} })).toThrow(/未知|unknown/);
+  });
+});
