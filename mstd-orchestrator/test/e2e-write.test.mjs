@@ -72,7 +72,11 @@ describe.skipIf(!RUN)("Phase D E2E · 卡片确认真写闭环", () => {
     const list = await runLark(["task", "+get-my-tasks", "--as", "user", "--json"]);
     expect(list.stdout).toContain("[E2E] 明天交周报");
 
-    // ⑥ 回注回调收到执行摘要
+    // ⑥ 回注回调收到执行摘要（executeConfirmed 落库 done 后还要真机更卡才回注，需等待）
+    const reinjectDeadline = Date.now() + 30_000;
+    while (Date.now() < reinjectDeadline && reinjected.length === 0) {
+      await new Promise((res) => setTimeout(res, 1000));
+    }
     expect(reinjected).toHaveLength(1);
     expect(reinjected[0].ok).toBe(true);
   }, 180_000);

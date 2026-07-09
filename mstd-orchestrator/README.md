@@ -68,6 +68,13 @@ MSTD_E2E=1 MSTD_ENABLE_WRITE=1 npx vitest run test/e2e-full.test.mjs   # 真机�
 cd ../mstd-ui && npx vitest run     # UI 测试
 ```
 
+真机 E2E 硬约束（违反必假失败）：
+
+1. **先停本机 daemon**（`pkill -f server/index.mjs` 后确认）——飞书对同一应用的多条事件长连接负载均衡投递，残留 daemon 会抢走测试事件（且它会真回复）。
+2. **多套 E2E 只能逐套串行跑**——vitest 默认文件级并行，四套同打一个 test 群/私聊会互相污染：
+   `for t in e2e-write e2e-p2p e2e-group e2e-full; do npx vitest run test/$t.test.mjs; done`
+3. 需导出写白名单：`MSTD_TEST_OPEN_IDS`（发起人）与 `MSTD_TEST_CHAT_IDS`（测试私聊+测试群），以及 `MSTD_SESSION_SECRET`。
+
 ## 运营
 
 - 新群接入 SOP、写闸逐步放开、dreaming shadow→apply 切换、告警响应：见 `../docs/superpowers/runbooks/agent-rollout.md`。
