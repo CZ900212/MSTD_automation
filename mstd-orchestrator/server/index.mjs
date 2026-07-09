@@ -27,6 +27,9 @@ import { renderReply } from "./models/reply.mjs";
 import { createOutbound } from "./gateway/outbound.mjs";
 import { createTurnHandler } from "./gateway/turn-handler.mjs";
 import { createSessionStore } from "./sessions/store.mjs";
+import { createMemoryFiles } from "./memory/files.mjs";
+import { createMemoryTool } from "./memory/tool.mjs";
+import { buildMemorySnapshot } from "./memory/inject.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -106,6 +109,9 @@ if (config.enableAgent && config.botOpenId) {
       alert?.(`[mstd-agent] token 预算超限：${x.scope} (${x.sessionKey})`).catch(() => {});
     },
   });
+  const memoryFiles = createMemoryFiles({ rootDir: process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory") });
+  const memoryTool = createMemoryTool({ files: memoryFiles });
+  const snapshotFn = ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey });
   const triage = createTriage({ caller, store: agentStore });
   const brain = createBrain({
     startPi,
@@ -114,6 +120,7 @@ if (config.enableAgent && config.botOpenId) {
     extensions: [
       join(ROOT, "pi-ext", "providers.ts"),
       join(ROOT, "pi-ext", "reply.ts"),
+      join(ROOT, "pi-ext", "memory.ts"),
       join(ROOT, "pi-ext", "lark-read.ts"),
     ],
     piCwd: ROOT,
@@ -131,9 +138,10 @@ if (config.enableAgent && config.botOpenId) {
     outbound,
     store: agentStore,
     budget,
+    snapshotFn,
     onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
   });
-  internal = { token: internalToken, handleReply: turnHandler.handleReply };
+  internal = { token: internalToken, handleReply: turnHandler.handleReply, memoryTool };
   wireGateway({
     db,
     config: { ...config, larkCliPath: DEFAULT_LARK_CLI },

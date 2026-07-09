@@ -3,3 +3,6 @@ node_modules/
 *.log
 data/
 demo/out/
+
+# agent 记忆（独立 git 仓，见 dreaming 备份机制）
+agent-memory/
