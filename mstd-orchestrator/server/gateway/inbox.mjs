@@ -78,5 +78,9 @@ export function createInbox(db, { botOpenId }) {
     ).run(evt.eventId, evt.chatId ?? null, evt.kind === "message" ? md5(evt) : null, now);
   }
 
-  return { normalize, isDuplicate, markSeen };
+  function recordVerdict(eventId, verdict) {
+    db.prepare("UPDATE inbox_events SET verdict = ? WHERE event_id = ?").run(JSON.stringify(verdict), eventId);
+  }
+
+  return { normalize, isDuplicate, markSeen, recordVerdict };
 }

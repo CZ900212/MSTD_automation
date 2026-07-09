@@ -24,7 +24,9 @@ export function wireGateway({ db, config, spawnFn, handleTurn, log = console.err
       if (!evt || inbox.isDuplicate(evt)) return;
       inbox.markSeen(evt);
       if (evt.kind !== "message") return handleTurn({ kind: evt.kind, evt }); // 卡片/妙记直达
+      const t0 = Date.now();
       const verdict = admitter.admit(evt);
+      inbox.recordVerdict(evt.eventId, { ...verdict, gate: "admit", elapsedMs: Date.now() - t0 });
       const sessionKey = evt.chatType === "p2p"
         ? buildSessionKey({ kind: "p2p", openId: evt.senderOpenId })
         : buildSessionKey({ kind: "group", chatId: evt.chatId, topicId: evt.topicId ?? undefined });
