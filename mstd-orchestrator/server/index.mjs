@@ -28,6 +28,7 @@ import { createOutbound } from "./gateway/outbound.mjs";
 import { createTurnHandler } from "./gateway/turn-handler.mjs";
 import { createSessionStore } from "./sessions/store.mjs";
 import { createMemoryFiles } from "./memory/files.mjs";
+import { createSessionSearch } from "./sessions/search.mjs";
 import { createMemoryTool } from "./memory/tool.mjs";
 import { buildMemorySnapshot } from "./memory/inject.mjs";
 
@@ -121,6 +122,7 @@ if (config.enableAgent && config.botOpenId) {
       join(ROOT, "pi-ext", "providers.ts"),
       join(ROOT, "pi-ext", "reply.ts"),
       join(ROOT, "pi-ext", "memory.ts"),
+      join(ROOT, "pi-ext", "session-search.ts"),
       join(ROOT, "pi-ext", "lark-read.ts"),
     ],
     piCwd: ROOT,
@@ -141,7 +143,7 @@ if (config.enableAgent && config.botOpenId) {
     snapshotFn,
     onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
   });
-  internal = { token: internalToken, handleReply: turnHandler.handleReply, memoryTool };
+  internal = { token: internalToken, handleReply: turnHandler.handleReply, memoryTool, searchTool: createSessionSearch(db) };
   wireGateway({
     db,
     config: { ...config, larkCliPath: DEFAULT_LARK_CLI },
