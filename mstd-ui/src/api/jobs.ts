@@ -41,5 +41,6 @@ export const getJob = (id: string) => apiFetch<JobDetail>(`/api/jobs/${encodeURI
 export const postDecision = (
   id: string,
   body: { approve: boolean; edited_items?: unknown[]; note?: string; decision_token: string }
-) => apiFetch<{ ok: boolean }>(`/api/jobs/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify(body) });
+) => apiFetch<{ ok: boolean; status: string; writeGated?: boolean }>(
+  `/api/jobs/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify(body) });
 export const abortJob = (id: string) => apiFetch<{ ok: boolean }>(`/api/jobs/${encodeURIComponent(id)}/abort`, { method: "POST" });

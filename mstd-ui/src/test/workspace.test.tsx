@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WorkspaceView } from "../views/WorkspaceView";
 import { emptyLog } from "../state/job-event-log";
@@ -11,7 +11,7 @@ function baseProps(over = {}) {
     templates, selectedTemplateId: "meeting_to_task",
     onSelectTemplate: vi.fn(), params: { minuteToken: "" }, onChangeParams: vi.fn(),
     onTrigger: vi.fn(), running: false, log: emptyLog(),
-    draft: null, actions: [], onApprove: vi.fn(), onReject: vi.fn(),
+    draft: null, actions: [], onApprove: vi.fn(), onReject: vi.fn(), onAbort: vi.fn(),
     ...over,
   };
 }
@@ -32,5 +32,12 @@ describe("WorkspaceView", () => {
     })} />);
     expect(screen.getByText("请确认以下待办")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /批准/ })).toBeInTheDocument();
+  });
+
+  it("running 时显示中止按钮并回调 onAbort", () => {
+    const onAbort = vi.fn();
+    render(<WorkspaceView {...baseProps({ running: true, onAbort })} />);
+    fireEvent.click(screen.getByRole("button", { name: "中止" }));
+    expect(onAbort).toHaveBeenCalled();
   });
 });

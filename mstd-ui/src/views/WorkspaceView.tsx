@@ -6,7 +6,7 @@ import type { ActionDraft, Template } from "../api/jobs";
 
 export function WorkspaceView({
   templates, selectedTemplateId, onSelectTemplate, params, onChangeParams,
-  onTrigger, running, log, draft, actions, onApprove, onReject,
+  onTrigger, running, log, draft, actions, onApprove, onReject, onAbort,
 }: {
   templates: Template[];
   selectedTemplateId: string;
@@ -20,6 +20,7 @@ export function WorkspaceView({
   actions: ActionDraft[];
   onApprove: (edited: ActionDraft[]) => void;
   onReject: (note: string) => void;
+  onAbort: () => void;
 }) {
   return (
     <div className="workspace">
@@ -39,6 +40,7 @@ export function WorkspaceView({
           />
         </label>
         <button className="primary" type="button" disabled={running} onClick={onTrigger}>触发</button>
+        {running && <button className="ghost" type="button" onClick={onAbort}>中止</button>}
       </section>
 
       <Timeline log={log} />
