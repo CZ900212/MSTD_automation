@@ -47,11 +47,36 @@ import { createProactiveLimiter } from "./gateway/rate-limit.mjs";
 import { createObserveReport } from "./gateway/observe-report.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+// 注意：loadServerConfig 里的 sessionSecret() 缺配时会往 process.env 写临时密钥，先记录原始状态
+const hasSessionSecret = Boolean(String(process.env.MSTD_SESSION_SECRET ?? "").trim());
 const config = loadServerConfig(process.env);
 
-if (config.enableWrite && !process.env.MSTD_SESSION_SECRET) {
-  console.error("[mstd] 致命：MSTD_ENABLE_WRITE=1 时必须配置 MSTD_SESSION_SECRET（否则重启丢会话且审批链不可信）");
-  process.exit(1);
+// H2 启动 fail-fast：缺关键 env 一次性报全清单再退出，不让半残配置上线。
+{
+  const fatal = [];
+  if ((config.enableWrite || config.enableAgent) && !hasSessionSecret) {
+    fatal.push("MSTD_ENABLE_WRITE/MSTD_ENABLE_AGENT=1 时必须配置 MSTD_SESSION_SECRET（否则重启丢会话且审批链不可信）");
+  }
+  if (config.enableAgent) {
+    if (!config.botOpenId) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 MSTD_BOT_OPEN_ID（自回环判定依赖）");
+    if (!config.botName) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 MSTD_BOT_NAME（扁平事件无 mentions，点名判定依赖）");
+    if (!config.larkProfile) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 LARK_PROFILE（收发消息通道）");
+    if (!process.env.CZ_GPT_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 CZ_GPT_KEY（reason 链主脑）");
+    if (!process.env.CZ_CLAUDE_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 CZ_CLAUDE_KEY（respond 链出口）");
+    if (!process.env.DEEPSEEK_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 DEEPSEEK_KEY（fast 链分诊）");
+  }
+  if (config.enableWrite) {
+    const hasTarget = String(process.env.MSTD_TEST_OPEN_IDS ?? "").trim() || String(process.env.MSTD_TEST_CHAT_IDS ?? "").trim();
+    if (!hasTarget) fatal.push("MSTD_ENABLE_WRITE=1 时必须配置 MSTD_TEST_OPEN_IDS 或 MSTD_TEST_CHAT_IDS（写目标白名单 fail-closed，空=全拒）");
+  }
+  if (fatal.length) {
+    console.error("[mstd] 致命：启动配置不完整——");
+    for (const m of fatal) console.error(`  - ${m}`);
+    process.exit(1);
+  }
+  if (config.enableAgent && config.adminOpenIds.size === 0) {
+    console.warn("[mstd] 提醒：未配置 MSTD_ADMIN_OPEN_IDS，web 调试台 /api/admin/* 将全部 403");
+  }
 }
 
 const dbPath = process.env.MSTD_DB_PATH || join(ROOT, "db", "mstd.sqlite");

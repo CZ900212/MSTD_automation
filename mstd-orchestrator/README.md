@@ -1,74 +1,75 @@
-# mstd-orchestrator（基于 Pi 的自动管理系统 · 本地验证）
+# mstd-orchestrator（常驻公司级飞书全能助手「小达」）
 
-把已验证的飞书链路做成 **Pi agent** 驱动的自动管理系统。本目录是 **本地验证版**，核心闭环已端到端跑通（2026-07-08）。
+原「会议纪要单一流水线」已改造为**常驻对话式 agent**：24h 挂在飞书 test org 里，私聊/群聊即时应答，写操作走卡片确认，记忆分五层长期演化，夜间 dreaming 蒸馏。设计与实施计划见 `../docs/superpowers/specs/2026-07-09-feishu-resident-agent.md`，上线开闸手册见 `../docs/superpowers/runbooks/agent-rollout.md`。
 
-## ✅ 已验证跑通（本地，真实数据）
-
-- Pi 0.80.3（`@earendil-works/pi-coding-agent`）装好，网关三 provider 配好。
-- **GPT-5.5 主脑经 Pi 真实触发工具**（工具循环成立，推理强度始终 medium）。
-- **lark 工具**：Pi 通过它调已授权 `lark-cli`，真实搜妙记 / 导逐字稿 / 可发卡片建任务。
-- **draft_zh 工具**：Opus 4.6 执笔面向用户的高质量中文（消息/卡片文案/报告）。
-- **RPC 无头驱动**（`supervisor/pi-client.mjs`）：Node 程序化驱动 Pi，解析事件流，取最终产出。
-- **端到端 demo**（`demo/run-meeting-job.mjs`，~86s）：GPT-5.5 编排 → lark 导真实逐字稿 → 抽 action items → Opus 执笔飞书确认卡片文案，全程无人工。
-
-## 🔴 关键发现（决定架构）
-
-**曾经**：CZ 聚合网关（api.cz900212.com）不支持工具调用，两种格式的 tools 参数都被吃掉，一度被迫用 DeepSeek 直连当主脑。
-**现在（2026-07-09）**：网关侧已开通工具调用。实测：
-- **GPT-5.5 / gpt-5.4 / gpt-5.4-mini** 经网关返回**干净** `tool_calls`（args 正常，多轮工具循环通）→ 可当主脑。
-- **Claude 路由**的 `tool_calls.arguments` 会多拼一个前导空对象 `{}`（如 `{}{"city":"北京"}`），但 **Pi 的解析器实测能容忍**（Opus 调 bash 工具正常）。
-
-→ 架构据此定型（回归"opus 对用户表达 / gpt 推理"的分工）：
-| 角色 | 模型 | 接线 | 备注 |
-|---|---|---|---|
-| **主脑 / 工具循环 / 编排推理** | **GPT-5.5**（CZ 网关，`$CZ_GPT_KEY`） | Pi 主模型 | 推理强度**始终 medium**（thinkingLevelMap 全档钉死） |
-| **与用户交互 / 对外中文表达** | **Claude Opus 4.6**（CZ 网关，`$CZ_CLAUDE_KEY`） | `draft_zh` 工具 | 所有给人看的中文成品必经此工具 |
-| **图像识别 / OCR** | GPT-5.5（多模态，同一 key） | 视觉工具（待建） | |
-| **备用主脑** | DeepSeek（`api.deepseek.com`） | 网关不可用时兜底 | 已降级，非默认 |
-
-## 结构
+## 架构一图流
 
 ```
-pi-ext/providers.ts  # 注册 cz-gpt(gpt-5.5 主脑) + cz-claude(opus-4-6 交互) + deepseek(备用)
-pi-ext/lark.ts       # lark 工具：shell 到 lark-cli（默认拦写，LARK_ALLOW_WRITE=1 放行）
-pi-ext/draft.ts      # draft_zh 工具：Opus 4.6 执笔中文（与用户交互唯一出口）
-supervisor/pi-client.mjs  # RPC 无头驱动 Pi（严格 JSONL，agent_end 判完成）
-demo/run-meeting-job.mjs  # 端到端 demo
-.env                 # 密钥（gitignore）：CZ_GPT_KEY / CZ_CLAUDE_KEY / DEEPSEEK_KEY / LARK_PROFILE
+飞书事件（lark-cli event consume，每 EventKey 一个子进程，扁平 NDJSON）
+  → gateway/inbox 归一化 + MD5 去重 → debounce 3s → admit（disabled/mention_only/ambient/observe_only）
+  → 预算闸 → 主动限额器 → V4 Flash 分诊（fast 链）
+  → ↘ 直答（fast 链渲染）
+    ↘ 升级 GPT-5.5 Pi 中枢（reason 链；池化、闲置回收、steer 注入）
+        · 出站唯一通道 = reply 工具 → daemon /internal/reply → Opus 4.6（respond 链）渲染 → outbound
+        · 写意图 → propose-actions → buildAgentAction 规范化+hash → 卡片确认（approval token 绑发起人）
+          → 操作人/令牌/hash 三校验 → executeApprovedAction（dry-run→写→幂等）→ 终态卡 + 回注会话
+  记忆：SOUL / ORG / journal / groups/<chat_id> / users/<open_id>（隔离铁律：群A绝不进群B）
+  ticker 单轮询分频：cron / heartbeat(5min) / dreaming(03:30) / 会话过期 / lark 健康 / 周一信噪报
 ```
 
-## 运行
+三条模型链（每级重试 5×10s 再降级）：
+| 链 | 用途 | 顺序 |
+|---|---|---|
+| fast | 分诊/直答/journal 摘要 | v4-flash → opus-4.6 → gpt-5.5 |
+| reason | Pi 中枢编排推理 | gpt-5.5 → opus-4.8 → v4-pro |
+| respond | 对外中文出口 | opus-4.6 → v4-pro → gpt-5.5 |
+
+## 目录
+
+```
+server/gateway/   # inbox/consumer/debounce/admit/outbound/turn-handler/rate-limit/observe-report
+server/models/    # caller(三链) / budget / triage / brain(Pi池) / reply
+server/sessions/  # session-key / store / actor(串行队列) / search(FTS)
+server/memory/    # files(五层) / scan(注入扫描) / tool / inject / compact / journal
+server/cards/     # templates(卡片结构固定) / confirm-flow(发卡→确认→执行→终态)
+server/ticker/    # ticker / cron-jobs / cron-runner / heartbeat / dreaming / session-expiry
+server/jobs/      # 旧流水线(readonly 段保留) + background(agent 后台任务) + reinjector
+server/safety/    # action-dsl / write-args / action-store / approval / intent-schema（安全内核，回归红线）
+server/execute/   # execute-action / write-target(白名单 fail-closed) / run-lark / reconcile
+server/http/      # internal-routes(Pi⇄daemon) / admin-routes(web 调试台) / session / sse
+pi-ext/           # Pi 薄壳工具：reply/memory/session-search/propose-actions/background-job/heartbeat
+agent-memory/     # 五层记忆文件（gitignore；SOUL.md 人格）
+```
+
+## 部署 / 运行
 
 ```bash
 cd mstd-orchestrator
-set -a; . ./.env; set +a          # 加载密钥到环境
-
-# 单跑 opus-4-6（对用户交互文本）
-pi -e pi-ext/providers.ts -a --provider cz-claude --model claude-opus-4-6 --thinking medium --no-session -p "..."
-
-# GPT-5.5 主脑 + 工具（真实 agent，推理始终 medium）
-pi -e pi-ext/providers.ts -e pi-ext/lark.ts -e pi-ext/draft.ts -a --provider cz-gpt --model gpt-5.5 --thinking medium --no-session -p "..."
-
-# 无头端到端 demo
-node demo/run-meeting-job.mjs
-```
-
-## 待办（迁移到上海服务器前）
-
-- ✅ ~~补 GPT key~~（已到位，`$CZ_GPT_KEY`）；下一步用同 key 的 gpt-5.5 多模态建视觉工具。
-- ✅ ~~guard hook~~：已由 `lark_read` 白名单 + `lark_execute_approved_action` 四道锁取代。
-- ✅ ~~状态层~~：`server/db` 已落地 SQLite（`orch_jobs` / decisions / `job_events` / `orch_events`）；Postgres 归迁移计划。
-- ✅ ~~触发层~~：`MSTD_ENABLE_TRIGGER=1` 启 `minutes.minute.generated_v1` 长连接；`MSTD_BACKFILL=1` 启动回扫。
-- 部署：见 `../docs/superpowers/plans/2026-07-08-pi-orchestrator-migration.md`（注意服务器 1GB 内存约束）。
-
-## 运行完整闭环（本地）
-
-```bash
-cd mstd-orchestrator
+cp .env.example .env && chmod 600 .env   # 填 key；密钥红线：只进 .env，不进代码/日志/Git
 set -a; . ./.env; set +a
-node server/index.mjs            # 触发层/写层按 .env 开关
-# 另开终端：cd ../mstd-ui && npx vite   # UI 开发模式（代理 /api 到 :8787）
-# 流程：飞书扫码登录 → 触发/等妙记事件 → 时间线看第①段 → 审批（可编辑/删条目）→ 自动真写（仅测试白名单）→ 看板对账
+node server/index.mjs                    # 缺关键 env 会 fail-fast 打印全清单
+# web 调试台：cd ../mstd-ui && npx vite  # 六 tab：工作台/看板/会话/调试台/记忆/调试对话
 ```
 
-关键开关：`MSTD_ENABLE_WRITE` / `MSTD_TEST_OPEN_IDS` / `MSTD_SESSION_SECRET` / `MSTD_ENABLE_TRIGGER` / `MSTD_BACKFILL` / `MSTD_ALERT_OPEN_ID`。详见 `.env.example`。
+启动要求（`MSTD_ENABLE_AGENT=1` 时 fail-fast 强制）：`MSTD_BOT_OPEN_ID` / `MSTD_BOT_NAME` / `LARK_PROFILE` / 三模型 key / `MSTD_SESSION_SECRET`。写闸 `MSTD_ENABLE_WRITE=1` 时必须给 `MSTD_TEST_OPEN_IDS` 或 `MSTD_TEST_CHAT_IDS`（白名单 fail-closed，空=全拒）。全部开关见 `.env.example`。
+
+## 安全内核（回归红线，动前必读）
+
+- **模型永远不可信**：写动作形状由服务端 `buildAgentAction` canonical 化 + hash；卡片 JSON 结构模型碰不到；记忆写入过注入扫描。
+- **四道锁**：意图校验 → canonical+hash → approval token（绑发起人、TTL 30min、一次性）→ 操作人/令牌/hash 三校验后才执行；执行带 dry-run 与幂等 key（sha256 32hex，飞书 client_token 限长）。
+- **写目标白名单**：`server/execute/write-target.mjs` fail-closed；测试期只允许 test org 白名单目标。
+- 改动 `server/safety/` `server/execute/` 后必须全量回归：`npx vitest run`。
+
+## 测试
+
+```bash
+npx vitest run                      # 全量单测（不出网）
+MSTD_E2E=1 npx vitest run test/e2e-full.test.mjs   # 真机全链路回归（test org，已获授权）
+cd ../mstd-ui && npx vitest run     # UI 测试
+```
+
+## 运营
+
+- 新群接入 SOP、写闸逐步放开、dreaming shadow→apply 切换、告警响应：见 `../docs/superpowers/runbooks/agent-rollout.md`。
+- 观察期：群策略 `observe_only` 判定照跑只落 `observe_log` 不出站，周一 09:00 DM 管理员信噪报告。
+- lark-cli 真机硬约束（单事件/stdin 保活/扁平 NDJSON/mentions 缺失靠 botName 文本匹配）：见 spec §Phase A。
