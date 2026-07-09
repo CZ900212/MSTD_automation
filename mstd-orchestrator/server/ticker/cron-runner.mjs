@@ -3,7 +3,7 @@
 // prompt 组装后过注入扫描，污染即拦截并 disabled。
 import { scanForInjection } from "../memory/scan.mjs";
 
-export function createCronRunner({ db, brain, agentStore, cronStore, snapshotFn = null, log = console.error }) {
+export function createCronRunner({ brain, agentStore, cronStore, snapshotFn = null, log = console.error }) {
   function buildBrief(job) {
     return [
       `【定时任务】${job.prompt}`,

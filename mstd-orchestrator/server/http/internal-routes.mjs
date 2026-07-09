@@ -1,5 +1,5 @@
 // 内部通道：仅供本机 Pi 扩展（reply/memory 等工具）回传 daemon。独立 Bearer token，与用户会话体系无关。
-export function mountInternalRoutes(app, { token, handleReply, memoryTool = null, searchTool = null, spawnBackground = null, proposeActions = null, log = console.error }) {
+export function mountInternalRoutes(app, { token, handleReply, memoryTool = null, searchTool = null, spawnBackground = null, proposeActions = null, heartbeat = null, log = console.error }) {
   const guard = (req, res) => {
     if (!token || req.headers.authorization !== `Bearer ${token}`) {
       res.status(403).json({ ok: false, error: "forbidden" });
@@ -52,6 +52,21 @@ export function mountInternalRoutes(app, { token, handleReply, memoryTool = null
     } catch (e) {
       res.status(500).json({ ok: false, error: String(e?.message ?? e) });
     }
+  });
+
+  app.post("/internal/heartbeat", (req, res) => {
+    if (!guard(req, res)) return;
+    if (!heartbeat) return res.status(501).json({ ok: false, error: "heartbeat 未启用" });
+    const { session_key: sessionKey, action, due_iso: dueIso, text, deliver_to: deliverTo, match } = req.body;
+    if (action === "add") {
+      if (!dueIso || !text) return res.status(400).json({ ok: false, error: "add 需要 due_iso + text" });
+      return res.json(heartbeat.addItem({ dueIso, text, deliverTo: deliverTo || sessionKey }));
+    }
+    if (action === "remove") {
+      if (!match) return res.status(400).json({ ok: false, error: "remove 需要 match" });
+      return res.json(heartbeat.removeItem(match));
+    }
+    res.status(400).json({ ok: false, error: `未知 action: ${action}` });
   });
 
   app.post("/internal/session-search", (req, res) => {
