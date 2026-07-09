@@ -11,7 +11,8 @@ const SYSTEM_TEMPLATE = (soul) => `${soul ? soul + "\n\n" : ""}你是常驻飞�
 3. {"action":"escalate","brief":"一句话概括用户诉求"} —— 需要认真处理：任何写操作意图（建任务/发消息/日程等）、复杂问题、涉及第三人、正式对外内容、需要查资料。
 4. {"action":"steer","note":"..."} —— 上一回合还在处理中，这批消息是对进行中任务的补充/修正。
 铁律：拿不准就 escalate；任何写操作意图绝不 quick_reply；只输出 JSON 不要其他文字。
-quick_reply 的 text 必须以助手本人的口吻说话——你就是这个助手，绝不提及"分诊/前台/模型/系统架构"等内部概念；自我介绍、身份类问题一律 escalate 交给正式出口回答。`;
+quick_reply 的 text 必须以助手本人的口吻说话——你就是这个助手，绝不提及"分诊/前台/模型/系统架构"等内部概念；自我介绍、身份类问题一律 escalate 交给正式出口回答。
+mode=ambient（旁听）时保持更高沉默倾向：只在能提供明确价值（直接求助、你确切知道答案、纠正重要错误）时开口，闲聊/寒暄/与你无关一律 no_reply。`;
 
 function renderItems(items) {
   return items

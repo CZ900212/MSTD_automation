@@ -18,6 +18,7 @@ export function createTurnHandler({
   snapshotFn = null,          // C4 接缝：({sessionKey}) => 记忆快照
   compactor = null,           // C6 接缝：上下文压缩器
   journal = null,             // C7 接缝：公司总日志（fire-and-forget）
+  limiter = null,             // F2 接缝：群主动发言限额器（ambient 专用）
   caller = null,              // 供 renderReply 使用（renderReply 已柯里化时可为 null）
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
@@ -62,9 +63,21 @@ export function createTurnHandler({
       return;
     }
 
+    // 门控第 0 层（规则）：ambient 先过限额，不过直接 observed 落库（零模型成本）
+    if (mode === "ambient" && limiter && session.chat_id && !limiter.allow(session.chat_id, Date.now())) {
+      appendItems(session.id, items, { observed: true });
+      onEvent({ type: "rate_limited", sessionKey });
+      return;
+    }
+
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
     const verdict = await triage.triage({ session, items, mode, snapshot, brainBusy: brain.isBusy(sessionKey) });
     onEvent({ type: "triage", sessionKey, verdict });
+
+    // ambient 放行出站前记账（quick_reply/escalate 都算一次主动发言）
+    if (mode === "ambient" && limiter && session.chat_id && (verdict.action === "quick_reply" || verdict.action === "escalate")) {
+      limiter.record(session.chat_id, Date.now());
+    }
 
     if (verdict.action === "no_reply") {
       appendItems(session.id, items, { observed: true });

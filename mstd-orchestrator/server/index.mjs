@@ -43,6 +43,7 @@ import { createCronRunner } from "./ticker/cron-runner.mjs";
 import { createHeartbeat } from "./ticker/heartbeat.mjs";
 import { createDreaming } from "./ticker/dreaming.mjs";
 import { createSessionExpiry } from "./ticker/session-expiry.mjs";
+import { createProactiveLimiter } from "./gateway/rate-limit.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -161,6 +162,7 @@ if (config.enableAgent && config.botOpenId) {
     snapshotFn,
     compactor: createCompactor({ caller, store: agentStore }),
     journal: createJournal({ caller, files: memoryFiles }),
+    limiter: createProactiveLimiter(db),
     onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
   });
   // ---- Phase D：写路径卡片 + 后台 job + 回注 ----
