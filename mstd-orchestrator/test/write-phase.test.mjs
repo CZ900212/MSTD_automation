@@ -39,4 +39,31 @@ describe("runWritePhase", () => {
     const out = await runWritePhase(db, "job1", { spawnPi, runLark, testTarget });
     expect(out.mode).toBe("pi");
   });
+
+  it("写前对账：executing 残留先 reconcile，命中外部指纹则不重复执行", async () => {
+    const action = actionsToExecute(db, "job1")[0];
+    db.prepare("UPDATE job_actions SET status = 'executing' WHERE id = ?").run(action.id);
+    const calls = [];
+    const runLark = async (argv) => {
+      calls.push(argv.join(" "));
+      if (argv[0] === "task" && argv[1] === "+list") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ items: [{ idempotency_key: action.idempotency_key }] }),
+          stderr: "",
+        };
+      }
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    };
+    await runWritePhase(db, "job1", {
+      spawnPi: async () => { throw new Error("force fallback"); },
+      runLark,
+      testTarget,
+    });
+    const row = db.prepare("SELECT status, result_json FROM job_actions WHERE id = ?").get(action.id);
+    expect(row.status).toBe("succeeded");
+    expect(row.result_json).toContain("reconciled");
+    // 已对账成功的动作不应再被真写（argv 中不出现它的 idempotency-key）
+    expect(calls.filter((c) => c.includes(action.idempotency_key)).length).toBe(0);
+  });
 });

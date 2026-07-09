@@ -1,5 +1,20 @@
-import { actionsToExecute } from "../safety/action-store.mjs";
+import { actionsToExecute, markStatus } from "../safety/action-store.mjs";
 import { executeApprovedAction, reconcileAction, loadApprovedHashes } from "./execute-action.mjs";
+
+/**
+ * 写前对账：将 job 内 executing/unknown 残留与外部幂等指纹对齐。
+ * 命中 → succeeded；未命中 → failed(reconcile_not_found)，进入 actionsToExecute 可重试集合。
+ */
+export async function reconcileStale(db, jobId, runLark) {
+  const stale = db.prepare(
+    "SELECT * FROM job_actions WHERE job_id = ? AND status IN ('executing','unknown')"
+  ).all(jobId);
+  for (const action of stale) {
+    const r = await reconcileAction(db, { action, runLark });
+    if (!r.reconciled) markStatus(db, action.id, "failed", JSON.stringify({ error: "reconcile_not_found" }));
+  }
+  return stale.length;
+}
 
 async function directExecute(db, jobId, { runLark, testTarget }) {
   const approved = loadApprovedHashes(db, jobId);
@@ -13,6 +28,7 @@ async function directExecute(db, jobId, { runLark, testTarget }) {
 }
 
 export async function runWritePhase(db, jobId, { spawnPi, runLark, testTarget, timeoutMs = 240000 }) {
+  await reconcileStale(db, jobId, runLark);
   try {
     await Promise.race([
       spawnPi(),
@@ -29,5 +45,3 @@ export async function runWritePhase(db, jobId, { spawnPi, runLark, testTarget, t
     return { mode: "fallback", results };
   }
 }
-
-void reconcileAction;
