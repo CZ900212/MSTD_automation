@@ -162,6 +162,8 @@ if (config.enableAgent && config.botOpenId) {
     startPi,
     store: agentStore,
     semaphore,
+    // 闲置 Pi 占并发位直到回收；默认 10min，E2E/低并发环境可调小避免饿死后续会话
+    idleMs: Number(process.env.MSTD_PI_IDLE_MS ?? 600_000),
     extensions: [
       join(ROOT, "pi-ext", "providers.ts"),
       join(ROOT, "pi-ext", "reply.ts"),
@@ -252,12 +254,17 @@ if (config.enableAgent && config.botOpenId) {
   });
   // ---- Phase E：主动层（单 ticker 多周期）----
   const memoryDir = process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory");
-  const ticker = createTicker({ intervalMs: 60_000 });
+  // E2E 提速旋钮（默认即生产值）：tick 间隔 / 心跳频率与活跃时段
+  const ticker = createTicker({ intervalMs: Number(process.env.MSTD_TICKER_INTERVAL_MS ?? 60_000) });
   const cronStore = createCronStore(db);
   const cronRunner = createCronRunner({ brain, agentStore, cronStore, snapshotFn });
   ticker.register("cron", 1, () => cronRunner.runDue());
-  const heartbeat = createHeartbeat({ rootDir: memoryDir, caller, brain, agentStore, snapshotFn });
-  ticker.register("heartbeat", 5, () => heartbeat.tick());          // 5 分钟一扫（activeHours 内）
+  const heartbeat = createHeartbeat({
+    rootDir: memoryDir, caller, brain, agentStore, snapshotFn,
+    activeStartHour: Number(process.env.MSTD_HEARTBEAT_ACTIVE_START ?? 9),
+    activeEndHour: Number(process.env.MSTD_HEARTBEAT_ACTIVE_END ?? 21),
+  });
+  ticker.register("heartbeat", Number(process.env.MSTD_HEARTBEAT_EVERY_TICKS ?? 5), () => heartbeat.tick()); // 默认 5 分钟一扫（activeHours 内）
   internal.heartbeat = heartbeat;
   const dreaming = createDreaming({ db, files: memoryFiles, caller });
   let lastDreamDay = null;

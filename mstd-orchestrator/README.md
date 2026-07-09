@@ -64,7 +64,7 @@ node server/index.mjs                    # 缺关键 env 会 fail-fast 打印全
 
 ```bash
 npx vitest run                      # 全量单测（不出网）
-MSTD_E2E=1 npx vitest run test/e2e-full.test.mjs   # 真机全链路回归（test org，已获授权）
+MSTD_E2E=1 MSTD_ENABLE_WRITE=1 npx vitest run test/e2e-full.test.mjs   # 真机全链路回归（test org，已获授权）
 cd ../mstd-ui && npx vitest run     # UI 测试
 ```
 
