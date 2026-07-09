@@ -48,9 +48,25 @@ export function createSessionStore(db) {
     return db.prepare("SELECT version FROM agent_sessions WHERE id = ?").get(sessionId).version;
   }
 
+  // 未消费的旁听消息（群@ pending 窗口），取最近 limit 条
+  function recentObserved(sessionId, { limit = 50 } = {}) {
+    return db.prepare(
+      `SELECT * FROM (
+         SELECT * FROM agent_messages
+         WHERE session_id = ? AND observed = 1 AND observed_consumed = 0 AND active = 1
+         ORDER BY ts DESC LIMIT ?
+       ) ORDER BY ts`
+    ).all(sessionId, limit);
+  }
+
+  function markObservedConsumed(messageIds) {
+    const stmt = db.prepare("UPDATE agent_messages SET observed_consumed = 1 WHERE id = ?");
+    for (const id of messageIds) stmt.run(id);
+  }
+
   function touch(sessionId, now = Date.now()) {
     db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(now, sessionId);
   }
 
-  return { getOrCreate, append, transcript, softDelete, bumpVersion, touch };
+  return { getOrCreate, append, transcript, softDelete, bumpVersion, touch, recentObserved, markObservedConsumed };
 }

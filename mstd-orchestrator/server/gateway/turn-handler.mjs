@@ -88,10 +88,20 @@ export function createTurnHandler({
 
     // escalate（或 steer 但中枢已空闲 → 当 escalate 跑）
     let brief = verdict.brief ?? verdict.note ?? renderContext(items);
+    // 群@ pending 窗口：把自上次发言以来的旁听消息注入一次（注入即消费）
+    let context = renderContext(items);
+    if (mode === "addressed" && sessionKey.startsWith("feishu:group:")) {
+      const pending = store.recentObserved(session.id);
+      if (pending.length) {
+        const block = pending.map((m) => `[${m.sender_name ?? m.sender_open_id ?? "群成员"}]: ${m.content}`).join("\n");
+        context = `[自你上次发言以来的群消息-仅供上下文]\n${block}\n[/上下文]\n\n${context}`;
+        store.markObservedConsumed(pending.map((m) => m.id));
+      }
+    }
     try {
       if (compactor) await compactor.maybeCompact({ session, sessionKey, brain, snapshot });
       if (shouldNudge(store.transcript(session.id, { limit: 1000 }))) brief += `\n\n${NUDGE_NOTE}`;
-      const result = await brain.turn({ session, sessionKey, brief, context: renderContext(items), snapshot });
+      const result = await brain.turn({ session, sessionKey, brief, context, snapshot });
       for (const e of result.events ?? []) onEvent({ type: "brain_event", sessionKey, event: e });
       // finalText 只落库为内部记录（role=tool），绝不出站
       if (result.finalText) {

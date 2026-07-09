@@ -13,8 +13,13 @@ export function openDb(path = ":memory:") {
 }
 
 export function migrate(db) {
+  // 迁移追踪：非幂等语句（如 ALTER TABLE ADD COLUMN）只执行一次
+  db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)");
+  const applied = new Set(db.prepare("SELECT name FROM schema_migrations").all().map((r) => r.name));
   const dir = join(HERE, "migrations");
   for (const f of readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) {
+    if (applied.has(f)) continue;
     db.exec(readFileSync(join(dir, f), "utf8"));
+    db.prepare("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)").run(f, Date.now());
   }
 }
