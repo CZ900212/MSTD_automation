@@ -71,13 +71,15 @@
 ### 4.2 记忆系统（全局记忆，重点交付）
 
 ```
-SOUL.md                     身份/人格/规矩（热加载，注入 slot#1，管理员可随时手改）
-memory/ORG.md               公司级共享事实（字符数上限，超限提醒模型自行合并淘汰）
-memory/groups/<chat_id>.md  每群记忆
-memory/users/<open_id>.md   每人记忆（私聊画像）
+SOUL.md                       身份/人格/规矩（热加载，注入 slot#1，管理员可随时手改）
+memory/ORG.md                 公司级共享事实（字符数上限，超限提醒模型自行合并淘汰）
+memory/journal/YYYY-MM-DD.md  公司总日志：今天发生了什么（每回合结束追加一条；
+                              人↔agent 私聊同样记录；群/私聊事件都汇入这本总账）
+memory/groups/<chat_id>.md    每群记忆
+memory/users/<open_id>.md     每人记忆（私聊画像）
 ```
 
-- **注入铁律**：群会话 = SOUL+ORG+本群；私聊 = SOUL+ORG+本人。**群 A 记忆与私聊记忆绝不进群 B。**
+- **注入铁律**：群会话 = SOUL+ORG+当日 journal 摘要+本群；私聊 = SOUL+ORG+当日 journal 摘要+本人。**群 A 记忆与私聊原文绝不进群 B**；journal 是公司共享总账，写入时即做敏感脱敏（私聊细节只记要点不记原文）。
 - **冻结快照**：会话启动时冻结记忆注入（保 prompt 前缀缓存）；会话中写入立即落盘、下次会话生效。
 - **写入**：单一 `memory` 工具（add/replace/remove/read）；条目带**来源+时间戳**；写入前注入扫描（威胁模式规则内嵌，不依赖外部二进制）；**外部漂移检测**（人手改过文件则拒写并 `.bak` 备份）。
 ### 4.3 夜间蒸馏（dreaming，补 Hermes 短板；机制参照 OpenClaw memory-core + 调研落地建议）
@@ -116,6 +118,10 @@ memory/users/<open_id>.md   每人记忆（私聊画像）
 ```
 
 - **工具调用全部归 5.5**；Opus 专职表达不碰工具；V4 不碰工具。
+- **重试与模型降级链（用户定案）**：任何模型调用失败先 **5 次 × 10s 重试**，仍失败才降级到链内下一个模型；全链耗尽才算管道故障（§9.1 兜底才触发）。三条链：
+  - **前台 fast**：DeepSeek V4 Flash → Opus 4.6 → GPT-5.5（全部 non-thinking）
+  - **中枢 reason**：GPT-5.5 → Opus 4.8 → DeepSeek V4 Pro
+  - **出口 respond**：Opus 4.6 → DeepSeek V4 Pro → GPT-5.5
 - **Opus 出口 = 5.5 的 `reply` 工具**（现有 `draft_zh` 模式泛化，用户定案）：`reply({kind: message|card_copy, brief, tone?, target?})` → daemon 将 SOUL + 会话上下文快照 + 简报灌给 Opus 渲染终稿 → 出站/填卡片槽位。**结构性强制：daemon 永不外发 5.5 裸文本，`reply` 是唯一出站通道**；整回合不调用 = 自然静默。5.5 可多次调用（中途进度播报 + 最终结论）。
 - **V4 直回边界**：仅限轻量内容（回执/澄清短句/一句话事实）；正式、复杂、涉第三人或对外内容必须走 5.5→Opus。边界写进 V4 系统提示词 + daemon 兜底（直回超长或含写意图 → 强制升级）。
 - **人格一致**：三模型共享 SOUL.md 注入。
@@ -170,9 +176,7 @@ memory/users/<open_id>.md   每人记忆（私聊画像）
 |---|---|
 | Pi 崩溃/卡死 | daemon 重启 Pi 重放上下文；连续失败 → DM 告警（现有 `makeDmAlert`） |
 | lark 长连接断 | 自动重连（5s backoff）+ 断档回扫（`backfill` 扩展到消息事件） |
-| V4 挂 | 门控降级纯规则（mention-only 直通、旁听暂停）——宁静默不误发 |
-| 5.5 挂 | V4 告知稍后；事件留收件箱重试 |
-| Opus 挂 | 5.5 产出经模板直出并标注降级 |
+| 模型调用失败 | 先 5 次×10s 重试 → 链内降级（fast/reason/respond 三条链，见 §5.2）→ **全链耗尽**才触发最终兜底：门控退纯规则（宁静默不误发）/ 告知用户稍后 / 模板直出标注降级 |
 | 写执行失败 | 现有 partial_failed/对账；卡片显失败详情+重试按钮（重试前对账） |
 | 回调重复/伪造 | 幂等(message_id+action_id)+token 单次+operator 校验 |
 | 工具循环失控 | 回合 max_turns + 重复失败检测（警告后硬停） |
@@ -180,7 +184,7 @@ memory/users/<open_id>.md   每人记忆（私聊画像）
 
 ### 9.2 测试
 
-- 单测 vitest + mock 注入（`runLark`/`spawnFn`/`startPi`/三模型 client），保速度与确定性；**安全内核 199 用例基线持续全绿**。
+- 单测 vitest；纯逻辑模块用 mock 注入（`runLark`/`spawnFn`/`startPi`/模型 client）保速度与确定性；**经用户授权（已默认授权，用户可随时收回）单测亦可直调 test organization 真飞书**；**安全内核 199 用例基线持续全绿**。
 - **集成/E2E 打 test organization 真飞书**（用户自有测试租户）：真发消息、真卡片、真回调、真建任务，全链路状态机断言。
 - 新模块单测重点：门控（admit 枚举/分级/限额）、会话 actor（串行/版本号/防抖）、记忆（限额/漂移/注入隔离铁律）、卡片构建器（模板固定性、form_value 解析）、蒸馏。
 - web 调试台真机验证用 Claude-in-Chrome（项目约定，不用 Playwright）。
@@ -233,11 +237,12 @@ memory/users/<open_id>.md   每人记忆（私聊画像）
 
 - **模型永远不可信**：写形状服务端定；模型只能选 `action_id`；卡片 JSON 结构模型碰不到；记忆写入过注入扫描。
 - **`reply` 是 5.5 唯一出站通道**：daemon 永不外发 5.5 裸文本。
+- **重试与降级链**：一切模型调用失败先 5 次×10s 重试再链内降级（fast：V4 Flash→Opus 4.6→GPT-5.5 non-thinking；reason：GPT-5.5→Opus 4.8→V4 Pro；respond：Opus 4.6→V4 Pro→GPT-5.5）；全链耗尽才算管道故障。
 - **记忆注入隔离铁律**：群 A / 私聊记忆绝不进群 B。
 - **真写纵深**：`MSTD_ENABLE_WRITE=1` 才开写；目标受 `MSTD_TEST_OPEN_IDS` 白名单（`assertTestTarget` fail-closed）。
 - **密钥红线**：只进 gitignore 的 `.env`（chmod 600）。
 - **SQL Postgres 可移植**：显式主键、无 AUTOINCREMENT、epoch BIGINT、JSON 存 TEXT、双方言 `ON CONFLICT`。FTS5 为唯一例外（检索封装进独立模块，PG 时换 pg_trgm）。
-- **测试**：单测不真调飞书/模型（注入 `runLark`/`spawnFn`/`startPi`/模型 client mock）；集成/E2E 打 **test organization** 真飞书；web 真机验证用 Claude-in-Chrome 不用 Playwright。
+- **测试**：纯逻辑单测用 mock 注入（`runLark`/`spawnFn`/`startPi`/模型 client）；**经用户授权（已默认授权，可收回）单测/集成/E2E 均可直调 test organization 真飞书**；web 真机验证用 Claude-in-Chrome 不用 Playwright。
 - **安全内核回归红线**：现有 `cd mstd-orchestrator && npx vitest run` 基线（39 文件 199 用例）任何任务完成时必须全绿。
 - commit 风格：`feat(mstd)/fix(mstd): 中文短句`。
 
@@ -1004,6 +1009,553 @@ export function wireGateway({ db, config, spawnFn, handleTurn }) {
 
 ---
 
-## Phase B-H · 详批占位
+## Phase B · 三模型层
 
->（各 Phase 开工前按 Phase A 同粒度追加。任务边界、Files、Interfaces 以"Phase 总览"表 + 文件结构总图为准，不得跨 Phase 挪动职责。）
+### Task B1: 统一模型调用器（重试 + 三条降级链）
+
+**Files:**
+- Create: `mstd-orchestrator/server/models/caller.mjs`
+- Test: `mstd-orchestrator/test/model-caller.test.mjs`
+
+**Interfaces:**
+- Produces: `createModelCaller({ fetchFn, env, sleepFn, retries = 5, retryDelayMs = 10_000 })` → `call(chain, { system, messages, thinking? }) -> { text, model, usage }`；`chain ∈ {"fast","reason","respond"}`。链定义（用户定案）：fast = V4 Flash→Opus 4.6→GPT-5.5（强制 non-thinking）；reason = GPT-5.5→Opus 4.8→V4 Pro；respond = Opus 4.6→V4 Pro→GPT-5.5。B3/B5/E/dreaming 全部经此调用。
+
+- [ ] **Step 1: 写失败测试**——注入 fake fetchFn：①首模型前 5 次 500、第 6 次不再重试而是降级到第二模型（断言 sleepFn 被调 5 次×10s）；②第二模型成功则返回其 text 且 `model` 字段正确；③三个模型全挂（各 5 次重试后）抛 `PipelineError`；④fast 链请求体断言 thinking 关闭。
+- [ ] **Step 2: 跑测试确认失败** Run: `cd mstd-orchestrator && npx vitest run test/model-caller.test.mjs` Expected: FAIL（模块不存在）
+- [ ] **Step 3: 实现**——链表配置（模型名→provider endpoint/key env/请求体构造器）；每级 for 循环 retries 次、失败 `await sleepFn(retryDelayMs)`；级间降级打日志 `[model-fallback] chain=... from=... to=...`；全链耗尽 throw PipelineError（带各级最后错误）。
+- [ ] **Step 4: 跑测试通过 + 全量回归** Run: `cd mstd-orchestrator && npx vitest run` Expected: 全绿
+- [ ] **Step 5: Commit** `git commit -m "feat(mstd): 统一模型调用器（5次×10s重试 + fast/reason/respond 三条降级链）"`
+
+### Task B2: token 预算器
+
+**Files:**
+- Create: `mstd-orchestrator/server/models/budget.mjs`；Modify: `server/config.mjs`（`MSTD_DAILY_TOKEN_BUDGET`、`MSTD_SESSION_TOKEN_BUDGET`）
+- Test: `mstd-orchestrator/test/model-budget.test.mjs`
+
+**Interfaces:**
+- Produces: `createBudget(db, { dailyLimit, sessionLimit })` → `{ record(sessionKey, usage), allow(sessionKey) -> {ok} | {ok:false, scope:"session"|"daily"} }`；超限时 caller 拒调并触发告警回调（挂现有 `makeDmAlert`）。
+
+- [ ] **Step 1: 写失败测试**——记账后 `allow` 在会话/当日两个维度分别封顶；跨天自动清零（注入 now）。
+- [ ] **Step 2: 确认失败** Run: `npx vitest run test/model-budget.test.mjs`
+- [ ] **Step 3: 实现**——`token_usage` 表（迁移并入本任务：`004_models.sql`，含 usage 与 cron/journal 所需列见 E2）；epoch 日切。
+- [ ] **Step 4: 全量回归** Run: `cd mstd-orchestrator && npx vitest run`
+- [ ] **Step 5: Commit** `feat(mstd): token 预算器（会话/日双维度封顶+告警）`
+
+### Task B3: 前台分诊（V4 四选一）
+
+**Files:**
+- Create: `mstd-orchestrator/server/models/triage.mjs`
+- Test: `mstd-orchestrator/test/triage.test.mjs`
+
+**Interfaces:**
+- Consumes: B1 `call("fast",…)`、A3 transcript、C4 注入（未就绪前注入器参数可传 null）。
+- Produces: `createTriage({ caller, store })` → `triage({ session, items, mode }) -> { action: "quick_reply", text } | { action: "no_reply" } | { action: "escalate", brief } | { action: "steer", note }`。提示词强制 JSON 输出四选一；quick_reply 边界（回执/澄清/一句话事实）写死在系统提示词；输出超长或含写意图 → daemon 侧强制改判 escalate（代码兜底，不信提示词）。
+
+- [ ] **Step 1: 写失败测试**——mock caller 返回四种 JSON 分别断言解析；返回非法 JSON → 默认 escalate（不猜）；quick_reply 文本 >200 字或命中写意图关键词 → 强制 escalate。
+- [ ] **Step 2: 确认失败** Run: `npx vitest run test/triage.test.mjs`
+- [ ] **Step 3: 实现**——拼 prompt（SOUL + 记忆快照 + 近 N 条 transcript + 合批消息 + mode 标记 ambient/addressed）；JSON parse + 兜底改判逻辑。
+- [ ] **Step 4: 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): V4 前台分诊（四选一 + 代码兜底强制升级）`
+
+### Task B4: 中枢会话进程管理（5.5 Pi 常驻 + 空闲回收 + steer）
+
+**Files:**
+- Create: `mstd-orchestrator/server/models/brain.mjs`；Modify: `pi-ext/providers.ts`（reason 链 provider 可切换）
+- Test: `mstd-orchestrator/test/brain.test.mjs`
+
+**Interfaces:**
+- Consumes: `supervisor/pi-client.mjs` 现有 `startPi`/RPC 协议、A3 transcript、现有信号量。
+- Produces: `createBrain({ startPi, store, semaphore, caller, idleMs = 600_000 })` → `{ turn({ session, sessionKey, brief, context }) -> Promise<TurnResult>, steer(sessionKey, note), shutdown() }`。每活跃会话一个 Pi 进程；新回合先重放 transcript；空闲 10min 回收；**Pi spawn 失败按 reason 链降级 provider 重拉**（5 次×10s 同规则）；`TurnResult = { events[], replyCalls[], intents[] }`（replyCalls/intents 由 B5/D3 消费）。
+
+- [ ] **Step 1: 写失败测试**——mock startPi：①同会话两回合复用同进程；②空闲计时器到点 kill；③steer 在回合中注入 prompt；④spawn 连败 5 次后以降级 provider 重试（断言第二 provider 被用）。
+- [ ] **Step 2: 确认失败** Run: `npx vitest run test/brain.test.mjs`
+- [ ] **Step 3: 实现**——进程池 Map(sessionKey→{pi, idleTimer})；回合 = prompt 组装（brief + 上下文 + 记忆快照槽位）→ RPC prompt → 收集事件至 `agent_end(!willRetry)`；工具事件透传（供 SSE/调试台）。
+- [ ] **Step 4: 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): 中枢 5.5 会话进程管理（常驻/回收/steer/provider 降级）`
+
+### Task B5: reply 工具（Opus 出口）+ 出站发送器
+
+**Files:**
+- Create: `pi-ext/reply.ts`、`mstd-orchestrator/server/models/reply.mjs`、`mstd-orchestrator/server/gateway/outbound.mjs`
+- Test: `mstd-orchestrator/test/reply.test.mjs`、`test/outbound.test.mjs`
+
+**Interfaces:**
+- Consumes: B1 `call("respond",…)`、现有 `runLark` argv 白名单模式。
+- Produces: ① pi-ext `reply({ kind: "message"|"card_copy", brief, tone? })` 工具（5.5 可多次调用）；② `renderReply({ caller, soul, context, brief }) -> text`；③ `createOutbound({ runLark })` → `{ sendMessage({ chatId, text, idempotencyKey }) -> { messageId }, editMessage({ messageId, text }) }`。**结构性强制在 brain：assistant 裸文本永不进 outbound，只有 reply 工具结果可出站。**
+
+- [ ] **Step 1: 写失败测试**——renderReply 用 respond 链且注入 SOUL；outbound 构造 lark-cli argv 白名单断言（含 `--idempotency-key`）；brain 的 assistant 文本直发被拒（单测断言 outbound 未被裸文本调用）。
+- [ ] **Step 2: 确认失败** Run: `npx vitest run test/reply.test.mjs test/outbound.test.mjs`
+- [ ] **Step 3: 实现**——reply 工具实现为薄壳（回传 daemon 渲染+发送，结果回给 5.5）；outbound 只认具名参数拼 argv。
+- [ ] **Step 4: 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): reply 工具（Opus 出口）+ 出站发送器（唯一出站通道）`
+
+### Task B6: 回合执行器装配（triage→brain→reply 全链）
+
+**Files:**
+- Create: `mstd-orchestrator/server/gateway/turn-handler.mjs`；Modify: `server/index.mjs`（wireGateway 的 handleTurn 换真实现）
+- Test: `mstd-orchestrator/test/turn-handler.test.mjs`
+
+**Interfaces:**
+- Consumes: A8 `wireGateway` 接缝、B3/B4/B5、A3 store（append 双方消息）、B2 budget。
+- Produces: `createTurnHandler({ triage, brain, renderReply, outbound, store, budget })` → `handleTurn({ kind, session, sessionKey, items, mode })`——quick_reply 直出站；no_reply 落 observed；escalate 走 brain（回合事件写 job_events 供 SSE）；budget 超限直接礼貌拒绝。
+
+- [ ] **Step 1: 写失败测试**——四选一各分支的落库/出站断言；escalate 分支 brain.turn 被调且 reply 结果出站；budget 拒绝分支。
+- [ ] **Step 2: 确认失败** Run: `npx vitest run test/turn-handler.test.mjs`
+- [ ] **Step 3: 实现**
+- [ ] **Step 4: 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): 回合执行器（triage→brain→reply 全链装配）`
+
+### Task B7: Phase B E2E（test org 真机私聊闭环）
+
+**Files:**
+- Create: `mstd-orchestrator/test/e2e-p2p.test.mjs`（标记 `describe.skipIf(!process.env.MSTD_E2E)`）
+
+- [ ] **Step 1: 写 E2E 用例**——起完整 daemon（真 lark-cli + 真三模型），向 test org bot 私聊发"你好，介绍一下你自己"，轮询断言 60s 内收到回复消息；再发"帮我算 1+1"断言 quick_reply 路径（日志含 triage=quick_reply）。
+- [ ] **Step 2: 跑通** Run: `cd mstd-orchestrator && MSTD_E2E=1 npx vitest run test/e2e-p2p.test.mjs` Expected: PASS
+- [ ] **Step 3: Commit** `test(mstd): Phase B E2E——test org 私聊问答闭环`
+
+**Phase B 完成标志**：test org 里私聊 bot 能收到回答（快问快答走 V4 直出、复杂问题走 5.5→Opus）；`npx vitest run` 全绿。
+
+---
+
+## Phase C · 记忆系统
+
+### Task C1: 记忆文件层（五层读写 + 字符上限 + 漂移检测）
+
+**Files:**
+- Create: `mstd-orchestrator/server/memory/files.mjs`
+- Test: `mstd-orchestrator/test/memory-files.test.mjs`
+
+**Interfaces:**
+- Produces: `createMemoryFiles({ rootDir })` → `{ readLayer(layer, id?) -> { content, snapshotHash }, writeLayer(layer, id, content, { expectedHash }) , appendJournal(entryText, now?) }`；`layer ∈ {soul, org, journal, group, user}`；写入时 `expectedHash` 与磁盘不符 → 抛 DriftError 并落 `.bak.<ts>` 备份；org/group/user 有字符上限（org 4000 / group 2200 / user 1375），超限抛 LimitError。
+
+- [ ] **Step 1: 写失败测试**——五层路径正确性；漂移检测（外部改文件后带旧 hash 写入被拒且生成 .bak）；上限拒写；journal 按日期文件追加。
+- [ ] **Step 2: 确认失败** Run: `npx vitest run test/memory-files.test.mjs`
+- [ ] **Step 3: 实现**——路径映射（`SOUL.md` / `memory/ORG.md` / `memory/journal/YYYY-MM-DD.md` / `memory/groups/<id>.md` / `memory/users/<id>.md`）；hash = sha256(content)。
+- [ ] **Step 4: 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): 记忆文件层（五层/上限/漂移检测/journal 追加）`
+
+### Task C2: 注入扫描（威胁模式规则，内嵌不依赖外部二进制）
+
+**Files:**
+- Create: `mstd-orchestrator/server/memory/scan.mjs`
+- Test: `mstd-orchestrator/test/memory-scan.test.mjs`
+
+**Interfaces:**
+- Produces: `scanForInjection(text) -> { ok } | { ok:false, pattern }`——规则集：提示词覆写句式（"忽略以上指令"类中英变体）、外传诱导（url+密钥语义）、工具指令伪装。记忆写入（C3）与 cron prompt 组装（E3）前置调用。
+
+- [ ] **Step 1-5**：标准 TDD 五步（正例/反例各≥5 条中文用例；实现为正则+关键词组合规则表，可配置追加）。Run: `npx vitest run test/memory-scan.test.mjs`；Commit `feat(mstd): 记忆/prompt 注入扫描规则集`。
+
+### Task C3: memory 工具（挂 pi-ext）
+
+**Files:**
+- Create: `pi-ext/memory.ts`、`mstd-orchestrator/server/memory/tool.mjs`
+- Test: `mstd-orchestrator/test/memory-tool.test.mjs`
+
+**Interfaces:**
+- Consumes: C1 files、C2 scan、B4 brain（工具注册）。
+- Produces: 5.5 可调 `memory({ action: add|replace|remove|read, layer, id?, entry?, old_text? })`；条目自动追加 `〔来源:<sessionKey> 时间:<ISO>〕`后缀；`§` 分隔；add 前过 scan；写入即落盘（冻结快照不变，下会话生效）。
+
+- [ ] **Step 1: 写失败测试**——add 带来源时间戳后缀；replace 按 old_text 子串匹配唯一命中才改（多命中/零命中报错）；含注入模式的 entry 被拒；层级越权（群会话写 user 层）被拒。
+- [ ] **Step 2: 确认失败** Run: `npx vitest run test/memory-tool.test.mjs`
+- [ ] **Step 3-4: 实现 + 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): memory 工具（add/replace/remove/read + 来源时间戳 + 扫描）`
+
+### Task C4: 注入器（冻结快照 + 隔离铁律）
+
+**Files:**
+- Create: `mstd-orchestrator/server/memory/inject.mjs`；Modify: `server/models/triage.mjs`、`server/models/brain.mjs`（记忆槽位接入）
+- Test: `mstd-orchestrator/test/memory-inject.test.mjs`
+
+**Interfaces:**
+- Produces: `buildMemorySnapshot({ files, sessionKey }) -> { soul, org, journalDigest, scoped }`——群会话 scoped=本群文件；私聊 scoped=本人文件；**测试铁律：群 A 快照绝不含群 B/任何 user 层内容，反之亦然**；快照在回合开始冻结（对象不可变）。
+
+- [ ] **Step 1: 写失败测试**——隔离铁律矩阵（p2p/groupA/groupB 三方交叉断言）；journalDigest 只含当日；快照 Object.freeze。
+- [ ] **Step 2: 确认失败** Run: `npx vitest run test/memory-inject.test.mjs`
+- [ ] **Step 3-4: 实现 + 全量回归**（triage/brain 的 prompt 组装改为消费快照）
+- [ ] **Step 5: Commit** `feat(mstd): 记忆注入器（冻结快照 + 跨层隔离铁律）`
+
+### Task C5: session_search 工具（FTS 检索）
+
+**Files:**
+- Create: `mstd-orchestrator/server/sessions/search.mjs`、`pi-ext/session-search.ts`
+- Test: `mstd-orchestrator/test/session-search.test.mjs`
+
+**Interfaces:**
+- Consumes: A1 FTS 表。
+- Produces: 5.5 可调 `session_search({ query, session_id?, limit? }) -> {hits: [{sessionKey, content, ts}]}`；**权限过滤**：群会话内只可搜本群 + journal 已脱敏条目，私聊只可搜本人+ORG（隔离铁律延伸到检索面）。
+
+- [ ] **Step 1-5**：TDD 五步（中文 trigram 命中；跨会话越权检索被过滤）。Run: `npx vitest run test/session-search.test.mjs`；Commit `feat(mstd): session_search 跨会话检索（FTS + 权限过滤）`。
+
+### Task C6: 上下文压缩 + memory flush + nudge
+
+**Files:**
+- Create: `mstd-orchestrator/server/memory/compact.mjs`；Modify: `server/models/brain.mjs`
+- Test: `mstd-orchestrator/test/memory-compact.test.mjs`
+
+**Interfaces:**
+- Produces: `shouldCompact(transcriptTokens, threshold)`；压缩流程 = 先注入"把重要信息写入 memory"的 flush 回合 → 早期回合摘要化（reason 链）保留近 20 条原文 → transcript 标记压缩点；nudge = 每 10 用户轮注入整理提醒（计数从 transcript 重算，防进程重启丢状态）。
+
+- [ ] **Step 1-5**：TDD 五步（阈值触发；flush 先于摘要；近 20 条不动；nudge 计数重启后正确重算）。Run: `npx vitest run test/memory-compact.test.mjs`；Commit `feat(mstd): 上下文压缩（flush 先行）+ 记忆 nudge`。
+
+### Task C7: journal 记录器（公司总账装配）
+
+**Files:**
+- Create: `mstd-orchestrator/server/memory/journal.mjs`；Modify: `server/gateway/turn-handler.mjs`
+- Test: `mstd-orchestrator/test/journal.test.mjs`
+
+**Interfaces:**
+- Produces: 每个非 observed 回合结束追加一条 journal（`- HH:mm [群名/私聊·发起人] 一句话要点`）；要点由 fast 链生成并**脱敏**（私聊只记要点不记原文，人名保留 open_id 映射）；失败不阻塞主回合（fire-and-forget + 日志）。
+
+- [ ] **Step 1-5**：TDD 五步（群/私聊两种条目格式；fast 链失败不影响回合返回；脱敏断言——原文敏感词不出现在 journal）。Run: `npx vitest run test/journal.test.mjs`；Commit `feat(mstd): 公司总日志记录器（每回合追加+脱敏）`。
+
+**Phase C 完成标志**：test org 私聊里说"记住我喜欢周报用表格"，重开会话后 agent 能引用该偏好；`memory/journal/` 出现当日总账；`npx vitest run` 全绿。
+
+---
+
+## Phase D · 写路径与卡片确认
+
+### Task D1: action DSL 扩类（create_event / send_group_msg）
+
+**Files:**
+- Modify: `mstd-orchestrator/server/safety/action-dsl.mjs`、`server/safety/write-args.mjs`
+- Test: 追加 `test/action-dsl.test.mjs`、`test/write-args.test.mjs`
+
+**Interfaces:**
+- Produces: 新 action kind `create_event { summary, start_time, end_time, attendee_open_ids[] }`、`send_group_msg { chat_id, card_ref }`；各配 fail-closed argv 构造器（open_id 正则、时间 ISO 校验、chat_id `^oc_` 校验）；canonical/hash 逻辑复用不改。
+
+- [ ] **Step 1-5**：TDD 五步（每类正例 argv 断言含 `--idempotency-key`；非法字段 fail-closed 抛错；同意图同 hash/改一字变 hash 回归）。Run: `npx vitest run test/action-dsl.test.mjs test/write-args.test.mjs`；Commit `feat(mstd): action DSL 扩类 create_event/send_group_msg（fail-closed argv）`。
+
+### Task D2: 卡片模板构建器（Card JSON 2.0 固定模板）
+
+**Files:**
+- Create: `mstd-orchestrator/server/cards/templates.mjs`
+- Test: `mstd-orchestrator/test/card-templates.test.mjs`
+
+**Interfaces:**
+- Produces: `buildConfirmCard({ title, previewMd, actions[], formFields[], tokenRef }) -> cardJson`（schema 2.0 + update_multi:true + form 容器 + person_select + 确认/取消按钮，按钮 value 只含 `{action_id, token_ref}`）；`buildStatusCard({ state: executing|done|partial_failed|expired, resultsMd })`。**模板固定性测试：模型输入（previewMd 等文案槽位）无论内容是什么都改变不了卡片结构键集合。**
+
+- [ ] **Step 1-5**：TDD 五步（结构键集合快照断言；文案槽位注入 `"}]` 恶意串结构不变；person_select 的 name 规范 `Person_assignee_<action_key>`）。Run: `npx vitest run test/card-templates.test.mjs`；Commit `feat(mstd): 确认卡/状态卡固定模板构建器`。
+
+### Task D3: 发卡流程（意图→canonical→token→Opus 文案→发卡）
+
+**Files:**
+- Create: `mstd-orchestrator/server/cards/confirm-flow.mjs`；Modify: `pi-ext/lark-execute.ts`（5.5 的 `propose_actions` 工具入口）
+- Test: `mstd-orchestrator/test/confirm-flow.test.mjs`
+
+**Interfaces:**
+- Consumes: 现有 `intent-schema`/`action-dsl`/`approval.mjs`（token 签发）、B5 renderReply(card_copy)、B5 outbound、D2 模板。
+- Produces: `startConfirmFlow({ session, intents, initiatorOpenId }) -> { messageId, actionIds[] }`——意图 schema 校验→canonical+hash 落 `job_actions`→签发 approval token（绑定 initiator+TTL30min）→Opus 渲染文案→发卡并把 messageId 关联落库。schema 不过 → needs_attention 走 reply 告知，不猜。
+
+- [ ] **Step 1-5**：TDD 五步（全 mock 断言链路顺序与落库形状；schema 不过分支；低置信 open_id 缺失 → 卡片含 person_select 必填项）。Run: `npx vitest run test/confirm-flow.test.mjs`；Commit `feat(mstd): 写意图发卡流程（canonical+token+Opus 文案）`。
+
+### Task D4: 卡片回调消费（校验 + 立即翻"执行中"）
+
+**Files:**
+- Modify: `mstd-orchestrator/server/cards/confirm-flow.mjs`（`handleCardAction`）、`server/gateway/turn-handler.mjs`（kind=card_action 路由）
+- Test: `mstd-orchestrator/test/card-callback.test.mjs`
+
+**Interfaces:**
+- Produces: `handleCardAction(evt) -> { responseCard }`——校验链：operator=initiator（否则返回 toast 卡"仅发起人可操作"）→ token 未过期未消费 → form_value 重规范化+重算 hash（人员选择器补齐 open_id）→ 消费 token → **立即返回"⏳ 执行中"状态卡（按钮移除）** → 异步触发 D5 执行。重复点击/过期分别有专属 toast。
+
+- [ ] **Step 1-5**：TDD 五步（六个分支：正常/非发起人/过期/重复/form 补齐重 hash/取消）。Run: `npx vitest run test/card-callback.test.mjs`；Commit `feat(mstd): 卡片回调消费（operator/token/hash 三重校验+防重复点击）`。
+
+### Task D5: 异步执行 + 终态卡更新
+
+**Files:**
+- Modify: `mstd-orchestrator/server/cards/confirm-flow.mjs`、`server/gateway/outbound.mjs`（`updateCard({messageId, cardJson})`）
+- Test: `mstd-orchestrator/test/card-execute.test.mjs`
+
+**Interfaces:**
+- Consumes: 现有 `executeApprovedAction`（一行不改）、D2 buildStatusCard。
+- Produces: 逐条执行已批 action → 结果落 `job_actions` → `message_id` 更新终态卡（done/partial_failed，失败条目带重试按钮 value）→ 结果摘要回注会话（A7 actor 入队，5.5 上下文能接上）。重试按钮回调只重试失败条目且重试前对账。
+
+- [ ] **Step 1-5**：TDD 五步（全成功/部分失败/重试路径；executeApprovedAction 用现有测试替身；回注消息落 transcript 断言）。Run: `npx vitest run test/card-execute.test.mjs`；Commit `feat(mstd): 卡片异步执行+终态更新+结果回注会话`。
+
+### Task D6: 后台 job 委托（复用 orch_jobs + 版本化）
+
+**Files:**
+- Create: `mstd-orchestrator/server/jobs/background.mjs`；Modify: `server/jobs/orchestrator.mjs`（两段式改造为被调用的执行器）、`pi-ext`（5.5 的 `spawn_background_job` 工具）
+- Test: `mstd-orchestrator/test/background-job.test.mjs`
+
+**Interfaces:**
+- Produces: `spawnBackgroundJob({ sessionKey, sessionVersion, kind, params }) -> jobId`（复用 orch_jobs 表+信号量+事件缓冲）；5.5 调用后回合立即可结束（会话解锁）；job 状态机沿用现有 queued/running/done/failed。
+
+- [ ] **Step 1-5**：TDD 五步（job 落库带 sessionVersion；会话不被阻塞——job running 时同会话可跑新回合；信号量限流沿用）。Run: `npx vitest run test/background-job.test.mjs`；Commit `feat(mstd): 后台 job 委托（orch_jobs 复用+会话版本快照）`。
+
+### Task D7: 完成回注（版本判定播报/归档 + 进度心跳）
+
+**Files:**
+- Create: `mstd-orchestrator/server/jobs/reinjector.mjs`
+- Test: `mstd-orchestrator/test/reinject.test.mjs`
+
+**Interfaces:**
+- Produces: job 完成事件 → actor 入队回注回合：`当前 session.version - 发起时 version <= 阈值(默认3)` → 正常播报（5.5+reply）；超过 → prompt 标注"话题可能已翻篇，简短播报或静默"由 5.5 决定；>3min 的 running job 每 3min `editMessage` 更新进度（同一条消息不刷屏）。
+
+- [ ] **Step 1-5**：TDD 五步（新鲜/过时两分支 prompt 断言；进度编辑用 fake timer 断言只 edit 不 send）。Run: `npx vitest run test/reinject.test.mjs`；Commit `feat(mstd): 后台 job 回注（版本判定+进度心跳编辑）`。
+
+### Task D8: Phase D E2E（test org 真写闭环）
+
+**Files:**
+- Create: `mstd-orchestrator/test/e2e-write.test.mjs`（`MSTD_E2E=1` 门控）
+
+- [ ] **Step 1: 写 E2E**——私聊"给测试账号建个任务：明天交周报"→ 断言收到确认卡 → 程序化触发确认回调 → 断言 lark 真建任务成功（task list 查询验证）→ 卡片终态 done → 会话里追问"刚才建的任务改到后天"能接上下文再发卡。
+- [ ] **Step 2: 跑通** Run: `MSTD_E2E=1 MSTD_ENABLE_WRITE=1 npx vitest run test/e2e-write.test.mjs` Expected: PASS（目标在 MSTD_TEST_OPEN_IDS 白名单内）
+- [ ] **Step 3: Commit** `test(mstd): Phase D E2E——卡片确认真写闭环`
+
+**Phase D 完成标志**：test org 里对话触发建任务→卡片预览（可改负责人）→确认→真建成功→卡片翻终态→对话可追问引用；基线+新用例全绿。
+
+---
+
+## Phase E · 主动层
+
+### Task E1: 单 ticker（分频调度骨架）
+
+**Files:**
+- Create: `mstd-orchestrator/server/ticker/ticker.mjs`；Modify: `server/index.mjs`（boot 挂载）
+- Test: `mstd-orchestrator/test/ticker.test.mjs`
+
+**Interfaces:**
+- Produces: `createTicker({ intervalMs = 60_000, setIntervalFn })` → `{ register(name, everyNTicks, fn), start(), stop() }`；任务抛错被捕获记日志不断 ticker；同 tick 内任务串行。
+
+- [ ] **Step 1-5**：TDD 五步（fake timer：分频正确、抛错不影响后续 tick、stop 幂等）。Run: `npx vitest run test/ticker.test.mjs`；Commit `feat(mstd): 单 ticker 分频调度骨架`。
+
+### Task E2: cron 任务表 + schedule 解析
+
+**Files:**
+- Create: `mstd-orchestrator/server/ticker/cron-jobs.mjs`、`server/db/migrations/004_models.sql` 内含 `cron_jobs` 表（若 B2 已建 004 则本任务建 `005_cron.sql`）
+- Test: `mstd-orchestrator/test/cron-jobs.test.mjs`
+
+**Interfaces:**
+- Produces: `cron_jobs` 表（id、schedule、prompt、deliver_to sessionKey、enabled、last_run_at）；`parseSchedule("30m"|"every 2h"|"0 9 * * *"|ISO一次性) -> nextRunAt(now)`；`duePicker(db, now) -> jobs[]`（挑到期且防重复触发）。
+
+- [ ] **Step 1-5**：TDD 五步（四种 schedule 语法的 nextRun 计算；边界：跨天 cron 表达式、一次性任务跑完自动 disabled）。Run: `npx vitest run test/cron-jobs.test.mjs`；Commit `feat(mstd): cron 任务表+schedule 解析`。
+
+### Task E3: cron 执行器（新鲜会话 + 确认卡纪律）
+
+**Files:**
+- Create: `mstd-orchestrator/server/ticker/cron-runner.mjs`
+- Test: `mstd-orchestrator/test/cron-runner.test.mjs`
+
+**Interfaces:**
+- Consumes: B4 brain、B5 reply/outbound、C4 注入、C2 scan（prompt 组装后扫描）、D3 发卡。
+- Produces: 到期 job → 起 `cron:<jobId>` 新鲜会话（无历史，注入 SOUL+ORG+journal）→ brain 回合 → 结果 reply 投递到 deliver_to；**cron 回合的写意图一律走 D3 发卡给 job owner，工具集里禁掉直接执行路径**；组装 prompt 过注入扫描后才执行。
+
+- [ ] **Step 1-5**：TDD 五步（新鲜会话断言无历史；写意图强制发卡断言；注入扫描拦截污染 prompt）。Run: `npx vitest run test/cron-runner.test.mjs`；Commit `feat(mstd): cron 执行器（新鲜会话+写必发卡+prompt 扫描）`。
+
+### Task E4: HEARTBEAT（清单文件 + 心跳回合）
+
+**Files:**
+- Create: `mstd-orchestrator/server/ticker/heartbeat.mjs`；`pi-ext` 加 `heartbeat_update` 工具（5.5 增删清单项）
+- Test: `mstd-orchestrator/test/heartbeat.test.mjs`
+
+**Interfaces:**
+- Produces: `HEARTBEAT.md`（`- [ ] <ISO到期> <事项> <deliver_to>` 行格式）；心跳 tick（30min 分频、activeHours 09:00-21:00）→ V4 扫描（fast 链）判断到期项 → 无事返回 `HEARTBEAT_OK` 被吞 → 有到期项灌 brain 执行并勾选完成；5.5 对话中可用工具往清单加项（"明天提醒我X"场景）。
+
+- [ ] **Step 1-5**：TDD 五步（activeHours 外不跑；HEARTBEAT_OK 静默；到期项触发 brain 且完成后勾选；工具加项格式）。Run: `npx vitest run test/heartbeat.test.mjs`；Commit `feat(mstd): HEARTBEAT 清单+心跳回合（V4 扫描→5.5 执行）`。
+
+### Task E5: dreaming 夜间蒸馏（影子模式起步）
+
+**Files:**
+- Create: `mstd-orchestrator/server/ticker/dreaming.mjs`
+- Test: `mstd-orchestrator/test/dreaming.test.mjs`
+
+**Interfaces:**
+- Consumes: A3 transcript、C1 files、B1 caller（V4 提取/5.5 合并）。
+- Produces: 03:30 分频触发：①按层切片当天+前日 overlap 会话 → ②V4 per-chunk 结构化提取（content/source/ts/confidence/evidence/tags，低置信跳过）→ ③5.5 跨块合并/冲突裁决 → ④**append-only 写入**（重复跳过；矛盾追加新条+旧条标 `〔invalidated:<ts>〕`）→ ⑤产出 `memory/dreams/YYYY-MM-DD.md` 报告 → ⑥事件类>30天条目归档。**`MSTD_DREAMING_MODE=shadow|apply`（默认 shadow：只出报告不写记忆层）**；蒸馏前 `git -C memory commit` 自动备份（memory/ 目录独立 git 仓）。
+
+- [ ] **Step 1-5**：TDD 五步（mock 双模型：提取→合并→append-only 各不变式；shadow 模式不碰记忆层文件；矛盾条目 invalidated 标记；备份 commit 被调）。Run: `npx vitest run test/dreaming.test.mjs`；Commit `feat(mstd): dreaming 夜间蒸馏（两阶段/append-only/影子模式/git 备份）`。
+
+### Task E6: 巡检与会话过期挂载
+
+**Files:**
+- Modify: `mstd-orchestrator/server/index.mjs`（health/lark-profile 从独立 interval 改挂 ticker）；Create: `server/ticker/session-expiry.mjs`
+- Test: `mstd-orchestrator/test/session-expiry.test.mjs`
+
+**Interfaces:**
+- Produces: 过期检查（24h idle 或每日 04:00）→ 过期会话先触发 memory flush 回合再 archived；活跃后台 job 的会话豁免；lark profile 巡检沿用现有边沿告警逻辑，只换调度载体。
+
+- [ ] **Step 1-5**：TDD 五步（idle/daily 两种过期；flush 先于 archive；豁免逻辑）。Run: `npx vitest run test/session-expiry.test.mjs`；Commit `feat(mstd): 会话过期重置（flush 先行）+ 巡检挂 ticker`。
+
+### Task E7: 妙记闭环迁移（web 审批 → 卡片确认）
+
+**Files:**
+- Modify: `mstd-orchestrator/server/triggers/minutes-consumer.mjs`（建 job 后走新链路）、`server/jobs/orchestrator.mjs`
+- Test: `mstd-orchestrator/test/minutes-migration.test.mjs`
+
+**Interfaces:**
+- Produces: 妙记事件 → 后台 job（D6）跑第①段只读抽取（现有 lark_read+意图 schema 原样）→ 产出意图直接走 D3 发卡给会议主持人私聊 → 确认后 D5 执行。原 `awaiting_approval` web 状态不再产生。
+
+- [ ] **Step 1-5**：TDD 五步（fixture 事件→job→发卡链路断言；卡片收件人=主持人 open_id）。Run: `npx vitest run test/minutes-migration.test.mjs`；Commit `feat(mstd): 会议纪要闭环迁移至卡片确认`。
+
+**Phase E 完成标志**：test org 建一条"每天 18:00 往测试群发今日 journal 摘要"的 cron 真跑成功；私聊"10 分钟后提醒我喝水"经 HEARTBEAT 真提醒；dreaming 影子报告生成；妙记→卡片→建任务全链真跑。
+
+---
+
+## Phase F · 群聊能力
+
+### Task F1: 群@ 回合（pending observed 窗口注入）
+
+**Files:**
+- Modify: `mstd-orchestrator/server/gateway/turn-handler.mjs`、`server/sessions/store.mjs`（`recentObserved(sessionId, limit=50)`）
+- Test: `mstd-orchestrator/test/group-mention.test.mjs`
+
+**Interfaces:**
+- Produces: addressed 群回合的 prompt 前置 `[自你上次发言以来的群消息-仅供上下文]` 块（近 50 条 observed，带发言人署名）；注入后这些消息标记已消费（不重复注入）。
+
+- [ ] **Step 1-5**：TDD 五步（observed 累积→@ 时注入→再 @ 不重复注入；50 条截断）。Run: `npx vitest run test/group-mention.test.mjs`；Commit `feat(mstd): 群@ 回合 pending 窗口注入`。
+
+### Task F2: 旁听限额器（防刷屏硬限制）
+
+**Files:**
+- Create: `mstd-orchestrator/server/gateway/rate-limit.mjs`
+- Test: `mstd-orchestrator/test/rate-limit.test.mjs`
+
+**Interfaces:**
+- Produces: `createProactiveLimiter(db)` → `{ allow(chatId, now) -> boolean, record(chatId, now) }`——每群每小时 ≤ `group_policies.hourly_proactive_limit`（默认 4）+ 连续主动消息 ≤2（有人类消息间隔后重置）；持久化计数（重启不清零）。
+
+- [ ] **Step 1-5**：TDD 五步（小时窗滑动；连续上限；重启恢复）。Run: `npx vitest run test/rate-limit.test.mjs`；Commit `feat(mstd): 群主动发言限额器`。
+
+### Task F3: ambient 门控接线（V4 should_reply + NO_REPLY）
+
+**Files:**
+- Modify: `mstd-orchestrator/server/gateway/turn-handler.mjs`、`server/models/triage.mjs`（ambient 模式提示词分支）
+- Test: `mstd-orchestrator/test/ambient-gate.test.mjs`
+
+**Interfaces:**
+- Produces: ambient 消息批 → 限额预检（F2 不过直接 observed 落库）→ V4 triage（ambient 提示词：更高沉默倾向，"只在能提供明确价值时开口"）→ no_reply 落 observed；quick_reply/escalate 出站前再过 F2.record。三层门控完整成链：规则(admit+限额)→V4→5.5。
+
+- [ ] **Step 1-5**：TDD 五步（限额短路不调模型——成本断言 caller 未被调；NO_REPLY 落 observed；放行路径记账）。Run: `npx vitest run test/ambient-gate.test.mjs`；Commit `feat(mstd): 旁听三层门控接线`。
+
+### Task F4: admit 判定落库（可观测）
+
+**Files:**
+- Modify: `mstd-orchestrator/server/gateway/inbox.mjs`（`inbox_events` 加 `verdict` 列，迁移 `006_verdict.sql`）、`server/index.mjs`（wireGateway 记录判定）
+- Test: `mstd-orchestrator/test/admit-log.test.mjs`
+
+**Interfaces:**
+- Produces: 每条消息事件的 admit 结果（含拒绝原因/门控层级/耗时）落库；G2 会话浏览器消费。
+
+- [ ] **Step 1-5**：TDD 五步（各 reason 落库形状）。Run: `npx vitest run test/admit-log.test.mjs`；Commit `feat(mstd): admit 判定落库（调试可观测）`。
+
+### Task F5: 观察期模式（observe_only 群策略）
+
+**Files:**
+- Modify: `mstd-orchestrator/server/gateway/admit.mjs`（policy 加 `observe_only`）、`server/ticker/`（周报统计任务）
+- Test: `mstd-orchestrator/test/observe-only.test.mjs`
+
+**Interfaces:**
+- Produces: `observe_only` 策略 = 全链门控照跑（V4 判定也跑、结果落库）但**一律不出站**；ticker 周任务汇总"本群若开旁听会说什么/信号噪声比"报告 DM 管理员——上线新群先跑两周观察期的运营抓手。
+
+- [ ] **Step 1-5**：TDD 五步（判定跑了但 outbound 零调用；统计报告形状）。Run: `npx vitest run test/observe-only.test.mjs`；Commit `feat(mstd): 群旁听观察期模式`。
+
+### Task F6: Phase F E2E（test org 群聊真机）
+
+**Files:**
+- Create: `mstd-orchestrator/test/e2e-group.test.mjs`（`MSTD_E2E=1` 门控）
+
+- [ ] **Step 1: 写 E2E**——test org 建测试群拉 bot：①群里闲聊两条不 @ → 断言 bot 沉默且 observed 落库；②@bot 提问 → 回复且引用了前两条上下文；③把群策略切 ambient，发一条明确求助 → bot 主动接话；④连发多条无关闲聊 → 限额与 NO_REPLY 生效（bot 不刷屏）。
+- [ ] **Step 2: 跑通** Run: `MSTD_E2E=1 npx vitest run test/e2e-group.test.mjs` Expected: PASS
+- [ ] **Step 3: Commit** `test(mstd): Phase F E2E——群@/旁听/限额真机`
+
+**Phase F 完成标志**：test org 群里 @ 能答（带前情上下文）、旁听能在该说话时说话、闲聊时闭嘴、限额兜底；全量测试绿。
+
+---
+
+## Phase G · web 调试台
+
+### Task G1: 管理 API + admin 白名单
+
+**Files:**
+- Create: `mstd-orchestrator/server/http/admin-routes.mjs`；Modify: `server/app.mjs`、`server/config.mjs`（`MSTD_ADMIN_OPEN_IDS`）
+- Test: `mstd-orchestrator/test/admin-routes.test.mjs`
+
+**Interfaces:**
+- Produces: `/api/admin/*` 路由组（现有 OAuth 会话 + open_id ∈ 白名单，否则 403）：`GET sessions`、`GET sessions/:id/messages`（含 verdict）、`GET/PUT memory/:layer/:id?`、`GET/POST cron-jobs`、`GET jobs`、`POST debug-chat`。
+
+- [ ] **Step 1-5**：TDD 五步（403/200 权限矩阵；memory PUT 走漂移检测）。Run: `npx vitest run test/admin-routes.test.mjs`；Commit `feat(mstd): 调试台管理 API+admin 白名单`。
+
+### Task G2: 会话浏览器（列表 + transcript + 判定标注）
+
+**Files:**
+- Create: `mstd-ui/src/views/SessionBrowser.tsx`；Modify: `mstd-ui/src/App.tsx`（tab 重组）、`mstd-ui/src/api/admin.ts`
+- Test: `mstd-ui/src/test/session-browser.test.tsx`
+
+- [ ] **Step 1-5**：TDD 五步（列表渲染/选中加载 transcript/observed 灰显/每条消息 verdict 徽标——`bot_not_mentioned_observe` 等原因可读化）。Run: `cd mstd-ui && npx vitest run`；Commit `feat(mstd-ui): 会话浏览器（判定标注可视化）`。
+
+### Task G3: 实时时间线接入
+
+**Files:**
+- Modify: `mstd-ui/src/views/SessionBrowser.tsx`（活跃会话挂现有 Timeline 组件 + SSE）；`server/jobs/routes.mjs` SSE 端点扩展会话维度
+- Test: `mstd-ui/src/test/timeline-live.test.tsx`
+
+- [ ] **Step 1-5**：TDD 五步（SSE 事件驱动 Timeline 渲染，复用现有 job-stream 消费逻辑）。Run: `cd mstd-ui && npx vitest run`；Commit `feat(mstd-ui): 会话实时时间线`。
+
+### Task G4: 任务看板改造（cron + 后台 job + 审计）
+
+**Files:**
+- Modify: `mstd-ui/src/views/BoardView.tsx`、`mstd-ui/src/api/admin.ts`
+- Test: `mstd-ui/src/test/board-admin.test.tsx`
+
+- [ ] **Step 1-5**：TDD 五步（cron 列表增删启停；后台 job 表沿用现有列；decisions/job_actions 审计查询面板保留）。Run: `cd mstd-ui && npx vitest run`；Commit `feat(mstd-ui): 看板改造（cron+后台 job+审计）`。
+
+### Task G5: 记忆编辑器
+
+**Files:**
+- Create: `mstd-ui/src/views/MemoryEditor.tsx`
+- Test: `mstd-ui/src/test/memory-editor.test.tsx`
+
+- [ ] **Step 1-5**：TDD 五步（五层树导航/编辑保存带 snapshotHash/漂移冲突提示重载；dreams 报告只读查看）。Run: `cd mstd-ui && npx vitest run`；Commit `feat(mstd-ui): 记忆编辑器（漂移保护）`。
+
+### Task G6: 调试对话 + 真机验收
+
+**Files:**
+- Create: `mstd-ui/src/views/DebugChat.tsx`（`debug:` 会话，走 admin API 收发 + SSE 看回合内部）
+
+- [ ] **Step 1: 实现并单测**（消息收发渲染、内部事件展开）。Run: `cd mstd-ui && npx vitest run`
+- [ ] **Step 2: Claude-in-Chrome 真机验收**——六面板全走一遍：浏览会话、看实时回合、建 cron、改记忆触发漂移提示、调试对话问答。
+- [ ] **Step 3: Commit** `feat(mstd-ui): 调试对话面板 + 调试台真机验收`
+
+**Phase G 完成标志**：Claude-in-Chrome 真机走查六面板通过；`cd mstd-ui && npx vitest run` 全绿。
+
+---
+
+## Phase H · 收尾
+
+### Task H1: 退役与清理
+
+**Files:**
+- Delete/Modify: `server/jobs/routes.mjs`（移除 `POST /api/jobs/:id/decision`）、mstd-ui 旧审批队列视图（`ApprovalActionEditor` 保留组件供卡片预览复用判断，视图入口移除）、无引用死代码
+- Test: 全量回归 + `grep -r "decision" server/ mstd-ui/src` 人工核对残留
+
+- [ ] **Step 1**: 移除旧端点与视图入口，改动处测试同步删改
+- [ ] **Step 2**: Run: `cd mstd-orchestrator && npx vitest run && cd ../mstd-ui && npx vitest run` Expected: 全绿
+- [ ] **Step 3: Commit** `chore(mstd): 退役 web 审批端点与视图`
+
+### Task H2: 生产配置收口
+
+**Files:**
+- Modify: `.env.example`（新增 env 全清单：三模型 key、budget、admin、dreaming mode、E2E 开关）、`server/config.mjs`（secret fail-fast 沿用）、`mstd-orchestrator/README.md`
+
+- [ ] **Step 1**: env 清单+启动 fail-fast 校验补全；README 重写为常驻 agent 架构说明（部署/开闸步骤/观察期运营手册）
+- [ ] **Step 2**: Run: `node server/index.mjs`（缺 env 时 fail-fast 报错清单）Expected: 明确报错
+- [ ] **Step 3: Commit** `chore(mstd): 生产配置收口+README 重写`
+
+### Task H3: 全链路 E2E 回归剧本
+
+**Files:**
+- Create: `mstd-orchestrator/test/e2e-full.test.mjs`（串联 B7/D8/F6 + cron/heartbeat/dreaming 影子）
+
+- [ ] **Step 1**: 编排全剧本（私聊问答→群@→旁听→卡片写→cron 投递→HEARTBEAT 提醒→dreaming 影子报告），断言各环节产物
+- [ ] **Step 2**: Run: `MSTD_E2E=1 MSTD_ENABLE_WRITE=1 npx vitest run test/e2e-full.test.mjs` Expected: PASS
+- [ ] **Step 3: Commit** `test(mstd): 全链路 E2E 回归剧本`
+
+### Task H4: 上线开闸文档
+
+**Files:**
+- Create: `docs/superpowers/runbooks/agent-rollout.md`
+
+- [ ] **Step 1**: 写运营手册——生产应用发版（`im:message.group_msg` 敏感权限审批）、`MSTD_ENABLE_WRITE`/`MSTD_TEST_OPEN_IDS` 逐步放开步骤、新群接入 SOP（observe_only 两周→看报告→mention_only 或 ambient）、dreaming shadow→apply 切换条件、告警响应
+- [ ] **Step 2: Commit** `docs(mstd): 上线开闸运营手册`
+
+**Phase H 完成标志（= 项目完成标志）**：H3 全链路 E2E 通过；两套 vitest 全绿；README/runbook 齐；旧审批面退役无残留。
