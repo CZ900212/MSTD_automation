@@ -34,4 +34,51 @@ describe("validateIntent", () => {
     const bad = { card_text: "x", items: [{ owner_name: "a", task: "t", confidence: "maybe" }] };
     expect(() => validateIntent(bad)).toThrow(/confidence/);
   });
+
+  const withItem = (over) => ({
+    card_text: "x",
+    items: [{ owner_name: "a", task: "t", confidence: "high", ...over }],
+  });
+
+  it("rejects suggested_open_id as array", () => {
+    expect(() => validateIntent(withItem({ suggested_open_id: ["ou_a", "ou_b"] })))
+      .toThrow(IntentValidationError);
+  });
+
+  it("rejects suggested_open_id as object", () => {
+    expect(() => validateIntent(withItem({ suggested_open_id: {} })))
+      .toThrow(IntentValidationError);
+  });
+
+  it("rejects suggested_open_id as number", () => {
+    expect(() => validateIntent(withItem({ suggested_open_id: 123 })))
+      .toThrow(IntentValidationError);
+  });
+
+  it("rejects suggested_open_id as boolean", () => {
+    expect(() => validateIntent(withItem({ suggested_open_id: true })))
+      .toThrow(IntentValidationError);
+  });
+
+  it("rejects suggested_open_id without ou_ prefix", () => {
+    expect(() => validateIntent(withItem({ suggested_open_id: "xyz" })))
+      .toThrow(IntentValidationError);
+  });
+
+  it("rejects due as object", () => {
+    expect(() => validateIntent(withItem({ due: {} })))
+      .toThrow(IntentValidationError);
+  });
+
+  it("rejects more than MAX_ITEMS items", () => {
+    const items = Array.from({ length: 51 }, () => ({
+      owner_name: "a", task: "t", confidence: "high",
+    }));
+    expect(() => validateIntent({ card_text: "x", items })).toThrow(IntentValidationError);
+  });
+
+  it("rejects task exceeding max length", () => {
+    expect(() => validateIntent(withItem({ task: "t".repeat(2001) })))
+      .toThrow(IntentValidationError);
+  });
 });

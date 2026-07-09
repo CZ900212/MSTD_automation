@@ -15,6 +15,9 @@ describe("canonicalJson / stableHash", () => {
     expect(h1).toBe(stableHash({ b: 2, a: 1 }));
     expect(h1).not.toBe(stableHash({ a: 1, b: 3 }));
   });
+  it("throws on undefined (not valid JSON)", () => {
+    expect(() => canonicalJson(undefined)).toThrow();
+  });
 });
 
 describe("canonicalizeActions", () => {
@@ -27,10 +30,50 @@ describe("canonicalizeActions", () => {
     });
   });
 
+  it("assigns ordinal reflecting canonical array order", () => {
+    const actions = canonicalizeActions({ jobId: "job1", items });
+    expect(actions[0].ordinal).toBe(0);
+    expect(actions[1].ordinal).toBe(1);
+  });
+
+  it("sets target_open_id = assignee_open_id (F11)", () => {
+    const actions = canonicalizeActions({ jobId: "job1", items });
+    expect(actions[0].target_open_id).toBe("ou_a");
+    expect(actions[1].target_open_id).toBe(null);
+  });
+
   it("flags requires_open_id when assignee is null", () => {
     const actions = canonicalizeActions({ jobId: "job1", items });
     expect(actions[0].requires_open_id).toBe(false);
     expect(actions[1].requires_open_id).toBe(true);
+  });
+
+  it("low-confidence item requires_open_id even with a valid ou_ open_id", () => {
+    const actions = canonicalizeActions({
+      jobId: "job1",
+      items: [{ task: "低置信度", due: null, suggested_open_id: "ou_valid", confidence: "low" }],
+    });
+    expect(actions[0].requires_open_id).toBe(true);
+  });
+
+  it("empty-string / non-ou_ open_id requires_open_id (high confidence)", () => {
+    const [empty] = canonicalizeActions({
+      jobId: "job1",
+      items: [{ task: "空串", due: null, suggested_open_id: "", confidence: "high" }],
+    });
+    const [bad] = canonicalizeActions({
+      jobId: "job1",
+      items: [{ task: "非法", due: null, suggested_open_id: "abc123", confidence: "high" }],
+    });
+    expect(empty.requires_open_id).toBe(true);
+    expect(bad.requires_open_id).toBe(true);
+  });
+
+  it("two identical items produce different action_keys (F4, ordinal-scoped)", () => {
+    const dupItem = { task: "写周报", due: "2026-07-15", suggested_open_id: "ou_a", confidence: "high" };
+    const actions = canonicalizeActions({ jobId: "job1", items: [dupItem, dupItem] });
+    expect(actions).toHaveLength(2);
+    expect(actions[0].action_key).not.toBe(actions[1].action_key);
   });
 
   it("same input -> same action_key/hash; edit -> different", () => {
@@ -52,6 +95,8 @@ describe("canonicalizeActions", () => {
 
   it("appends send_dm only when enableNotify", () => {
     const actions = canonicalizeActions({ jobId: "job1", items, enableNotify: true });
-    expect(actions.some((a) => a.kind === "send_dm")).toBe(true);
+    const dm = actions.find((a) => a.kind === "send_dm");
+    expect(dm).toBeTruthy();
+    expect(dm.target_open_id).toBe(actions.find((a) => a.kind === "create_task").payload.assignee_open_id);
   });
 });
