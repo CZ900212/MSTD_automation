@@ -164,6 +164,8 @@ if (config.enableAgent && config.botOpenId) {
     semaphore,
     // 闲置 Pi 占并发位直到回收；默认 10min，E2E/低并发环境可调小避免饿死后续会话
     idleMs: Number(process.env.MSTD_PI_IDLE_MS ?? 600_000),
+    // 回合超时后沿 reason 链降级重跑；provider 挂起型故障的止损上限
+    turnTimeoutMs: Number(process.env.MSTD_TURN_TIMEOUT_MS ?? 240_000),
     extensions: [
       join(ROOT, "pi-ext", "providers.ts"),
       join(ROOT, "pi-ext", "reply.ts"),

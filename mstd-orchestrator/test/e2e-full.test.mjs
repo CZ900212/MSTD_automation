@@ -78,6 +78,8 @@ describe.skipIf(!RUN)("H3 全链路 E2E 回归剧本", () => {
         // 剧本会先后攒下 p2p/群/cron 最多三个闲置 Pi（闲置也占并发位，默认 10min 才回收，
         // 且 maxPi 上限钳到 3）——heartbeat 的下一个 Pi 会被饿死。E2E 调小闲置回收窗即可。
         MSTD_MAX_CONCURRENT_PI: "3", MSTD_PI_IDLE_MS: "40000",
+        // 回合 60s 没回来就沿 reason 链降级重跑（waitBotReply 150s 窗口内容得下两跳）
+        MSTD_TURN_TIMEOUT_MS: "60000",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

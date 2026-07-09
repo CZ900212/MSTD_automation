@@ -27,9 +27,9 @@ export function createBrain({
 } = {}) {
   const pool = new Map(); // sessionKey -> { client, idleTimer, replayed, busy, providerKey }
 
-  async function spawnWithFallback(sessionKey) {
+  async function spawnWithFallback(sessionKey, startIdx = 0) {
     const errors = [];
-    for (let i = 0; i < REASON_PROVIDERS.length; i++) {
+    for (let i = startIdx; i < REASON_PROVIDERS.length; i++) {
       const p = REASON_PROVIDERS[i];
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
@@ -53,7 +53,7 @@ export function createBrain({
     throw new Error(`brain 全部 provider 拉起失败: ${errors.at(-1)?.message}`);
   }
 
-  async function ensure(sessionKey) {
+  async function ensure(sessionKey, startIdx = 0) {
     let entry = pool.get(sessionKey);
     if (entry) {
       if (entry.idleTimer) clearTimeoutFn(entry.idleTimer);
@@ -65,7 +65,7 @@ export function createBrain({
       while (!semaphore.tryAcquire()) await sleepFn(500);
     }
     try {
-      const { client, providerKey } = await spawnWithFallback(sessionKey);
+      const { client, providerKey } = await spawnWithFallback(sessionKey, startIdx);
       entry = { client, idleTimer: null, replayed: false, busy: false, providerKey };
       pool.set(sessionKey, entry);
       return entry;
@@ -108,28 +108,38 @@ export function createBrain({
   }
 
   async function turn({ session, sessionKey, brief, context, snapshot = null }) {
-    const entry = await ensure(sessionKey);
-    entry.busy = true;
     const events = [];
-    try {
-      const prompt = buildPrompt({ session, brief, context, snapshot, replay: !entry.replayed });
-      entry.replayed = true;
-      const { finalText } = await entry.client.runJob(prompt, {
-        id: `${sessionKey}:${Date.now()}`,
-        onEvent: (e) => events.push(e),
-        timeoutMs: turnTimeoutMs,
-      });
-      return { finalText, events, providerKey: entry.providerKey };
-    } catch (e) {
-      // 回合失败：回收进程，下回合重拉并重放上下文
-      pool.delete(sessionKey);
-      entry.client.close?.();
-      semaphore?.release();
-      throw e;
-    } finally {
-      entry.busy = false;
-      if (pool.has(sessionKey)) scheduleIdle(sessionKey);
+    let startIdx = 0;
+    let lastErr = null;
+    // 回合级降级：runJob 失败/超时（如 provider 503）→ 回收 Pi → 换下一个 provider 重拉重放 → 同一回合重跑
+    while (startIdx < REASON_PROVIDERS.length) {
+      const entry = await ensure(sessionKey, startIdx);
+      entry.busy = true;
+      try {
+        const prompt = buildPrompt({ session, brief, context, snapshot, replay: !entry.replayed });
+        entry.replayed = true;
+        const { finalText } = await entry.client.runJob(prompt, {
+          id: `${sessionKey}:${Date.now()}`,
+          onEvent: (e) => events.push(e),
+          timeoutMs: turnTimeoutMs,
+        });
+        return { finalText, events, providerKey: entry.providerKey };
+      } catch (e) {
+        lastErr = e;
+        pool.delete(sessionKey);
+        entry.client.close?.();
+        semaphore?.release();
+        const failedIdx = REASON_PROVIDERS.findIndex((p) => p.key === entry.providerKey);
+        startIdx = (failedIdx >= 0 ? failedIdx : startIdx) + 1;
+        if (startIdx < REASON_PROVIDERS.length) {
+          log(`[brain-fallback] 回合失败 session=${sessionKey} from=${entry.providerKey} to=${REASON_PROVIDERS[startIdx].key}: ${String(e?.message ?? e).slice(0, 200)}`);
+        }
+      } finally {
+        entry.busy = false;
+        if (pool.has(sessionKey)) scheduleIdle(sessionKey);
+      }
     }
+    throw lastErr;
   }
 
   function steer(sessionKey, note) {

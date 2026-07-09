@@ -77,4 +77,36 @@ describe("brain（5.5 Pi 会话进程管理）", () => {
     expect(attempts.at(-1)).toBe(REASON_PROVIDERS[1].provider);
     expect(sleepFn).toHaveBeenCalledTimes(5);
   });
+
+  it("回合中失败（超时/503）沿链降级：换 provider 重拉重放，同一回合重跑", async () => {
+    const spawned = [];
+    const startPi = vi.fn((opts) => {
+      const c = mockClient();
+      if (opts.provider === REASON_PROVIDERS[0].provider) {
+        c.runJob = vi.fn(async () => { throw new Error("runJob 超时（provider 503）"); });
+      }
+      spawned.push({ provider: opts.provider, client: c });
+      return c;
+    });
+    const brain = createBrain({ startPi, store, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    const out = await brain.turn({ session, sessionKey: "k1", brief: "重要任务" });
+    expect(out.finalText).toBe("done");
+    expect(out.providerKey).toBe(REASON_PROVIDERS[1].key);
+    // 5.5 的 Pi 已被回收；降级 Pi 首回合带重放历史
+    expect(spawned[0].client.close).toHaveBeenCalled();
+    const degraded = spawned.find((s) => s.provider === REASON_PROVIDERS[1].provider);
+    expect(degraded.client.runJob.mock.calls[0][0]).toContain("张三");
+    expect(degraded.client.runJob.mock.calls[0][0]).toContain("重要任务");
+  });
+
+  it("回合中全链耗尽才抛错", async () => {
+    const startPi = vi.fn(() => {
+      const c = mockClient();
+      c.runJob = vi.fn(async () => { throw new Error("all down"); });
+      return c;
+    });
+    const brain = createBrain({ startPi, store, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    await expect(brain.turn({ session, sessionKey: "k1", brief: "x" })).rejects.toThrow(/all down/);
+    expect(startPi).toHaveBeenCalledTimes(REASON_PROVIDERS.length);
+  });
 });
