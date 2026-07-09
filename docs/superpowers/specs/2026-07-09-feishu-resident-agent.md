@@ -221,4 +221,789 @@ memory/users/<open_id>.md   每人记忆（私聊画像）
 
 # Part 2 · 实施计划
 
->（spec 批准后由 writing-plans 展开，追加于此。）
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 把 mstd-orchestrator 从"会议纪要单一流水线"改造成常驻的公司级飞书全能助手（Part 1 spec 全量范围 V1+V2）。
+
+**Architecture:** 单常驻 Node 进程（通道/会话/记忆/模型/卡片/主动层各自成包）+ 三模型协作（V4 前台 / 5.5 中枢 Pi / Opus reply 工具出口）+ 写路径复用现有四道锁执行器，审批面从 web 换飞书卡片。
+
+**Tech Stack:** Node ≥22 · Express · better-sqlite3（SQL Postgres 可移植）· Pi 0.80.3 RPC（`supervisor/pi-client.mjs`）· lark-cli（`~/.hermes/node/bin/`，event consume 长连接）· DeepSeek V4 Flash API 直调 · Vite+React+vitest。
+
+## Global Constraints（每个任务隐含遵守）
+
+- **模型永远不可信**：写形状服务端定；模型只能选 `action_id`；卡片 JSON 结构模型碰不到；记忆写入过注入扫描。
+- **`reply` 是 5.5 唯一出站通道**：daemon 永不外发 5.5 裸文本。
+- **记忆注入隔离铁律**：群 A / 私聊记忆绝不进群 B。
+- **真写纵深**：`MSTD_ENABLE_WRITE=1` 才开写；目标受 `MSTD_TEST_OPEN_IDS` 白名单（`assertTestTarget` fail-closed）。
+- **密钥红线**：只进 gitignore 的 `.env`（chmod 600）。
+- **SQL Postgres 可移植**：显式主键、无 AUTOINCREMENT、epoch BIGINT、JSON 存 TEXT、双方言 `ON CONFLICT`。FTS5 为唯一例外（检索封装进独立模块，PG 时换 pg_trgm）。
+- **测试**：单测不真调飞书/模型（注入 `runLark`/`spawnFn`/`startPi`/模型 client mock）；集成/E2E 打 **test organization** 真飞书；web 真机验证用 Claude-in-Chrome 不用 Playwright。
+- **安全内核回归红线**：现有 `cd mstd-orchestrator && npx vitest run` 基线（39 文件 199 用例）任何任务完成时必须全绿。
+- commit 风格：`feat(mstd)/fix(mstd): 中文短句`。
+
+## 文件结构总图（新增/改造锁定）
+
+```
+mstd-orchestrator/server/
+  gateway/            # Phase A：consumer.mjs(通用事件长连接) inbox.mjs(归一化+去重)
+                      #          debounce.mjs(防抖合批) admit.mjs(准入判定枚举)
+  sessions/           # Phase A：session-key.mjs store.mjs(表+transcript) actor.mjs(串行队列+版本)
+                      #          search.mjs(FTS 封装)
+  models/             # Phase B：v4-client.mjs(直调API) triage.mjs(前台分诊) brain.mjs(5.5 Pi 会话管理)
+                      #          reply.mjs(Opus 出口渲染) budget.mjs(token 预算)
+  memory/             # Phase C：files.mjs(三层读写+漂移检测) inject.mjs(注入规则+冻结快照)
+                      #          tool.mjs(memory 工具) scan.mjs(注入扫描) compact.mjs(压缩+flush)
+  cards/              # Phase D：templates.mjs(固定卡片模板) confirm-flow.mjs(发卡/回调/更新状态机)
+  jobs/               # Phase D 改造：orchestrator → 后台 job 执行器；版本化回注
+  ticker/             # Phase E：ticker.mjs(单 ticker 分频) cron-jobs.mjs heartbeat.mjs dreaming.mjs
+  safety/ execute/    # 原样保留（Phase D 只加 action 类型与 argv 构造器）
+mstd-ui/              # Phase G：调试台六面板（壳复用）
+pi-ext/               # Phase B/D：reply 工具、lark_read 扩展、lark-execute 原样
+```
+
+## Phase 总览（每 Phase 交付可独立测试的活软件）
+
+| Phase | 交付 | 任务数 |
+|---|---|---|
+| **A 通道与会话基座** | 事件进得来、会话存得住、串行跑得对（本文件已全粒度展开 ↓） | A1-A8 |
+| **B 三模型层** | V4 分诊四选一→5.5 Pi 会话→reply 工具出站；SOUL 注入；token 预算 | B1-B7 |
+| **C 记忆系统** | 三层文件+工具+冻结快照+隔离注入+漂移检测+压缩 flush+session_search | C1-C7 |
+| **D 写路径卡片** | action DSL 扩类→固定模板卡→card.action.trigger→四道锁执行→卡片状态机；后台 job 版本化回注 | D1-D8 |
+| **E 主动层** | 单 ticker、cron 表、HEARTBEAT、dreaming 蒸馏（影子模式起步）、健康巡检挂载、妙记闭环迁移 | E1-E7 |
+| **F 群聊能力** | 群@、pending 窗口、旁听三层门控、NO_REPLY、限额、观察期模式 | F1-F6 |
+| **G web 调试台** | 六面板（会话浏览/时间线/看板/记忆编辑/调试对话/OAuth+admin） | G1-G6 |
+| **H 收尾** | 退役旧端点、test org E2E 全链路、生产配置收口、README | H1-H4 |
+
+> **详批节奏**：Phase A 已展开如下；每个 Phase 开工前，按 Phase A 同粒度（TDD 五步、完整代码、精确路径）追加该 Phase 详批到本文件。B-H 的任务边界与接口已在各 Phase 开工前的详批中锁定，不得跨 Phase 挪动职责。
+
+---
+
+## Phase A · 通道与会话基座（全粒度详批）
+
+### Task A1: 数据库迁移 003（会话/消息/FTS/群策略/收件箱去重）
+
+**Files:**
+- Create: `mstd-orchestrator/server/db/migrations/003_agent_core.sql`
+- Test: `mstd-orchestrator/test/migration-agent-core.test.mjs`
+
+**Interfaces:**
+- Produces: 表 `agent_sessions / agent_messages / agent_messages_fts / group_policies / inbox_events`，后续 A3/A4/A6 全部依赖。
+
+- [ ] **Step 1: 写失败测试**
+
+```js
+// test/migration-agent-core.test.mjs
+import { describe, it, expect } from "vitest";
+import { openDb } from "../server/db/index.mjs";
+
+describe("003_agent_core migration", () => {
+  it("建齐五张表且 FTS trigram 可检中文", () => {
+    const db = openDb(":memory:");
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type IN ('table','virtual table') OR type='table'"
+    ).all().map(r => r.name);
+    for (const t of ["agent_sessions","agent_messages","group_policies","inbox_events"])
+      expect(tables).toContain(t);
+    db.prepare("INSERT INTO agent_messages_fts (message_id, session_id, content) VALUES (?,?,?)")
+      .run("m1","s1","下周三交付武汉项目方案");
+    const hit = db.prepare(
+      "SELECT message_id FROM agent_messages_fts WHERE agent_messages_fts MATCH ?"
+    ).all("武汉");
+    expect(hit.map(r => r.message_id)).toContain("m1");
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `cd mstd-orchestrator && npx vitest run test/migration-agent-core.test.mjs`
+Expected: FAIL（表不存在）
+
+- [ ] **Step 3: 写迁移**
+
+```sql
+-- 003_agent_core.sql（Postgres 可移植：显式主键、epoch BIGINT、JSON 存 TEXT；FTS5 除外）
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id TEXT PRIMARY KEY,
+  session_key TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,                       -- p2p | group | cron | debug
+  chat_id TEXT,
+  title TEXT,
+  status TEXT NOT NULL DEFAULT 'active',    -- active | archived
+  version INTEGER NOT NULL DEFAULT 0,       -- 会话版本号（过时回复判定）
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES agent_sessions(id),
+  role TEXT NOT NULL,                       -- user | assistant | tool | system
+  sender_open_id TEXT,
+  sender_name TEXT,
+  content TEXT NOT NULL,
+  observed INTEGER NOT NULL DEFAULT 0,      -- 旁听未回复标记
+  active INTEGER NOT NULL DEFAULT 1,        -- 软删除
+  platform_message_id TEXT,
+  ts BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id, ts);
+
+CREATE TABLE IF NOT EXISTS group_policies (
+  chat_id TEXT PRIMARY KEY,
+  policy TEXT NOT NULL DEFAULT 'mention_only',  -- disabled | mention_only | ambient
+  hourly_proactive_limit INTEGER NOT NULL DEFAULT 4,
+  updated_at BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS inbox_events (
+  event_id TEXT PRIMARY KEY,
+  chat_id TEXT,
+  content_md5 TEXT,
+  ts BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_events_md5 ON inbox_events(chat_id, content_md5, ts);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS agent_messages_fts USING fts5(
+  message_id UNINDEXED, session_id UNINDEXED, content, tokenize='trigram'
+);
+```
+
+- [ ] **Step 4: 跑测试通过 + 全量回归**
+
+Run: `cd mstd-orchestrator && npx vitest run`
+Expected: 新用例 PASS，基线 199 用例全绿
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add mstd-orchestrator/server/db/migrations/003_agent_core.sql mstd-orchestrator/test/migration-agent-core.test.mjs
+git commit -m "feat(mstd): agent 核心表迁移（会话/消息/FTS/群策略/收件箱去重）"
+```
+
+### Task A2: 会话键构造与解析
+
+**Files:**
+- Create: `mstd-orchestrator/server/sessions/session-key.mjs`
+- Test: `mstd-orchestrator/test/session-key.test.mjs`
+
+**Interfaces:**
+- Produces: `buildSessionKey({kind, openId?, chatId?, topicId?, jobId?, debugId?}) -> string`；`parseSessionKey(key) -> {kind, ...ids}`。A3/A6/B 全线依赖。
+
+- [ ] **Step 1: 写失败测试**
+
+```js
+import { describe, it, expect } from "vitest";
+import { buildSessionKey, parseSessionKey } from "../server/sessions/session-key.mjs";
+
+describe("session-key", () => {
+  it("四种键往返一致", () => {
+    expect(buildSessionKey({ kind: "p2p", openId: "ou_a" })).toBe("feishu:p2p:ou_a");
+    expect(buildSessionKey({ kind: "group", chatId: "oc_1" })).toBe("feishu:group:oc_1");
+    expect(buildSessionKey({ kind: "group", chatId: "oc_1", topicId: "omt_9" }))
+      .toBe("feishu:group:oc_1:omt_9");
+    expect(buildSessionKey({ kind: "cron", jobId: "daily" })).toBe("cron:daily");
+    expect(parseSessionKey("feishu:group:oc_1:omt_9"))
+      .toEqual({ kind: "group", chatId: "oc_1", topicId: "omt_9" });
+    expect(parseSessionKey("debug:d1")).toEqual({ kind: "debug", debugId: "d1" });
+  });
+  it("缺必填字段抛错", () => {
+    expect(() => buildSessionKey({ kind: "p2p" })).toThrow();
+    expect(() => buildSessionKey({ kind: "nope" })).toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**（模块不存在）
+
+- [ ] **Step 3: 实现**
+
+```js
+// server/sessions/session-key.mjs
+export function buildSessionKey({ kind, openId, chatId, topicId, jobId, debugId }) {
+  switch (kind) {
+    case "p2p":
+      if (!openId) throw new Error("p2p 需要 openId");
+      return `feishu:p2p:${openId}`;
+    case "group":
+      if (!chatId) throw new Error("group 需要 chatId");
+      return topicId ? `feishu:group:${chatId}:${topicId}` : `feishu:group:${chatId}`;
+    case "cron":
+      if (!jobId) throw new Error("cron 需要 jobId");
+      return `cron:${jobId}`;
+    case "debug":
+      if (!debugId) throw new Error("debug 需要 debugId");
+      return `debug:${debugId}`;
+    default:
+      throw new Error(`未知会话类型: ${kind}`);
+  }
+}
+
+export function parseSessionKey(key) {
+  const parts = key.split(":");
+  if (parts[0] === "cron") return { kind: "cron", jobId: parts[1] };
+  if (parts[0] === "debug") return { kind: "debug", debugId: parts[1] };
+  if (parts[0] === "feishu" && parts[1] === "p2p") return { kind: "p2p", openId: parts[2] };
+  if (parts[0] === "feishu" && parts[1] === "group") {
+    const out = { kind: "group", chatId: parts[2] };
+    if (parts[3]) out.topicId = parts[3];
+    return out;
+  }
+  throw new Error(`无法解析会话键: ${key}`);
+}
+```
+
+- [ ] **Step 4: 跑测试通过**
+- [ ] **Step 5: Commit** `feat(mstd): 会话键构造与解析`
+
+### Task A3: 会话存储（getOrCreate / append / transcript / 软删 / 版本）
+
+**Files:**
+- Create: `mstd-orchestrator/server/sessions/store.mjs`
+- Test: `mstd-orchestrator/test/session-store.test.mjs`
+
+**Interfaces:**
+- Consumes: A1 的表、A2 的 `buildSessionKey`。
+- Produces: `createSessionStore(db)` → `{ getOrCreate(sessionKey, meta?) -> session, append(sessionId, {role, senderOpenId?, senderName?, content, observed?, platformMessageId?, ts?}) -> message, transcript(sessionId, {limit?}) -> message[], softDelete(messageId), bumpVersion(sessionId) -> number, touch(sessionId) }`。B（上下文重放）、F（observed）、G（浏览器）依赖。
+
+- [ ] **Step 1: 写失败测试**
+
+```js
+import { describe, it, expect } from "vitest";
+import { openDb } from "../server/db/index.mjs";
+import { createSessionStore } from "../server/sessions/store.mjs";
+
+describe("session store", () => {
+  it("getOrCreate 幂等；append/transcript 按 ts 序；软删不出现在 transcript；版本自增", () => {
+    const db = openDb(":memory:");
+    const store = createSessionStore(db);
+    const s1 = store.getOrCreate("feishu:p2p:ou_a", { kind: "p2p", title: "张三" });
+    const s2 = store.getOrCreate("feishu:p2p:ou_a");
+    expect(s2.id).toBe(s1.id);
+
+    const m1 = store.append(s1.id, { role: "user", senderOpenId: "ou_a", content: "第一句", ts: 1000 });
+    store.append(s1.id, { role: "assistant", content: "回复", ts: 2000 });
+    expect(store.transcript(s1.id).map(m => m.content)).toEqual(["第一句", "回复"]);
+
+    store.softDelete(m1.id);
+    expect(store.transcript(s1.id).map(m => m.content)).toEqual(["回复"]);
+
+    expect(store.bumpVersion(s1.id)).toBe(1);
+    expect(store.bumpVersion(s1.id)).toBe(2);
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+- [ ] **Step 3: 实现**
+
+```js
+// server/sessions/store.mjs
+import { randomUUID } from "node:crypto";
+
+export function createSessionStore(db) {
+  const getBySessionKey = db.prepare("SELECT * FROM agent_sessions WHERE session_key = ?");
+  const insertSession = db.prepare(
+    `INSERT INTO agent_sessions (id, session_key, kind, chat_id, title, status, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'active', 0, ?, ?)`
+  );
+  const insertMessage = db.prepare(
+    `INSERT INTO agent_messages (id, session_id, role, sender_open_id, sender_name, content, observed, active, platform_message_id, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+  );
+  const insertFts = db.prepare(
+    "INSERT INTO agent_messages_fts (message_id, session_id, content) VALUES (?, ?, ?)"
+  );
+
+  function getOrCreate(sessionKey, meta = {}, now = Date.now()) {
+    const found = getBySessionKey.get(sessionKey);
+    if (found) return found;
+    const id = randomUUID();
+    insertSession.run(id, sessionKey, meta.kind ?? sessionKey.split(":")[1] ?? "p2p",
+      meta.chatId ?? null, meta.title ?? null, now, now);
+    return getBySessionKey.get(sessionKey);
+  }
+
+  function append(sessionId, msg) {
+    const id = randomUUID();
+    const ts = msg.ts ?? Date.now();
+    insertMessage.run(id, sessionId, msg.role, msg.senderOpenId ?? null, msg.senderName ?? null,
+      msg.content, msg.observed ? 1 : 0, msg.platformMessageId ?? null, ts);
+    insertFts.run(id, sessionId, msg.content);
+    touch(sessionId, ts);
+    return { id, sessionId, ...msg, ts };
+  }
+
+  function transcript(sessionId, { limit = 200 } = {}) {
+    return db.prepare(
+      "SELECT * FROM agent_messages WHERE session_id = ? AND active = 1 ORDER BY ts LIMIT ?"
+    ).all(sessionId, limit);
+  }
+
+  function softDelete(messageId) {
+    db.prepare("UPDATE agent_messages SET active = 0 WHERE id = ?").run(messageId);
+  }
+
+  function bumpVersion(sessionId) {
+    db.prepare("UPDATE agent_sessions SET version = version + 1 WHERE id = ?").run(sessionId);
+    return db.prepare("SELECT version FROM agent_sessions WHERE id = ?").get(sessionId).version;
+  }
+
+  function touch(sessionId, now = Date.now()) {
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(now, sessionId);
+  }
+
+  return { getOrCreate, append, transcript, softDelete, bumpVersion, touch };
+}
+```
+
+- [ ] **Step 4: 跑测试通过 + 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): 会话存储（transcript/软删/版本号）`
+
+### Task A4: 收件箱归一化与双重去重
+
+**Files:**
+- Create: `mstd-orchestrator/server/gateway/inbox.mjs`
+- Test: `mstd-orchestrator/test/inbox.test.mjs`
+
+**Interfaces:**
+- Consumes: A1 `inbox_events` 表。
+- Produces: `createInbox(db)` → `{ normalize(rawLarkEvent) -> {eventId, kind, chatId, chatType, senderOpenId, senderName, content, mentionsBot, topicId?, ts} | null, isDuplicate(evt, now?) -> boolean, markSeen(evt, now?) }`。`kind ∈ {message, card_action, minutes}`。A8/F 依赖。
+
+- [ ] **Step 1: 写失败测试**
+
+```js
+import { describe, it, expect } from "vitest";
+import { openDb } from "../server/db/index.mjs";
+import { createInbox } from "../server/gateway/inbox.mjs";
+
+const rawMsg = (over = {}) => ({
+  header: { event_id: over.eventId ?? "ev1", event_type: "im.message.receive_v1" },
+  event: {
+    sender: { sender_id: { open_id: "ou_a" } },
+    message: {
+      chat_id: "oc_1", chat_type: "group", message_type: "text",
+      content: JSON.stringify({ text: over.text ?? "你好 @_user_1" }),
+      mentions: over.mentions ?? [{ id: { open_id: "ou_bot" }, key: "@_user_1" }],
+      create_time: "1720000000000",
+    },
+  },
+});
+
+describe("inbox", () => {
+  it("归一化文本消息并识别 @bot", () => {
+    const inbox = createInbox(openDb(":memory:"), { botOpenId: "ou_bot" });
+    const evt = inbox.normalize(rawMsg());
+    expect(evt).toMatchObject({
+      eventId: "ev1", kind: "message", chatId: "oc_1", chatType: "group",
+      senderOpenId: "ou_a", mentionsBot: true,
+    });
+  });
+  it("event_id 去重 + 60s 内同 chat 同内容 MD5 去重", () => {
+    const inbox = createInbox(openDb(":memory:"), { botOpenId: "ou_bot" });
+    const e1 = inbox.normalize(rawMsg());
+    expect(inbox.isDuplicate(e1, 1000)).toBe(false);
+    inbox.markSeen(e1, 1000);
+    expect(inbox.isDuplicate(e1, 2000)).toBe(true);                        // 同 event_id
+    const e2 = inbox.normalize(rawMsg({ eventId: "ev2" }));
+    expect(inbox.isDuplicate(e2, 30_000)).toBe(true);                      // 同内容 60s 窗口
+    expect(inbox.isDuplicate(inbox.normalize(rawMsg({ eventId: "ev3" })), 120_000)).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+- [ ] **Step 3: 实现**
+
+```js
+// server/gateway/inbox.mjs
+import { createHash } from "node:crypto";
+
+export function createInbox(db, { botOpenId }) {
+  function normalize(raw) {
+    const type = raw?.header?.event_type;
+    if (type === "im.message.receive_v1") {
+      const m = raw.event.message;
+      let text = "";
+      try { text = JSON.parse(m.content).text ?? ""; } catch { return null; }
+      const mentions = m.mentions ?? [];
+      return {
+        eventId: raw.header.event_id,
+        kind: "message",
+        chatId: m.chat_id,
+        chatType: m.chat_type,                    // p2p | group
+        senderOpenId: raw.event.sender.sender_id.open_id,
+        senderName: raw.event.sender.sender_id.name ?? null,
+        content: text,
+        mentionsBot: mentions.some(x => x?.id?.open_id === botOpenId),
+        topicId: m.thread_id ?? null,
+        ts: Number(m.create_time),
+      };
+    }
+    if (type === "card.action.trigger") {
+      return { eventId: raw.header.event_id, kind: "card_action", raw: raw.event, ts: Date.now() };
+    }
+    if (type?.startsWith("minutes.")) {
+      return { eventId: raw.header.event_id, kind: "minutes", raw: raw.event, ts: Date.now() };
+    }
+    return null;
+  }
+
+  const md5 = (evt) => createHash("md5")
+    .update(`${evt.chatId ?? ""}|${evt.senderOpenId ?? ""}|${evt.content ?? ""}`).digest("hex");
+
+  function isDuplicate(evt, now = Date.now()) {
+    if (db.prepare("SELECT 1 FROM inbox_events WHERE event_id = ?").get(evt.eventId)) return true;
+    if (evt.kind !== "message") return false;
+    return !!db.prepare(
+      "SELECT 1 FROM inbox_events WHERE chat_id = ? AND content_md5 = ? AND ts > ?"
+    ).get(evt.chatId, md5(evt), now - 60_000);
+  }
+
+  function markSeen(evt, now = Date.now()) {
+    db.prepare(
+      "INSERT INTO inbox_events (event_id, chat_id, content_md5, ts) VALUES (?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING"
+    ).run(evt.eventId, evt.chatId ?? null, evt.kind === "message" ? md5(evt) : null, now);
+  }
+
+  return { normalize, isDuplicate, markSeen };
+}
+```
+
+- [ ] **Step 4: 跑测试通过 + 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): 事件收件箱（归一化 + event_id/内容MD5 双重去重）`
+
+### Task A5: 防抖合批（3 秒窗口按发送者合并）
+
+**Files:**
+- Create: `mstd-orchestrator/server/gateway/debounce.mjs`
+- Test: `mstd-orchestrator/test/debounce.test.mjs`
+
+**Interfaces:**
+- Produces: `createDebouncer({ delayMs = 3000, setTimeoutFn, clearTimeoutFn }) -> { push(batchKey, item, onFlush) }`——同 `batchKey`（约定 `sessionKey|senderOpenId`）在窗口内累积，窗口静默后 `onFlush(items[])` 一次。A8 依赖。
+
+- [ ] **Step 1: 写失败测试**
+
+```js
+import { describe, it, expect, vi } from "vitest";
+import { createDebouncer } from "../server/gateway/debounce.mjs";
+
+describe("debounce", () => {
+  it("窗口内连发合并为一次 flush；不同 key 互不影响", () => {
+    vi.useFakeTimers();
+    const flushed = [];
+    const d = createDebouncer({ delayMs: 3000 });
+    d.push("s1|ou_a", { content: "第一条" }, items => flushed.push(items));
+    vi.advanceTimersByTime(1000);
+    d.push("s1|ou_a", { content: "第二条" }, items => flushed.push(items));
+    d.push("s2|ou_b", { content: "别人" }, items => flushed.push(items));
+    vi.advanceTimersByTime(3000);
+    expect(flushed).toHaveLength(2);
+    expect(flushed.find(b => b.length === 2).map(i => i.content)).toEqual(["第一条", "第二条"]);
+    vi.useRealTimers();
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+- [ ] **Step 3: 实现**
+
+```js
+// server/gateway/debounce.mjs
+export function createDebouncer({ delayMs = 3000, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
+  const pending = new Map(); // batchKey -> { items, timer, onFlush }
+  function push(batchKey, item, onFlush) {
+    let entry = pending.get(batchKey);
+    if (!entry) { entry = { items: [], timer: null, onFlush }; pending.set(batchKey, entry); }
+    entry.items.push(item);
+    entry.onFlush = onFlush;
+    if (entry.timer) clearTimeoutFn(entry.timer);
+    entry.timer = setTimeoutFn(() => {
+      pending.delete(batchKey);
+      entry.onFlush(entry.items);
+    }, delayMs);
+  }
+  return { push };
+}
+```
+
+- [ ] **Step 4: 跑测试通过**
+- [ ] **Step 5: Commit** `feat(mstd): 消息防抖合批（3s 窗口按发送者合并）`
+
+### Task A6: admit 准入判定（拒绝原因枚举 + 按群策略）
+
+**Files:**
+- Create: `mstd-orchestrator/server/gateway/admit.mjs`
+- Test: `mstd-orchestrator/test/admit.test.mjs`
+
+**Interfaces:**
+- Consumes: A1 `group_policies` 表、A4 归一化事件。
+- Produces: `createAdmit(db, { botOpenId })` → `{ admit(evt) -> { ok: true, mode: "addressed"|"ambient" } | { ok: false, reason } }`；`reason ∈ { self_echo, empty_content, group_disabled, bot_not_mentioned_observe, unknown_kind }`。`bot_not_mentioned_observe` 表示"存为 observed 上下文但不唤醒"（F 的 pending 窗口消费）。A8/F 依赖。
+
+- [ ] **Step 1: 写失败测试**
+
+```js
+import { describe, it, expect, beforeEach } from "vitest";
+import { openDb } from "../server/db/index.mjs";
+import { createAdmit } from "../server/gateway/admit.mjs";
+
+const evt = (over = {}) => ({
+  kind: "message", chatType: "group", chatId: "oc_1",
+  senderOpenId: "ou_a", content: "在吗", mentionsBot: false, ...over,
+});
+
+describe("admit", () => {
+  let db, admit;
+  beforeEach(() => {
+    db = openDb(":memory:");
+    admit = createAdmit(db, { botOpenId: "ou_bot" });
+  });
+  it("私聊直通 addressed", () => {
+    expect(admit.admit(evt({ chatType: "p2p" }))).toEqual({ ok: true, mode: "addressed" });
+  });
+  it("bot 自己的消息拒绝 self_echo", () => {
+    expect(admit.admit(evt({ senderOpenId: "ou_bot" }))).toEqual({ ok: false, reason: "self_echo" });
+  });
+  it("群默认 mention_only：@ 了 addressed，没 @ 存 observed", () => {
+    expect(admit.admit(evt({ mentionsBot: true }))).toEqual({ ok: true, mode: "addressed" });
+    expect(admit.admit(evt())).toEqual({ ok: false, reason: "bot_not_mentioned_observe" });
+  });
+  it("群策略 ambient：未 @ 也放行为 ambient；disabled 拒绝", () => {
+    db.prepare("INSERT INTO group_policies (chat_id, policy, hourly_proactive_limit, updated_at) VALUES ('oc_1','ambient',4,0)").run();
+    expect(admit.admit(evt())).toEqual({ ok: true, mode: "ambient" });
+    db.prepare("UPDATE group_policies SET policy='disabled' WHERE chat_id='oc_1'").run();
+    expect(admit.admit(evt())).toEqual({ ok: false, reason: "group_disabled" });
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+- [ ] **Step 3: 实现**
+
+```js
+// server/gateway/admit.mjs
+export function createAdmit(db, { botOpenId }) {
+  const getPolicy = db.prepare("SELECT policy FROM group_policies WHERE chat_id = ?");
+  function admit(evt) {
+    if (evt.kind !== "message") return { ok: false, reason: "unknown_kind" };
+    if (evt.senderOpenId === botOpenId) return { ok: false, reason: "self_echo" };
+    if (!evt.content?.trim()) return { ok: false, reason: "empty_content" };
+    if (evt.chatType === "p2p") return { ok: true, mode: "addressed" };
+
+    const policy = getPolicy.get(evt.chatId)?.policy ?? "mention_only";
+    if (policy === "disabled") return { ok: false, reason: "group_disabled" };
+    if (evt.mentionsBot) return { ok: true, mode: "addressed" };
+    if (policy === "ambient") return { ok: true, mode: "ambient" };
+    return { ok: false, reason: "bot_not_mentioned_observe" };
+  }
+  return { admit };
+}
+```
+
+- [ ] **Step 4: 跑测试通过 + 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): admit 准入判定（原因枚举 + 按群策略覆盖）`
+
+### Task A7: 会话 actor（每会话串行队列）
+
+**Files:**
+- Create: `mstd-orchestrator/server/sessions/actor.mjs`
+- Test: `mstd-orchestrator/test/session-actor.test.mjs`
+
+**Interfaces:**
+- Produces: `createActorPool()` → `{ enqueue(sessionKey, asyncFn) -> Promise }`——同 key 严格按序执行（前一个 resolve/reject 后才起下一个），不同 key 并发；`asyncFn` 抛错不阻塞后续任务。B（回合执行）、D（回注）依赖。
+
+- [ ] **Step 1: 写失败测试**
+
+```js
+import { describe, it, expect } from "vitest";
+import { createActorPool } from "../server/sessions/actor.mjs";
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+describe("session actor", () => {
+  it("同 key 串行、异 key 并发、抛错不断队列", async () => {
+    const pool = createActorPool();
+    const order = [];
+    const p1 = pool.enqueue("s1", async () => { await sleep(30); order.push("s1-a"); });
+    const p2 = pool.enqueue("s1", async () => { order.push("s1-b"); });
+    const p3 = pool.enqueue("s2", async () => { order.push("s2-a"); });
+    await Promise.all([p1, p2, p3]);
+    expect(order.indexOf("s2-a")).toBeLessThan(order.indexOf("s1-a")); // s2 不等 s1
+    expect(order.indexOf("s1-a")).toBeLessThan(order.indexOf("s1-b")); // s1 内串行
+
+    await expect(pool.enqueue("s1", async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+    await expect(pool.enqueue("s1", async () => "ok")).resolves.toBe("ok"); // 队列没死
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+- [ ] **Step 3: 实现**
+
+```js
+// server/sessions/actor.mjs
+export function createActorPool() {
+  const tails = new Map(); // sessionKey -> Promise
+  function enqueue(sessionKey, asyncFn) {
+    const tail = tails.get(sessionKey) ?? Promise.resolve();
+    const run = tail.then(() => asyncFn());
+    const guarded = run.catch(() => {});          // 吞掉尾部错误，队列继续
+    tails.set(sessionKey, guarded);
+    guarded.then(() => { if (tails.get(sessionKey) === guarded) tails.delete(sessionKey); });
+    return run;
+  }
+  return { enqueue };
+}
+```
+
+- [ ] **Step 4: 跑测试通过**
+- [ ] **Step 5: Commit** `feat(mstd): 会话 actor 串行队列`
+
+### Task A8: 通用事件长连接消费者（管道装配）
+
+**Files:**
+- Create: `mstd-orchestrator/server/gateway/consumer.mjs`
+- Modify: `mstd-orchestrator/server/index.mjs`（boot 时装配：consumer → inbox → admit → debounce → actor → 占位 handler）
+- Test: `mstd-orchestrator/test/gateway-consumer.test.mjs`
+
+**Interfaces:**
+- Consumes: A4/A5/A6/A7 全部；现有 `triggers/minutes-consumer.mjs` 的 spawn/重启模式（照抄其注入 `spawnFn` 约定）。
+- Produces: `createGatewayConsumer({ spawnFn, larkCliPath, events, onEvent, restartDelayMs })` → `{ start(), stop() }`——spawn `lark-cli event consume <events...> --as bot` NDJSON 长连接，每行 JSON parse 后 `onEvent(raw)`；进程退出自动重启（backoff）；parse 失败发 `onEvent({ __parse_error: line })` 不静默。`server/index.mjs` 中的装配函数 `wireGateway({db, consumerFactory, handleTurn})` 是 B1 替换占位 handler 的接缝。
+
+- [ ] **Step 1: 写失败测试**
+
+```js
+import { describe, it, expect, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { createGatewayConsumer } from "../server/gateway/consumer.mjs";
+
+function fakeChild() {
+  const c = new EventEmitter();
+  c.stdout = new EventEmitter();
+  c.stderr = new EventEmitter();
+  c.kill = vi.fn();
+  return c;
+}
+
+describe("gateway consumer", () => {
+  it("NDJSON 逐行回调；坏行显式上报；退出后重启", async () => {
+    vi.useFakeTimers();
+    const children = [];
+    const spawnFn = vi.fn(() => { const c = fakeChild(); children.push(c); return c; });
+    const events = [];
+    const consumer = createGatewayConsumer({
+      spawnFn, larkCliPath: "/fake/lark-cli",
+      events: ["im.message.receive_v1", "card.action.trigger"],
+      onEvent: e => events.push(e), restartDelayMs: 5000,
+    });
+    consumer.start();
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+    children[0].stdout.emit("data", Buffer.from('{"header":{"event_id":"e1"}}\n不是json\n'));
+    expect(events[0]).toEqual({ header: { event_id: "e1" } });
+    expect(events[1]).toHaveProperty("__parse_error");
+    children[0].emit("exit", 1);
+    vi.advanceTimersByTime(5000);
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+    consumer.stop();
+    vi.useRealTimers();
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+- [ ] **Step 3: 实现**
+
+```js
+// server/gateway/consumer.mjs
+export function createGatewayConsumer({ spawnFn, larkCliPath, events, onEvent, restartDelayMs = 5000, setTimeoutFn = setTimeout }) {
+  let child = null, stopped = false, buf = "";
+  function start() {
+    stopped = false;
+    spawnOnce();
+  }
+  function spawnOnce() {
+    if (stopped) return;
+    buf = "";
+    child = spawnFn(larkCliPath, ["event", "consume", ...events, "--as", "bot"], { stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", chunk => {
+      buf += chunk.toString();
+      let idx;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        try { onEvent(JSON.parse(line)); }
+        catch { onEvent({ __parse_error: line }); }
+      }
+    });
+    child.on("exit", () => { if (!stopped) setTimeoutFn(spawnOnce, restartDelayMs); });
+  }
+  function stop() { stopped = true; child?.kill(); }
+  return { start, stop };
+}
+```
+
+`server/index.mjs` 装配（在现有 boot 序列的 minutes consumer 旁边加）：
+
+```js
+// index.mjs 新增（占位 handler 在 Phase B1 换成真回合执行器）
+import { createGatewayConsumer } from "./gateway/consumer.mjs";
+import { createInbox } from "./gateway/inbox.mjs";
+import { createAdmit } from "./gateway/admit.mjs";
+import { createDebouncer } from "./gateway/debounce.mjs";
+import { createActorPool } from "./sessions/actor.mjs";
+import { createSessionStore } from "./sessions/store.mjs";
+import { buildSessionKey } from "./sessions/session-key.mjs";
+
+export function wireGateway({ db, config, spawnFn, handleTurn }) {
+  const inbox = createInbox(db, { botOpenId: config.botOpenId });
+  const admitter = createAdmit(db, { botOpenId: config.botOpenId });
+  const debouncer = createDebouncer({});
+  const actors = createActorPool();
+  const store = createSessionStore(db);
+
+  const consumer = createGatewayConsumer({
+    spawnFn, larkCliPath: config.larkCliPath,
+    events: ["im.message.receive_v1", "card.action.trigger"],
+    onEvent(raw) {
+      if (raw.__parse_error) return console.error("[gateway] parse error:", raw.__parse_error);
+      const evt = inbox.normalize(raw);
+      if (!evt || inbox.isDuplicate(evt)) return;
+      inbox.markSeen(evt);
+      if (evt.kind !== "message") return handleTurn({ kind: evt.kind, evt }); // 卡片/妙记直达
+      const verdict = admitter.admit(evt);
+      const sessionKey = evt.chatType === "p2p"
+        ? buildSessionKey({ kind: "p2p", openId: evt.senderOpenId })
+        : buildSessionKey({ kind: "group", chatId: evt.chatId, topicId: evt.topicId ?? undefined });
+      const session = store.getOrCreate(sessionKey, { kind: evt.chatType === "p2p" ? "p2p" : "group", chatId: evt.chatId });
+      if (!verdict.ok) {
+        if (verdict.reason === "bot_not_mentioned_observe")
+          store.append(session.id, { role: "user", senderOpenId: evt.senderOpenId, senderName: evt.senderName, content: evt.content, observed: true, ts: evt.ts });
+        return;
+      }
+      debouncer.push(`${sessionKey}|${evt.senderOpenId}`, evt, items =>
+        actors.enqueue(sessionKey, () => handleTurn({ kind: "message", session, sessionKey, items, mode: verdict.mode }))
+      );
+    },
+  });
+  consumer.start();
+  return { consumer };
+}
+```
+
+- [ ] **Step 4: 跑测试通过 + 全量回归**
+- [ ] **Step 5: Commit** `feat(mstd): 通用事件长连接消费者 + gateway 管道装配`
+
+**Phase A 完成标志**：`npx vitest run` 全绿；对 test org 发一条私聊消息，能在日志里看到"归一化→admit→合批→actor 入队"全链路（handler 为占位打印）。
+
+---
+
+## Phase B-H · 详批占位
+
+>（各 Phase 开工前按 Phase A 同粒度追加。任务边界、Files、Interfaces 以"Phase 总览"表 + 文件结构总图为准，不得跨 Phase 挪动职责。）
