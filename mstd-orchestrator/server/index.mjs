@@ -32,6 +32,7 @@ import { createSessionSearch } from "./sessions/search.mjs";
 import { createMemoryTool } from "./memory/tool.mjs";
 import { buildMemorySnapshot } from "./memory/inject.mjs";
 import { createCompactor } from "./memory/compact.mjs";
+import { createJournal } from "./memory/journal.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -143,6 +144,7 @@ if (config.enableAgent && config.botOpenId) {
     budget,
     snapshotFn,
     compactor: createCompactor({ caller, store: agentStore }),
+    journal: createJournal({ caller, files: memoryFiles }),
     onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
   });
   internal = { token: internalToken, handleReply: turnHandler.handleReply, memoryTool, searchTool: createSessionSearch(db) };

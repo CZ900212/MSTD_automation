@@ -17,6 +17,7 @@ export function createTurnHandler({
   soul = "",
   snapshotFn = null,          // C4 接缝：({sessionKey}) => 记忆快照
   compactor = null,           // C6 接缝：上下文压缩器
+  journal = null,             // C7 接缝：公司总日志（fire-and-forget）
   caller = null,              // 供 renderReply 使用（renderReply 已柯里化时可为 null）
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
@@ -81,6 +82,7 @@ export function createTurnHandler({
     if (verdict.action === "quick_reply") {
       const { messageId } = await sendToSession(sessionKey, verdict.text);
       store.append(session.id, { role: "assistant", content: verdict.text, platformMessageId: messageId, ts: Date.now() });
+      journal?.recordTurn({ sessionKey, sessionTitle: session.title, items, replyText: verdict.text });
       return;
     }
 
@@ -95,6 +97,7 @@ export function createTurnHandler({
       if (result.finalText) {
         store.append(session.id, { role: "tool", content: `[中枢内部结论] ${result.finalText.slice(0, 2000)}`, ts: Date.now() });
       }
+      journal?.recordTurn({ sessionKey, sessionTitle: session.title, items, replyText: "" });
     } catch (e) {
       log(`[turn] brain 回合失败 session=${sessionKey}: ${e?.message ?? e}`);
       onEvent({ type: "brain_error", sessionKey, error: String(e?.message ?? e) });
