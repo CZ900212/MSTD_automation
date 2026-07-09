@@ -27,16 +27,18 @@ export function createEventBuffer(db, { flushIntervalMs = 1000, maxBatch = 200, 
     );
     const tx = db.transaction((items) => {
       for (const r of items) {
-        stmt.run(randomUUID(), r.jobId, r.phase, nextSeq(r.jobId), r.type, r.payloadJson, r.ts);
+        stmt.run(randomUUID(), r.jobId, r.phase, r.seq, r.type, r.payloadJson, r.ts);
       }
     });
     tx(batch);
   }
 
   function record(jobId, phase, sse, now = Date.now()) {
-    if (!keyEvents.has(sse.event)) return;
-    pending.push({ jobId, phase, type: sse.event, payloadJson: JSON.stringify(sse.data ?? {}), ts: now });
+    if (!keyEvents.has(sse.event)) return null;
+    const seq = nextSeq(jobId);
+    pending.push({ jobId, phase, seq, type: sse.event, payloadJson: JSON.stringify(sse.data ?? {}), ts: now });
     if (pending.length >= maxBatch) flush();
+    return seq;
   }
 
   function start() {

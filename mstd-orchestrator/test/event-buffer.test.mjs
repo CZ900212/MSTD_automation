@@ -38,4 +38,15 @@ describe("event buffer", () => {
     expect(rows()).toHaveLength(2);
     expect(buf.pendingCount).toBe(0);
   });
+  it("record 即时返回递增 seq，flush 落库同一 seq", () => {
+    const buf = createEventBuffer(db);
+    const s1 = buf.record("job1", "readonly", { event: "tool_start", data: {} });
+    const s2 = buf.record("job1", "readonly", { event: "tool_result", data: {} });
+    expect(s1).toBe(1);
+    expect(s2).toBe(2);
+    expect(buf.record("job1", "readonly", { event: "assistant_delta", data: {} })).toBeNull();
+    buf.flush();
+    const rows = db.prepare("SELECT seq, type FROM job_events WHERE job_id = 'job1' ORDER BY seq").all();
+    expect(rows.map((r) => r.seq)).toEqual([1, 2]);
+  });
 });

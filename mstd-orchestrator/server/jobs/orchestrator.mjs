@@ -6,8 +6,8 @@ import { parseIntentFromText } from "./intent-parse.mjs";
 import { buildPrompt, TEMPLATES } from "./templates.mjs";
 
 function emit(bus, buffer, jobId, phase, sse) {
-  bus.publish(jobId, sse);
-  buffer.record(jobId, phase, sse);
+  const seq = buffer.record(jobId, phase, sse);
+  bus.publish(jobId, seq == null ? sse : { ...sse, seq });
 }
 
 export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job, extensions = [], piOptions = {}, now = () => Date.now() }) {
