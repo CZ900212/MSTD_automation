@@ -1,6 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { sseFormat, streamJobEvents } from "../server/http/sse.mjs";
 import { createEventBus } from "../server/jobs/event-bus.mjs";
+import { openDb, migrate } from "../server/db/index.mjs";
+import { createEventBuffer } from "../server/jobs/event-buffer.mjs";
 
 function fakeRes() {
   const writes = [];
@@ -14,9 +16,21 @@ function fakeRes() {
   };
 }
 
+function seedJobEvent(db, jobId, seq, type, data) {
+  db.prepare(
+    "INSERT INTO job_events (id, job_id, phase, seq, type, payload_json, ts) VALUES (?,?,?,?,?,?,?)"
+  ).run(`e-${jobId}-${seq}`, jobId, "readonly", seq, type, JSON.stringify(data ?? {}), 1);
+}
+
 describe("sseFormat", () => {
   it("formats an event frame", () => {
     expect(sseFormat({ event: "tool_start", data: { a: 1 } })).toBe('event: tool_start\ndata: {"a":1}\n\n');
+  });
+
+  it("includes id line when seq is present", () => {
+    expect(sseFormat({ event: "tool_start", data: { a: 1 }, seq: 5 })).toBe(
+      'id: 5\nevent: tool_start\ndata: {"a":1}\n\n'
+    );
   });
 });
 
@@ -43,5 +57,33 @@ describe("streamJobEvents", () => {
     expect(cleared).toContain(123);
     expect(bus.subscriberCount("job1")).toBe(0);
     expect(typeof close).toBe("function");
+  });
+
+  describe("sinceSeq replay", () => {
+    let db, bus, buffer;
+    beforeEach(() => {
+      db = openDb();
+      migrate(db);
+      db.prepare(
+        "INSERT INTO orch_jobs (id, template_id, status, created_at, updated_at) VALUES (?,?,?,?,?)"
+      ).run("job1", "meeting_to_task", "running_readonly", 1, 1);
+      bus = createEventBus();
+      buffer = createEventBuffer(db);
+    });
+
+    it("sinceSeq 重放：先补历史关键事件（带 id 行），再接实时", () => {
+      seedJobEvent(db, "job1", 1, "tool_start", { toolName: "lark_read" });
+      seedJobEvent(db, "job1", 2, "message_done", {});
+      const res = fakeRes();
+      streamJobEvents({
+        db, bus, buffer, jobId: "job1", res, sinceSeq: 1, heartbeatMs: 60000,
+        setInterval: () => 1, clearInterval: () => {},
+      });
+      const body = res.writes.join("");
+      expect(body).toContain("id: 2\nevent: message_done");
+      expect(body).not.toContain("id: 1\n"); // seq<=sinceSeq 不补发
+      bus.publish("job1", { event: "job_status", data: { status: "done" }, seq: 3 });
+      expect(res.writes.join("")).toContain("id: 3\nevent: job_status");
+    });
   });
 });

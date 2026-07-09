@@ -101,7 +101,11 @@ export function mountJobRoutes(app, ctx) {
     const job = getJobRow(db, req.params.id);
     if (!job) return res.status(404).json({ error: "job 不存在" });
     if (!canAccess(req.user, job)) return res.status(403).json({ error: "无权访问该任务" });
-    streamJobEvents({ bus, jobId: job.id, res, heartbeatMs: 15000 });
+    const rawSince = req.query.sinceSeq ?? req.headers["last-event-id"];
+    const sinceSeq = rawSince != null && rawSince !== "" && Number.isFinite(Number(rawSince))
+      ? Number(rawSince)
+      : null;
+    streamJobEvents({ db, bus, buffer, jobId: job.id, res, sinceSeq, heartbeatMs: 15000 });
   });
 
   app.post("/api/jobs/:id/decision", requireUser, (req, res) => {
