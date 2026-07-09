@@ -33,6 +33,18 @@ export default function (pi: ExtensionAPI) {
         thinkingLevelMap: { off: null, minimal: null, low: null, medium: "medium", high: "high", xhigh: null },
         compat: { supportsReasoningEffort: true, maxTokensField: "max_tokens" },
       },
+      {
+        // reason 链降级第二级（brain.mjs REASON_PROVIDERS）：gpt-5.5 连败后由它顶上工具循环
+        id: "claude-opus-4-8",
+        name: "Claude Opus 4.8 (CZ · 中枢降级)",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 200000,
+        maxTokens: 16384,
+        thinkingLevelMap: { off: null, minimal: null, low: null, medium: "medium", high: "high", xhigh: null },
+        compat: { supportsReasoningEffort: true, maxTokensField: "max_tokens" },
+      },
     ],
   });
 
