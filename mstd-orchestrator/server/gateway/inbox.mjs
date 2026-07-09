@@ -13,8 +13,9 @@ export function createInbox(db, { botOpenId }) {
         kind: "message",
         chatId: m.chat_id,
         chatType: m.chat_type,                    // p2p | group
-        senderOpenId: raw.event.sender.sender_id.open_id,
-        senderName: raw.event.sender.sender_id.name ?? null,
+        senderOpenId: raw.event.sender.sender_id?.open_id ?? null,
+        senderType: raw.event.sender.sender_type ?? "user",   // user | app（bot 消息无 open_id）
+        senderName: raw.event.sender.sender_id?.name ?? null,
         content: text,
         mentionsBot: mentions.some((x) => x?.id?.open_id === botOpenId),
         topicId: m.thread_id ?? null,

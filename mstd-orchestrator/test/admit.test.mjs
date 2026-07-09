@@ -19,6 +19,8 @@ describe("admit", () => {
   });
   it("bot 自己的消息拒绝 self_echo", () => {
     expect(admit.admit(evt({ senderOpenId: "ou_bot" }))).toEqual({ ok: false, reason: "self_echo" });
+    // 真机形状：bot 消息 sender_type=app 且无 open_id
+    expect(admit.admit(evt({ senderOpenId: null, senderType: "app" }))).toEqual({ ok: false, reason: "self_echo" });
   });
   it("群默认 mention_only：@ 了 addressed，没 @ 存 observed", () => {
     expect(admit.admit(evt({ mentionsBot: true }))).toEqual({ ok: true, mode: "addressed" });
