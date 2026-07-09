@@ -36,7 +36,7 @@ export default function (pi: ExtensionAPI) {
     ],
   });
 
-  // DeepSeek 直连 —— 唯一支持 function-calling 的 provider，作 Pi agent 主脑（工具循环 + 编排）。
+  // DeepSeek 直连 —— 备用主脑（CZ 网关不可用时兜底；2026-07-09 起主脑已回归 cz-gpt/gpt-5.5）
   pi.registerProvider("deepseek", {
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com",

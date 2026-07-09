@@ -1,7 +1,10 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { validateIntent, IntentValidationError } from "../safety/intent-schema.mjs";
 import { canonicalizeActions } from "../safety/action-dsl.mjs";
 import { recordActions } from "../safety/action-store.mjs";
 import { updateJobStatus, saveJobDraft } from "../store/jobs.mjs";
+import { jobWorkdir } from "../execute/job-workdir.mjs";
 import { parseIntentFromText } from "./intent-parse.mjs";
 import { buildPrompt, TEMPLATES } from "./templates.mjs";
 
@@ -14,11 +17,15 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
   updateJobStatus(db, job.id, "running_readonly", now());
   emit(bus, buffer, job.id, "readonly", { event: "job_status", data: { status: "running_readonly" } });
 
+  const workdir = jobWorkdir(join(piOptions.cwd ?? process.cwd(), "out"), job.id);
+  mkdirSync(workdir, { recursive: true });
+
   const client = startPi({
     provider: piOptions.provider ?? "cz-gpt",
     model: piOptions.model ?? "gpt-5.5",
     thinking: piOptions.thinking ?? "medium",
-    cwd: piOptions.cwd,
+    cwd: workdir,
+    env: { MSTD_JOB_WORKDIR: workdir },
     extensions,
   });
   registry.register(job.id, { client, abort: () => { try { client.child?.kill(); } catch { /* 已退出 */ } } });

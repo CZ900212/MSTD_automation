@@ -36,7 +36,8 @@ const app = createApp({
   registry,
   extensions: [
     join(ROOT, "pi-ext", "providers.ts"),
-    join(ROOT, "pi-ext", "lark.ts"),
+    join(ROOT, "pi-ext", "lark-read.ts"),
+    join(ROOT, "pi-ext", "draft.ts"),
   ],
   piCwd: ROOT,
   writeDeps: {

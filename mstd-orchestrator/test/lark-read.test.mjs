@@ -38,4 +38,8 @@ describe("buildLarkReadArgs", () => {
       expect(joined).not.toMatch(/\+create|messages-send|--yes|delete|recall/);
     }
   });
+
+  it("read_file 不进 lark-cli 白名单（buildLarkReadArgs 拒绝）", () => {
+    expect(() => buildLarkReadArgs("read_file", { path: "out/a.txt" })).toThrow(/不允许/);
+  });
 });
