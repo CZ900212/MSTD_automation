@@ -33,6 +33,37 @@ export function createOutbound({ runLark }) {
     return { messageId: data.message_id ?? null, chatId: data.chat_id ?? chatId ?? null };
   }
 
+  // 交互卡片发送（结构由服务端模板生成，模型碰不到）
+  async function sendCard({ chatId, openId, cardJson, idempotencyKey }) {
+    if (!cardJson || typeof cardJson !== "object") throw new Error("cardJson 必填");
+    if (!idempotencyKey) throw new Error("idempotencyKey 必填");
+    const argv = ["im", "+messages-send", "--as", "bot"];
+    if (chatId) {
+      if (!CHAT_ID.test(chatId)) throw new Error(`非法 chatId: ${chatId}`);
+      argv.push("--chat-id", chatId);
+    } else if (openId) {
+      if (!OPEN_ID.test(openId)) throw new Error(`非法 openId: ${openId}`);
+      argv.push("--user-id", openId);
+    } else {
+      throw new Error("chatId/openId 必须给一个");
+    }
+    argv.push("--msg-type", "interactive", "--content", JSON.stringify(cardJson), "--idempotency-key", idempotencyKey, "--json");
+    const data = await exec(argv, "发卡");
+    return { messageId: data.message_id ?? null, chatId: data.chat_id ?? chatId ?? null };
+  }
+
+  // 卡片原地更新（14 天窗口）：PATCH raw API
+  async function updateCard({ messageId, cardJson }) {
+    if (!MESSAGE_ID.test(messageId ?? "")) throw new Error(`非法 messageId: ${messageId}`);
+    const argv = [
+      "api", "PATCH", `/open-apis/im/v1/messages/${messageId}`, "--as", "bot",
+      "--data", JSON.stringify({ content: JSON.stringify(cardJson) }),
+      "--json",
+    ];
+    await exec(argv, "更卡");
+    return { messageId };
+  }
+
   // 文本消息编辑无 shortcut，走 raw API（messageId 已被正则约束，无路径注入面）
   async function editMessage({ messageId, text }) {
     if (!MESSAGE_ID.test(messageId ?? "")) throw new Error(`非法 messageId: ${messageId}`);
@@ -46,5 +77,5 @@ export function createOutbound({ runLark }) {
     return { messageId };
   }
 
-  return { sendMessage, editMessage };
+  return { sendMessage, editMessage, sendCard, updateCard };
 }
