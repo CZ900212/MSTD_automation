@@ -150,8 +150,10 @@ export function createConfirmFlow({
     }
 
     // ④ 立即翻"执行中"（按钮移除，防重复点击）→ 异步执行
+    // 长连接消费模式无法在回调响应里返回新卡，统一走 message_id 原地更新
     setCardStatus(row.id, "executing");
     const executing = buildStatusCard({ state: "executing", resultsMd: "正在执行，请稍候…" });
+    await safeUpdateCard(messageId, executing);
     setImmediate(() => {
       executeConfirmed({ jobId: row.job_id, messageId, cardRowId: row.id, sessionKey: row.session_key })
         .catch((e) => log(`[confirm-flow] 异步执行失败: ${e.message}`));

@@ -33,6 +33,10 @@ import { createMemoryTool } from "./memory/tool.mjs";
 import { buildMemorySnapshot } from "./memory/inject.mjs";
 import { createCompactor } from "./memory/compact.mjs";
 import { createJournal } from "./memory/journal.mjs";
+import { createConfirmFlow } from "./cards/confirm-flow.mjs";
+import { createBackgroundJobs } from "./jobs/background.mjs";
+import { createReinjector } from "./jobs/reinjector.mjs";
+import { createActorPool } from "./sessions/actor.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -125,6 +129,8 @@ if (config.enableAgent && config.botOpenId) {
       join(ROOT, "pi-ext", "reply.ts"),
       join(ROOT, "pi-ext", "memory.ts"),
       join(ROOT, "pi-ext", "session-search.ts"),
+      join(ROOT, "pi-ext", "propose-actions.ts"),
+      join(ROOT, "pi-ext", "background-job.ts"),
       join(ROOT, "pi-ext", "lark-read.ts"),
     ],
     piCwd: ROOT,
@@ -147,13 +153,60 @@ if (config.enableAgent && config.botOpenId) {
     journal: createJournal({ caller, files: memoryFiles }),
     onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
   });
-  internal = { token: internalToken, handleReply: turnHandler.handleReply, memoryTool, searchTool: createSessionSearch(db) };
+  // ---- Phase D：写路径卡片 + 后台 job + 回注 ----
+  const agentActors = createActorPool();
+  const reinjector = createReinjector({ store: agentStore, actors: agentActors, brain, outbound });
+  const backgroundJobs = createBackgroundJobs({
+    db,
+    semaphore,
+    // 后台 job 执行体：起 job 专属脑回合（新鲜上下文，产出文本结果）
+    runJob: async ({ jobId, sessionKey, brief, params }) => {
+      const jobSessionKey = `cron:job-${jobId}`;
+      const session = agentStore.getOrCreate(jobSessionKey, { kind: "cron", title: brief });
+      const r = await brain.turn({
+        session, sessionKey: jobSessionKey,
+        brief: `【后台任务】${brief}\n参数: ${JSON.stringify(params ?? {})}\n完成后把结果要点作为最终文本输出（不要调用 reply，结果会自动回注发起会话）。`,
+        snapshot: snapshotFn({ sessionKey }),
+      });
+      return r.finalText;
+    },
+    onComplete: (x) => reinjector.onJobComplete(x),
+  });
+  const confirmFlow = createConfirmFlow({
+    db,
+    outbound,
+    renderCardCopy: ({ brief }) => renderReply({ caller, soul: "", context: "", brief, kind: "card_copy" }).then((r) => r.text),
+    runLark: config.enableWrite ? makeRunLark({ profile: config.larkProfile }) : async () => ({ exitCode: 1, stdout: "", stderr: "MSTD_ENABLE_WRITE 未开" }),
+    testTarget: testTargetFromEnv(process.env),
+    onExecuted: ({ jobId, sessionKey, resultsMd, ok }) => {
+      reinjector.onJobComplete({ jobId, sessionKey, sessionVersion: 0, ok, result: `写操作执行结果：\n${resultsMd}` });
+    },
+  });
+  internal = {
+    token: internalToken,
+    handleReply: turnHandler.handleReply,
+    memoryTool,
+    searchTool: createSessionSearch(db),
+    spawnBackground: ({ sessionKey, kind, brief, params }) => {
+      const session = agentStore.getOrCreate(sessionKey);
+      return backgroundJobs.spawn({ sessionKey, sessionVersion: session.version ?? 0, kind, brief, params });
+    },
+    proposeActions: ({ sessionKey, title, intents }) => {
+      const initiator = sessionKey.startsWith("feishu:p2p:") ? sessionKey.split(":")[2] : (config.alertOpenId || config.botOpenId);
+      return confirmFlow.startConfirmFlow({ sessionKey, intents, initiatorOpenId: initiator, title });
+    },
+  };
   wireGateway({
     db,
     config: { ...config, larkCliPath: DEFAULT_LARK_CLI },
     spawnFn: spawn,
     handleTurn: (turn) => {
       console.error(`[agent] turn kind=${turn.kind} session=${turn.sessionKey ?? "-"} mode=${turn.mode ?? "-"} items=${turn.items?.length ?? 0}`);
+      if (turn.kind === "card_action") {
+        return confirmFlow.handleCardAction(turn.evt.raw ?? turn.evt)
+          .then((r) => console.error(`[agent] card_action 处理完成: ${JSON.stringify(r).slice(0, 120)}`))
+          .catch((e) => console.error(`[agent] card_action 失败: ${e?.message ?? e}`));
+      }
       return turnHandler.handleTurn(turn);
     },
   });
