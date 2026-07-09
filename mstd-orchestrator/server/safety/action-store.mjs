@@ -1,21 +1,27 @@
 import { randomUUID } from "node:crypto";
+import { buildInsertIgnore } from "../db/dialect.mjs";
 
 export function deriveIdempotencyKey(jobId, actionKey) {
   return `${jobId}:${actionKey}`;
 }
 
-export function recordActions(db, jobId, actions, now = Date.now()) {
-  const stmt = db.prepare(
-    `INSERT OR IGNORE INTO job_actions
-       (id, job_id, action_key, kind, target_open_id, canonical_payload_json, payload_hash, idempotency_key, status, ordinal, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
-  );
+const JOB_ACTION_COLS = [
+  "id", "job_id", "action_key", "kind", "target_open_id",
+  "canonical_payload_json", "payload_hash", "idempotency_key", "status", "ordinal", "ts",
+];
+
+export function recordActions(db, jobId, actions, now = Date.now(), dialect = "sqlite") {
+  const sql = buildInsertIgnore({
+    dialect, table: "job_actions", columns: JOB_ACTION_COLS,
+    conflictColumns: ["job_id", "action_key"],
+  });
+  const stmt = db.prepare(sql);
   const tx = db.transaction((items) => {
     for (const a of items) {
       stmt.run(
         randomUUID(), jobId, a.action_key, a.kind, a.target_open_id ?? null,
         JSON.stringify(a.payload), a.payload_hash, deriveIdempotencyKey(jobId, a.action_key),
-        a.ordinal ?? null, now
+        "pending", a.ordinal ?? null, now
       );
     }
   });
