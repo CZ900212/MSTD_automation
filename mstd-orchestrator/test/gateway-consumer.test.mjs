@@ -13,10 +13,10 @@ function fakeChild() {
 }
 
 describe("gateway consumer", () => {
-  it("NDJSON 逐行回调；坏行显式上报；退出后重启", () => {
+  it("每个事件一个子进程（lark-cli 一次只接受一个 EventKey）；NDJSON 逐行回调；坏行显式上报；退出后重启", () => {
     vi.useFakeTimers();
     const children = [];
-    const spawnFn = vi.fn(() => { const c = fakeChild(); children.push(c); return c; });
+    const spawnFn = vi.fn((_bin, args) => { const c = fakeChild(); c.args = args; children.push(c); return c; });
     const events = [];
     const consumer = createGatewayConsumer({
       spawnFn, larkCliPath: "/fake/lark-cli",
@@ -24,13 +24,16 @@ describe("gateway consumer", () => {
       onEvent: (e) => events.push(e), restartDelayMs: 5000,
     });
     consumer.start();
-    expect(spawnFn).toHaveBeenCalledTimes(1);
+    expect(spawnFn).toHaveBeenCalledTimes(2);                       // 每事件一进程
+    expect(children[0].args).toContain("im.message.receive_v1");
+    expect(children[0].args).not.toContain("card.action.trigger");  // 不混装
+    expect(children[1].args).toContain("card.action.trigger");
     children[0].stdout.emit("data", Buffer.from('{"header":{"event_id":"e1"}}\n不是json\n'));
     expect(events[0]).toEqual({ header: { event_id: "e1" } });
     expect(events[1]).toHaveProperty("__parse_error");
     children[0].emit("exit", 1);
     vi.advanceTimersByTime(5000);
-    expect(spawnFn).toHaveBeenCalledTimes(2);
+    expect(spawnFn).toHaveBeenCalledTimes(3);                       // 只重启挂掉的那个
     consumer.stop();
     vi.useRealTimers();
   });
