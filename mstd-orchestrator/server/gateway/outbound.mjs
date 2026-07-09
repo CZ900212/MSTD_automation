@@ -4,15 +4,30 @@ const CHAT_ID = /^oc_[a-zA-Z0-9]+$/;
 const OPEN_ID = /^ou_[a-zA-Z0-9]+$/;
 const MESSAGE_ID = /^om_[a-zA-Z0-9]+$/;
 
-export function createOutbound({ runLark }) {
+// 瞬时错误可重试（发送/发卡带幂等 key，重发安全；更卡/编辑天然幂等）
+const TRANSIENT_ERROR_TYPES = new Set(["network", "timeout", "rate_limit", "internal"]);
+
+export function createOutbound({ runLark, retries = 5, retryDelayMs = 10_000, log = console.error }) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   async function exec(argv, what) {
-    const r = await runLark(argv);
-    let parsed = null;
-    try { parsed = JSON.parse(r.stdout); } catch { /* 下面统一判错 */ }
-    if (r.exitCode !== 0 || !parsed?.ok) {
-      throw new Error(`${what}失败: exit=${r.exitCode} ${String(r.stderr || r.stdout).slice(0, 300)}`);
+    let lastErr;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      const r = await runLark(argv);
+      let parsed = null;
+      try { parsed = JSON.parse(r.stdout); } catch { /* 下面统一判错 */ }
+      if (r.exitCode === 0 && parsed?.ok) return parsed.data ?? {};
+
+      lastErr = new Error(`${what}失败: exit=${r.exitCode} ${String(r.stderr || r.stdout).slice(0, 300)}`);
+      // 永久错误（权限/参数等 lark 明确判定）不重试；解析不出/网络类才算瞬时
+      const transient = parsed == null || TRANSIENT_ERROR_TYPES.has(parsed?.error?.type);
+      if (!transient) throw lastErr;
+      if (attempt < retries) {
+        log(`[outbound] ${what}瞬时失败（第 ${attempt}/${retries} 次），${retryDelayMs}ms 后重试: ${lastErr.message.slice(0, 200)}`);
+        await sleep(retryDelayMs);
+      }
     }
-    return parsed.data ?? {};
+    throw lastErr;
   }
 
   async function sendMessage({ chatId, openId, text, idempotencyKey }) {
