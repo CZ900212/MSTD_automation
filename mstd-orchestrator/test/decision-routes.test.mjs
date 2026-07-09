@@ -87,6 +87,37 @@ describe("decision", () => {
     expect(res.status).toBe(409);
   });
 
+
+  it("edited_items 缩减后 job_actions 同步缩减", async () => {
+    const job = createJob(db, { templateId: "meeting_to_task", paramsJson: "{}", status: "running_readonly", createdBy: "u-1" }, 1000);
+    const items = [
+      { owner_name: "张三", task: "写周报", due: "2026-07-15", suggested_open_id: "ou_a", confidence: "high" },
+      { owner_name: "李四", task: "发纪要", due: null, suggested_open_id: "ou_b", confidence: "high" },
+    ];
+    const actions = canonicalizeActions({ jobId: job.id, items });
+    recordActions(db, job.id, actions);
+    saveJobDraft(db, job.id, { cardText: "请确认", itemsJson: JSON.stringify(items), actionSetJson: JSON.stringify(actions) });
+    updateJobStatus(db, job.id, "awaiting_approval", 1000);
+    const dt = tokenFor(job.id);
+    const ITEM_A = { owner_name: "张三", task: "写周报", due: "2026-07-15", suggested_open_id: "ou_a", confidence: "high" };
+    const res = await auth(request(app).post(`/api/jobs/${job.id}/decision`)).send({
+      approve: true, decision_token: dt, edited_items: [ITEM_A],
+    });
+    expect(res.status).toBe(200);
+    const n = db.prepare("SELECT COUNT(*) AS n FROM job_actions WHERE job_id = ?").get(job.id).n;
+    expect(n).toBe(1);
+  });
+
+  it("edited_items 为空数组 → 400", async () => {
+    const job = setupAwaitingJob();
+    const dt = tokenFor(job.id);
+    const res = await auth(request(app).post(`/api/jobs/${job.id}/decision`)).send({
+      approve: true, decision_token: dt, edited_items: [],
+    });
+    expect(res.status).toBe(400);
+  });
+
+
   it("enableWrite + writeDeps → running_write then eventually done", async () => {
     const writeApp = createApp({
       db,

@@ -128,11 +128,13 @@ export function mountJobRoutes(app, ctx) {
     }
 
     if (Array.isArray(edited_items)) {
+      if (edited_items.length === 0) return res.status(400).json({ error: "动作清单为空：请直接驳回，不要批准空清单" });
       const cardText = db.prepare("SELECT card_text FROM job_draft WHERE job_id = ?").get(job.id)?.card_text ?? "(编辑)";
       let intent;
       try { intent = validateIntent({ card_text: cardText, items: edited_items }); }
       catch (err) { return res.status(400).json({ error: `编辑后的条目校验失败: ${err.reason ?? err.message}` }); }
       const actions = canonicalizeActions({ jobId: job.id, items: intent.items, enableNotify: TEMPLATES[job.template_id]?.enableNotify ?? false });
+      db.prepare("DELETE FROM job_actions WHERE job_id = ?").run(job.id); // 编辑 = 全量替换
       recordActions(db, job.id, actions);
       saveJobDraft(db, job.id, { cardText: intent.card_text, itemsJson: JSON.stringify(intent.items), actionSetJson: JSON.stringify(actions) });
     }

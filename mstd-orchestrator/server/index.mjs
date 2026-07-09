@@ -11,6 +11,7 @@ import { makeFeishuClient } from "./auth/feishu-client.mjs";
 import { makeRunLark } from "./execute/run-lark.mjs";
 import { testTargetFromEnv } from "./execute/write-target.mjs";
 import { startPi } from "../supervisor/pi-client.mjs";
+import { reconcileOnBoot } from "./execute/reconcile-startup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -24,6 +25,10 @@ const buffer = createEventBuffer(db);
 buffer.start();
 const registry = createRuntimeRegistry();
 const feishu = makeFeishuClient(config.feishu);
+
+const bootLark = config.larkProfile ? makeRunLark({ profile: config.larkProfile }) : null;
+const boot = await reconcileOnBoot(db, { runLark: config.enableWrite ? bootLark : null });
+console.error(`[mstd] boot reconcile: ${JSON.stringify(boot)}`);
 
 const app = createApp({
   db,
