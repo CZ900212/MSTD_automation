@@ -10,8 +10,7 @@ function baseProps(over = {}) {
   return {
     templates, selectedTemplateId: "meeting_to_task",
     onSelectTemplate: vi.fn(), params: { minuteToken: "" }, onChangeParams: vi.fn(),
-    onTrigger: vi.fn(), running: false, log: emptyLog(),
-    draft: null, actions: [], onApprove: vi.fn(), onReject: vi.fn(), onAbort: vi.fn(),
+    onTrigger: vi.fn(), running: false, log: emptyLog(), onAbort: vi.fn(),
     ...over,
   };
 }
@@ -25,13 +24,10 @@ describe("WorkspaceView", () => {
     expect(onTrigger).toHaveBeenCalledOnce();
   });
 
-  it("shows the approval card once a draft arrives", () => {
-    render(<WorkspaceView {...baseProps({
-      draft: { card_text: "请确认以下待办" },
-      actions: [{ action_key: "k1", kind: "create_task", payload: { title: "写周报", assignee_open_id: "ou_a" }, payload_hash: "h", target_open_id: "ou_a", ordinal: 0, requires_open_id: false }],
-    })} />);
-    expect(screen.getByText("请确认以下待办")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /批准/ })).toBeInTheDocument();
+  it("H1 后不再渲染 web 审批入口（无批准按钮）", () => {
+    render(<WorkspaceView {...baseProps()} />);
+    expect(screen.queryByRole("button", { name: /批准/ })).toBeNull();
+    expect(screen.queryByText(/审批/)).toBeNull();
   });
 
   it("running 时显示中止按钮并回调 onAbort", () => {

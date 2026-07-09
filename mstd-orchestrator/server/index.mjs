@@ -313,13 +313,6 @@ const app = createApp({
   piCwd: ROOT,
   launcher,
   larkHealth,
-  writeDeps: {
-    runLark: makeRunLark({ profile: config.larkProfile }),
-    testTarget: testTargetFromEnv(process.env),
-    dbPath,
-    writeExtensions: [join(ROOT, "pi-ext", "providers.ts"), join(ROOT, "pi-ext", "lark-execute.ts")],
-    piCwd: ROOT,
-  },
 });
 
 const port = config.port;

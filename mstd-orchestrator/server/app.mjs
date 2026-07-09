@@ -36,7 +36,7 @@ export function createApp(deps) {
     mountJobRoutes(app, {
       db: deps.db, config: deps.config, startPi: deps.startPi,
       semaphore: deps.semaphore, bus: deps.bus, buffer: deps.buffer, registry: deps.registry,
-      extensions: deps.extensions, piCwd: deps.piCwd, writeDeps: deps.writeDeps, now,
+      extensions: deps.extensions, piCwd: deps.piCwd, now,
       launcher: deps.launcher,
     });
   }

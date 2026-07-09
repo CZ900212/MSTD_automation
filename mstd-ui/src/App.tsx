@@ -7,11 +7,9 @@ import { SessionBrowser } from "./views/SessionBrowser";
 import { AdminBoard } from "./views/AdminBoard";
 import { MemoryEditor } from "./views/MemoryEditor";
 import { DebugChat } from "./views/DebugChat";
-import { createJob, listJobs, getJob, listTemplates, postDecision, abortJob, type JobSummary, type JobDetail, type Template, type ActionDraft } from "./api/jobs";
+import { createJob, listJobs, getJob, listTemplates, abortJob, type JobSummary, type JobDetail, type Template } from "./api/jobs";
 import { openJobStream } from "./api/job-stream";
 import { emptyLog, reduceJobEvent, type JobEventLog, type SseEvent } from "./state/job-event-log";
-
-const WRITE_TERMINAL = new Set(["done", "partial_failed", "failed", "aborted"]);
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -24,9 +22,6 @@ export default function App() {
   const [params, setParams] = useState({ minuteToken: "" });
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<JobEventLog>(emptyLog());
-  const [draft, setDraft] = useState<{ card_text: string } | null>(null);
-  const [actions, setActions] = useState<ActionDraft[]>([]);
-  const [approvalToken, setApprovalToken] = useState<string | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,11 +45,10 @@ export default function App() {
     refreshJobs();
   }, [me, refreshJobs]);
 
+  // H1：审批/驳回入口退役——动作确认统一走飞书卡片；web 只触发与观察。
   async function onTrigger() {
     setRunning(true);
     setLog(emptyLog());
-    setDraft(null);
-    setActions([]);
     try {
       const { jobId } = await createJob(selectedTemplateId, {
         minute_token: params.minuteToken || undefined,
@@ -62,19 +56,7 @@ export default function App() {
       setActiveJobId(jobId);
       await openJobStream(jobId, {
         onEvent: (e) => setLog((prev) => reduceJobEvent(prev, e as SseEvent)),
-        onDone: async () => {
-          const detail = await getJob(jobId);
-          if (detail.draft) setDraft({ card_text: detail.draft.card_text });
-          setActions(detail.actions.map((a) => ({
-            action_key: a.action_key,
-            kind: a.kind,
-            payload: a.payload || {},
-            payload_hash: a.payload_hash,
-            target_open_id: a.target_open_id,
-            ordinal: a.ordinal,
-            requires_open_id: a.requires_open_id ?? !String(a.target_open_id || "").startsWith("ou_"),
-          })));
-          setApprovalToken(detail.approvalToken ?? null);
+        onDone: () => {
           setRunning(false);
           refreshJobs();
         },
@@ -83,38 +65,6 @@ export default function App() {
     } catch {
       setRunning(false);
     }
-  }
-
-  async function onApprove(edited: ActionDraft[]) {
-    if (!activeJobId || !approvalToken) return;
-    const jobId = activeJobId;
-    const edited_items = edited.map((a) => ({
-      owner_name: String(a.payload.owner_name ?? "负责人"),
-      task: String(a.payload.title ?? a.payload.task ?? ""),
-      due: (a.payload.due as string | null) ?? null,
-      suggested_open_id: (a.payload.assignee_open_id as string | null) ?? a.target_open_id,
-      confidence: a.requires_open_id ? "low" : "high",
-    }));
-    const res = await postDecision(jobId, { approve: true, edited_items, decision_token: approvalToken });
-    setDraft(null);
-    setActions([]);
-    refreshJobs();
-    if (res.status === "running_write" && !res.writeGated) {
-      setRunning(true);
-      await openJobStream(jobId, {
-        onEvent: (e) => setLog((prev) => reduceJobEvent(prev, e as SseEvent)),
-        isTerminal: (e) => e.event === "job_status" && WRITE_TERMINAL.has(String((e.data as { status?: string }).status)),
-        onDone: () => { setRunning(false); refreshJobs(); },
-        onError: () => { setRunning(false); refreshJobs(); },
-      });
-    }
-  }
-
-  async function onReject(note: string) {
-    if (!activeJobId || !approvalToken) return;
-    await postDecision(activeJobId, { approve: false, note, decision_token: approvalToken });
-    setDraft(null);
-    refreshJobs();
   }
 
   async function onAbort() {
@@ -160,10 +110,6 @@ export default function App() {
             onTrigger={() => { void onTrigger(); }}
             running={running}
             log={log}
-            draft={draft}
-            actions={actions}
-            onApprove={(e) => { void onApprove(e); }}
-            onReject={(n) => { void onReject(n); }}
             onAbort={() => { void onAbort(); }}
           />
         ) : tab === "board" ? (

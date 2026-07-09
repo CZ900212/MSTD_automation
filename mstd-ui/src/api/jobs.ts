@@ -21,7 +21,6 @@ export type JobDetail = {
   draft: { card_text: string; items_json: string } | null;
   actions: (ActionDraft & { status: string; result_json: string | null })[];
   decisions: { decided_by: string; decision: string; note: string | null; ts: number }[];
-  approvalToken?: string | null;
 };
 
 export const listTemplates = async () => {
@@ -38,9 +37,5 @@ export const listJobs = async (filter: { status?: JobStatus; mine?: boolean } = 
   return Array.isArray(res) ? res : res.jobs;
 };
 export const getJob = (id: string) => apiFetch<JobDetail>(`/api/jobs/${encodeURIComponent(id)}`);
-export const postDecision = (
-  id: string,
-  body: { approve: boolean; edited_items?: unknown[]; note?: string; decision_token: string }
-) => apiFetch<{ ok: boolean; status: string; writeGated?: boolean }>(
-  `/api/jobs/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify(body) });
+// H1：postDecision 已退役——审批统一走飞书卡片确认。
 export const abortJob = (id: string) => apiFetch<{ ok: boolean }>(`/api/jobs/${encodeURIComponent(id)}/abort`, { method: "POST" });

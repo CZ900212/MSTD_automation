@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BoardView } from "../views/BoardView";
 import type { JobSummary, JobDetail } from "../api/jobs";
@@ -18,11 +18,11 @@ const detail: JobDetail = {
 };
 
 describe("BoardView", () => {
-  it("renders the jobs table and an approval queue filtered to awaiting_approval", () => {
+  it("renders the jobs table without a web approval queue (H1 退役)", () => {
     render(<BoardView jobs={jobs} selected={null} onSelect={vi.fn()} />);
-    const queue = screen.getByTestId("approval-queue");
-    expect(within(queue).getByText("周会")).toBeInTheDocument();
-    expect(within(queue).queryByText("复盘")).toBeNull();
+    expect(screen.getByText("周会")).toBeInTheDocument();
+    expect(screen.queryByTestId("approval-queue")).toBeNull();
+    expect(screen.queryByText(/审批队列/)).toBeNull();
   });
 
   it("selecting a job calls onSelect", async () => {

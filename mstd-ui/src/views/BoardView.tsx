@@ -1,4 +1,3 @@
-import React from "react";
 import type { JobSummary, JobDetail } from "../api/jobs";
 
 function JobsTable({ jobs, onSelect, caption }: { jobs: JobSummary[]; onSelect: (id: string) => void; caption: string }) {
@@ -27,13 +26,9 @@ export function BoardView({
   selected: JobDetail | null;
   onSelect: (id: string) => void;
 }) {
-  const queue = jobs.filter((j) => j.status === "awaiting_approval");
   return (
     <div className="board">
       <JobsTable jobs={jobs} onSelect={onSelect} caption="任务" />
-      <div data-testid="approval-queue">
-        <JobsTable jobs={queue} onSelect={onSelect} caption="审批队列（awaiting_approval）" />
-      </div>
 
       {selected && (
         <section className="job-detail">

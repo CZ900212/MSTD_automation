@@ -1,12 +1,11 @@
-import React from "react";
 import { Timeline } from "./Timeline";
-import { ApprovalActionEditor } from "./ApprovalActionEditor";
 import type { JobEventLog } from "../state/job-event-log";
-import type { ActionDraft, Template } from "../api/jobs";
+import type { Template } from "../api/jobs";
 
+// H1：web 审批卡入口已退役——动作确认统一走飞书卡片（ApprovalActionEditor 组件保留备用）。
 export function WorkspaceView({
   templates, selectedTemplateId, onSelectTemplate, params, onChangeParams,
-  onTrigger, running, log, draft, actions, onApprove, onReject, onAbort,
+  onTrigger, running, log, onAbort,
 }: {
   templates: Template[];
   selectedTemplateId: string;
@@ -16,10 +15,6 @@ export function WorkspaceView({
   onTrigger: () => void;
   running: boolean;
   log: JobEventLog;
-  draft: { card_text: string } | null;
-  actions: ActionDraft[];
-  onApprove: (edited: ActionDraft[]) => void;
-  onReject: (note: string) => void;
   onAbort: () => void;
 }) {
   return (
@@ -44,14 +39,6 @@ export function WorkspaceView({
       </section>
 
       <Timeline log={log} />
-
-      {draft && (
-        <section className="approval-card">
-          <h3>审批：确认将真跑的动作</h3>
-          <div className="draft-card-text"><p>{draft.card_text}</p></div>
-          <ApprovalActionEditor actions={actions} onApprove={onApprove} onReject={onReject} />
-        </section>
-      )}
     </div>
   );
 }

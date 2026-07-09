@@ -59,7 +59,7 @@ describe("jobs API", () => {
     const detail = await auth(request(app).get(`/api/jobs/${res.body.jobId}`));
     expect(detail.body.job.status).toBe("awaiting_approval");
     expect(detail.body.actions).toHaveLength(1);
-    expect(detail.body.approvalToken).toBeTruthy();
+    expect(detail.body.approvalToken).toBeUndefined(); // H1：web 审批已退役
   });
 
   it("POST /api/jobs rejects unknown template (400)", async () => {
