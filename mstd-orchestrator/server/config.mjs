@@ -19,5 +19,7 @@ export function loadServerConfig(env = process.env) {
       thinking: env.PI_THINKING ?? "medium",
     },
     larkProfile: env.LARK_PROFILE ?? "",
+    enableAgent: String(env.MSTD_ENABLE_AGENT ?? "") === "1",
+    botOpenId: String(env.MSTD_BOT_OPEN_ID ?? "").trim(),
   };
 }

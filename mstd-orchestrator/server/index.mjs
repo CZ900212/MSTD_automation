@@ -16,6 +16,8 @@ import { createJobLauncher } from "./jobs/launcher.mjs";
 import { startMinutesConsumer } from "./triggers/minutes-consumer.mjs";
 import { backfillMinutes } from "./triggers/backfill.mjs";
 import { startLarkHealth, makeDmAlert } from "./health/lark-profile.mjs";
+import { wireGateway } from "./gateway/wire.mjs";
+import { spawn } from "node:child_process";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -79,6 +81,19 @@ if (config.enableTrigger && config.larkProfile) {
       console.error(`[backfill] ${e}`)
     );
   }
+}
+
+if (config.enableAgent && config.botOpenId) {
+  wireGateway({
+    db,
+    config: { ...config, larkCliPath: DEFAULT_LARK_CLI },
+    spawnFn: spawn,
+    // 占位 handler：Phase B1 换成真回合执行器
+    handleTurn(turn) {
+      console.error(`[agent] turn kind=${turn.kind} session=${turn.sessionKey ?? "-"} mode=${turn.mode ?? "-"} items=${turn.items?.length ?? 0}`);
+    },
+  });
+  console.error(`[mstd] agent gateway on (bot=${config.botOpenId})`);
 }
 
 const app = createApp({
