@@ -1,8 +1,12 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { bootstrap, feishuLogin, setOnAuthInvalid, type Me } from "./api/auth";
 import { LoginFeishu } from "./views/LoginFeishu";
 import { WorkspaceView } from "./views/WorkspaceView";
 import { BoardView } from "./views/BoardView";
+import { SessionBrowser } from "./views/SessionBrowser";
+import { AdminBoard } from "./views/AdminBoard";
+import { MemoryEditor } from "./views/MemoryEditor";
+import { DebugChat } from "./views/DebugChat";
 import { createJob, listJobs, getJob, listTemplates, postDecision, abortJob, type JobSummary, type JobDetail, type Template, type ActionDraft } from "./api/jobs";
 import { openJobStream } from "./api/job-stream";
 import { emptyLog, reduceJobEvent, type JobEventLog, type SseEvent } from "./state/job-event-log";
@@ -12,7 +16,7 @@ const WRITE_TERMINAL = new Set(["done", "partial_failed", "failed", "aborted"]);
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [ready, setReady] = useState(false);
-  const [tab, setTab] = useState<"workspace" | "board">("workspace");
+  const [tab, setTab] = useState<"workspace" | "board" | "sessions" | "admin" | "memory" | "debug">("workspace");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [selected, setSelected] = useState<JobDetail | null>(null);
@@ -134,6 +138,10 @@ export default function App() {
         <div className="tab-bar">
           <button type="button" className={tab === "workspace" ? "active" : ""} onClick={() => setTab("workspace")}>工作台</button>
           <button type="button" className={tab === "board" ? "active" : ""} onClick={() => setTab("board")}>看板</button>
+          <button type="button" className={tab === "sessions" ? "active" : ""} onClick={() => setTab("sessions")}>会话</button>
+          <button type="button" className={tab === "admin" ? "active" : ""} onClick={() => setTab("admin")}>调试台</button>
+          <button type="button" className={tab === "memory" ? "active" : ""} onClick={() => setTab("memory")}>记忆</button>
+          <button type="button" className={tab === "debug" ? "active" : ""} onClick={() => setTab("debug")}>调试对话</button>
         </div>
         <ul>
           {jobs.slice(0, 20).map((j) => (
@@ -158,8 +166,16 @@ export default function App() {
             onReject={(n) => { void onReject(n); }}
             onAbort={() => { void onAbort(); }}
           />
-        ) : (
+        ) : tab === "board" ? (
           <BoardView jobs={jobs} selected={selected} onSelect={(id) => { void onSelectBoard(id); }} />
+        ) : tab === "sessions" ? (
+          <SessionBrowser />
+        ) : tab === "admin" ? (
+          <AdminBoard />
+        ) : tab === "memory" ? (
+          <MemoryEditor />
+        ) : (
+          <DebugChat />
         )}
       </main>
     </div>
