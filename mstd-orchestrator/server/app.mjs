@@ -12,6 +12,11 @@ export function createApp(deps) {
   app.use(express.json({ limit: "8mb" }));
 
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  // 免登录：与 /api/health 同段
+  app.get("/api/health/lark", (_req, res) => {
+    const h = deps.larkHealth?.last ?? { ok: null, ts: 0, detail: "未启用（无 larkProfile）" };
+    res.json(h);
+  });
 
   const now = deps.now ?? (() => Date.now());
   const verify = (token) => verifySessionToken(token, { secret: deps.config.sessionSecret, now: now() });
