@@ -3,7 +3,8 @@
  * 严格 JSONL：只按 \n 切、剥尾 \r，不用 readline（会误切 U+2028/2029）。
  *
  * 用法（作为库）：
- *   const client = await startPi({ provider:'deepseek', model:'deepseek-chat', extensions:[...] });
+ *   const client = startPi({ provider:'deepseek', model:'deepseek-chat', extensions:[...] });
+ *   const { finalText } = await client.runJob('...', { id, onEvent });
  *   const text = await client.prompt('...');   // 跑一轮，返回最终 assistant 文本
  *   await client.close();
  *
@@ -12,6 +13,8 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { buildPiEnv, parseRpcLine, isTerminalEvent } from "../server/pi/rpc-protocol.mjs";
+import { makeStreamProcessor } from "../server/pi/stream-processor.mjs";
 
 const PI_BIN = join(homedir(), ".hermes", "node", "bin", "pi");
 
@@ -24,56 +27,53 @@ export function startPi({ provider, model, extensions = [], thinking, cwd, env, 
 
   const child = spawn(PI_BIN, args, {
     cwd: cwd || process.cwd(),
-    env: { ...process.env, PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1", ...env },
+    env: buildPiEnv(process.env, { PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1", ...(env || {}) }),
     stdio: ["pipe", "pipe", "pipe"],
   });
 
   let buf = "";
-  const listeners = new Set();
+  const listeners = new Set();          // 原始事件监听（供 on() 订阅，保持兼容）
   const seenTypes = new Set();
-
   child.stdout.on("data", (chunk) => {
     buf += chunk.toString("utf8");
     let idx;
     while ((idx = buf.indexOf("\n")) >= 0) {
-      let line = buf.slice(0, idx);
-      buf = buf.slice(idx + 1);
-      if (line.endsWith("\r")) line = line.slice(0, -1);
-      if (!line.trim()) continue;
-      let msg;
-      try { msg = JSON.parse(line); } catch { continue; }
-      seenTypes.add(msg.type);
-      if (debug) process.stderr.write(`[evt] ${msg.type}\n`);
-      for (const l of listeners) l(msg);
+      const line = buf.slice(0, idx); buf = buf.slice(idx + 1);
+      const r = parseRpcLine(line);
+      if (r.ok) { seenTypes.add(r.msg.type); for (const l of listeners) l(r.msg); }
+      else if (r.kind === "parse_error") { for (const l of listeners) l({ type: "parse_error", raw: r.raw }); }
     }
   });
-  if (debug) child.stderr.on("data", (d) => process.stderr.write(`[pi-stderr] ${d}`));
+  const stderrListeners = new Set();
+  child.stderr.on("data", (d) => {
+    const text = d.toString();
+    if (debug) process.stderr.write(`[pi-stderr] ${text}`);
+    for (const l of stderrListeners) l(text);
+  });
 
   const send = (obj) => child.stdin.write(JSON.stringify(obj) + "\n");
   const on = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
 
-  // 跑一轮 prompt，收集本轮 assistant 文本，遇到 agent_end/idle 结束
+  function runJob(message, { id = "job", images, onEvent = () => {}, timeoutMs = 240000 } = {}) {
+    return new Promise((resolve, reject) => {
+      const proc = makeStreamProcessor({ onEvent, onDone: ({ finalText }) => { cleanup(); resolve({ finalText }); } });
+      const offEvt = on((msg) => proc.pushLine(JSON.stringify(msg)));   // 复用 processor：把已解析事件回灌
+      const offErr = (() => { stderrListeners.add(proc.pushStderr); return () => stderrListeners.delete(proc.pushStderr); })();
+      const timer = setTimeout(() => { cleanup(); reject(new Error("pi runJob timeout")); }, timeoutMs);
+      function cleanup() { clearTimeout(timer); offEvt(); offErr(); }
+      send(images ? { id, type: "prompt", message, images } : { id, type: "prompt", message });
+    });
+  }
+
   function prompt(message, { images, timeoutMs = 240000 } = {}) {
     return new Promise((resolve, reject) => {
-      let finalText = "";
       let lastAssistant = "";
       const timer = setTimeout(() => { off(); reject(new Error("pi prompt timeout")); }, timeoutMs);
       const off = on((msg) => {
-        // 累积 assistant 文本（不同版本事件名不同，做宽松兼容）
-        const t = msg.type;
-        if (t === "message_end" || t === "message") {
-          const m = msg.message || msg;
-          if (m && m.role === "assistant" && Array.isArray(m.content)) {
-            const txt = m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-            if (txt) lastAssistant = txt;
-          }
+        if ((msg.type === "message_end" || msg.type === "message") && msg.message?.role === "assistant" && Array.isArray(msg.message.content)) {
+          const txt = msg.message.content.filter((b) => b.type === "text").map((b) => b.text).join(""); if (txt) lastAssistant = txt;
         }
-        if (t === "assistant_message" && typeof msg.text === "string") lastAssistant = msg.text;
-        // 完成信号：agent_end / agent_idle / turn_end(最外层)
-        if (t === "agent_end" || t === "agent_idle" || t === "idle") {
-          finalText = lastAssistant;
-          clearTimeout(timer); off(); resolve(finalText);
-        }
+        if (isTerminalEvent(msg)) { clearTimeout(timer); off(); resolve(lastAssistant); }
       });
       send(images ? { type: "prompt", message, images } : { type: "prompt", message });
     });
@@ -82,12 +82,12 @@ export function startPi({ provider, model, extensions = [], thinking, cwd, env, 
   function close() {
     return new Promise((res) => {
       child.on("close", () => res());
-      try { child.stdin.end(); } catch {}
-      setTimeout(() => { try { child.kill(); } catch {}; res(); }, 3000);
+      try { child.stdin.end(); } catch { /* ignore */ }
+      setTimeout(() => { try { child.kill(); } catch { /* ignore */ } res(); }, 3000);
     });
   }
 
-  return { child, send, on, prompt, close, seenTypes };
+  return { child, send, on, runJob, prompt, close, seenTypes };
 }
 
 // ---- 诊断入口 ----

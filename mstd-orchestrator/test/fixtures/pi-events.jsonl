@@ -1,0 +1,24 @@
+{"id":"job-1","type":"response","command":"prompt","success":true}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"分析","partial":{}}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"分析完成","partial":{}}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":1,"partial":{}}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":1,"delta":"{\"args\"","partial":{}}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":1,"toolCall":{"name":"lark"},"partial":{}}}
+{"type":"tool_execution_start","toolCallId":"tc_1","toolName":"lark","args":{"args":["minutes","+search"]}}
+{"type":"tool_execution_end","toolCallId":"tc_1","toolName":"lark","result":{"content":[{"type":"text","text":"(ok)"}],"details":{"exitCode":0}},"isError":false}
+{"type":"turn_end","message":{"role":"assistant","content":[]},"toolResults":[]}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":{}}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"结果是","partial":{}}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"三条","partial":{}}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"结果是三条","partial":{}}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"结果是三条"}]}}
+this is not valid json
+{"type":"some_future_event","foo":1}
+{"type":"agent_end","willRetry":true,"messages":[]}
+{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","content":[{"type":"text","text":"结果是三条"}]}]}
