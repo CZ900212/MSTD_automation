@@ -64,3 +64,19 @@ describe("inbox", () => {
     expect(inbox.isDuplicate(inbox.normalize(rawMsg({ eventId: "ev3" })), 120_000)).toBe(false);
   });
 });
+
+describe("inbox 扁平事件 @ 识别（mentions 字段被 lark-cli 丢弃）", () => {
+  it("bot 名字文本匹配识别 @；无名字命中则不算", () => {
+    const inbox = createInbox(freshDb(), { botOpenId: "ou_bot", botName: "小达助手" });
+    const evt = inbox.normalize({
+      type: "im.message.receive_v1", event_id: "m1", chat_id: "oc_1", chat_type: "group",
+      message_type: "text", sender_id: "ou_a", content: "@小达助手 在吗", create_time: "1000",
+    });
+    expect(evt.mentionsBot).toBe(true);
+    const evt2 = inbox.normalize({
+      type: "im.message.receive_v1", event_id: "m2", chat_id: "oc_1", chat_type: "group",
+      message_type: "text", sender_id: "ou_a", content: "随便聊聊", create_time: "1000",
+    });
+    expect(evt2.mentionsBot).toBe(false);
+  });
+});

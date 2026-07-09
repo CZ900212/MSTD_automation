@@ -9,7 +9,7 @@ import { buildSessionKey } from "../sessions/session-key.mjs";
 // 管道装配：consumer → inbox(去重) → admit → debounce → actor → handleTurn
 // handleTurn 占位到 Phase B1 换成真回合执行器（接缝）
 export function wireGateway({ db, config, spawnFn, handleTurn, log = console.error }) {
-  const inbox = createInbox(db, { botOpenId: config.botOpenId });
+  const inbox = createInbox(db, { botOpenId: config.botOpenId, botName: config.botName });
   const admitter = createAdmit(db, { botOpenId: config.botOpenId });
   const debouncer = createDebouncer({});
   const actors = createActorPool();

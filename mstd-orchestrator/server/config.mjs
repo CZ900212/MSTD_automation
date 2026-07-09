@@ -21,6 +21,7 @@ export function loadServerConfig(env = process.env) {
     larkProfile: env.LARK_PROFILE ?? "",
     enableAgent: String(env.MSTD_ENABLE_AGENT ?? "") === "1",
     botOpenId: String(env.MSTD_BOT_OPEN_ID ?? "").trim(),
+    botName: String(env.MSTD_BOT_NAME ?? "").trim(),
     dailyTokenBudget: Number(env.MSTD_DAILY_TOKEN_BUDGET ?? 2_000_000),
     sessionTokenBudget: Number(env.MSTD_SESSION_TOKEN_BUDGET ?? 300_000),
   };

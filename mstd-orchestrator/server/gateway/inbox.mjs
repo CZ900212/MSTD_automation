@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export function createInbox(db, { botOpenId }) {
+export function createInbox(db, { botOpenId, botName = "" }) {
   function normalize(raw) {
     // lark-cli event consume 输出扁平形状（真机验证）：{type, event_id, message_id, chat_id, chat_type, sender_id, content, mentions?}
     if (raw?.type && !raw?.header) return normalizeFlat(raw);
@@ -38,6 +38,10 @@ export function createInbox(db, { botOpenId }) {
       if (raw.message_type && raw.message_type !== "text") return null; // 非文本先不进管道
       const mentions = raw.mentions ?? [];
       const mentionIds = mentions.map((m) => (typeof m === "string" ? m : m?.id?.open_id ?? m?.open_id ?? m?.id)).filter(Boolean);
+      const content = typeof raw.content === "string" ? raw.content : "";
+      // lark-cli 扁平事件把 mention 转写成 "@<bot名>" 纯文本且丢弃 mentions 字段（真机验证），
+      // 因此额外用 bot 名字文本匹配识别 @
+      const mentionsBot = mentionIds.includes(botOpenId) || (!!botName && content.includes(`@${botName}`));
       return {
         eventId: raw.event_id,
         kind: "message",
@@ -46,8 +50,8 @@ export function createInbox(db, { botOpenId }) {
         senderOpenId: raw.sender_id ?? null,
         senderType: raw.sender_type ?? (raw.sender_id ? "user" : "app"),
         senderName: raw.sender_name ?? null,
-        content: typeof raw.content === "string" ? raw.content : "",
-        mentionsBot: mentionIds.includes(botOpenId),
+        content,
+        mentionsBot,
         topicId: raw.thread_id ?? null,
         ts: Number(raw.create_time ?? raw.timestamp ?? Date.now()),
       };
