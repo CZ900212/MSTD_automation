@@ -8,6 +8,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export function openDb(path = ":memory:") {
   const db = new Database(path);
   db.pragma("foreign_keys = ON");
+  db.pragma("journal_mode = WAL"); // 双进程并发写防护（:memory: 下自动为 memory 模式，无副作用）
   return db;
 }
 

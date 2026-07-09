@@ -1,4 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 import { openDb, migrate } from "../server/db/index.mjs";
 
 const TABLES = [
@@ -44,6 +48,17 @@ describe("db migrate", () => {
       ins.run("a2", "job1", "k1", "create_task", "{}", "h", "job1:k1", "pending", 2)
     ).toThrow(/UNIQUE/i);
     db.close();
+  });
+
+  it("openDb 对文件库启用 WAL journal mode（双进程并发写防护）", () => {
+    const path = join(tmpdir(), `mstd-wal-test-${randomBytes(8).toString("hex")}.sqlite`);
+    const db = openDb(path);
+    try {
+      expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
+    } finally {
+      db.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
   });
 
   it("job_actions.job_id enforces FK to orch_jobs (orphan insert rejected)", () => {
