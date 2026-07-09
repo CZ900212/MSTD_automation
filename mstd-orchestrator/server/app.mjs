@@ -4,6 +4,7 @@ import { bearerAuth, publicUser } from "./http/auth-middleware.mjs";
 import { verifySessionToken } from "./http/session.mjs";
 import { mountAuthRoutes } from "./auth/routes.mjs";
 import { mountJobRoutes } from "./jobs/routes.mjs";
+import { mountInternalRoutes } from "./http/internal-routes.mjs";
 
 // createApp(deps)：deps 随任务推进逐步补齐；骨架需 deps.db + deps.config.sessionSecret。
 export function createApp(deps) {
@@ -17,6 +18,9 @@ export function createApp(deps) {
     const h = deps.larkHealth?.last ?? { ok: null, ts: 0, detail: "未启用（无 larkProfile）" };
     res.json(h);
   });
+
+  // 内部通道在 bearerAuth 之前挂载（自带独立 token 校验）
+  if (deps.internal) mountInternalRoutes(app, deps.internal);
 
   const now = deps.now ?? (() => Date.now());
   const verify = (token) => verifySessionToken(token, { secret: deps.config.sessionSecret, now: now() });

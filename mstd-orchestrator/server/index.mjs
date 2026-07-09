@@ -18,6 +18,15 @@ import { backfillMinutes } from "./triggers/backfill.mjs";
 import { startLarkHealth, makeDmAlert } from "./health/lark-profile.mjs";
 import { wireGateway } from "./gateway/wire.mjs";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { createModelCaller } from "./models/caller.mjs";
+import { createBudget } from "./models/budget.mjs";
+import { createTriage } from "./models/triage.mjs";
+import { createBrain } from "./models/brain.mjs";
+import { renderReply } from "./models/reply.mjs";
+import { createOutbound } from "./gateway/outbound.mjs";
+import { createTurnHandler } from "./gateway/turn-handler.mjs";
+import { createSessionStore } from "./sessions/store.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -83,20 +92,62 @@ if (config.enableTrigger && config.larkProfile) {
   }
 }
 
+let internal = null;
 if (config.enableAgent && config.botOpenId) {
+  const internalToken = process.env.MSTD_INTERNAL_TOKEN || randomUUID();
+  const caller = createModelCaller({ env: process.env });
+  const agentStore = createSessionStore(db);
+  const alert = config.alertOpenId && bootLark ? makeDmAlert({ runLark: bootLark, openId: config.alertOpenId }) : null;
+  const budget = createBudget(db, {
+    dailyLimit: config.dailyTokenBudget,
+    sessionLimit: config.sessionTokenBudget,
+    onExceed: (x) => {
+      console.error(`[budget] 超限 scope=${x.scope} session=${x.sessionKey}`);
+      alert?.(`[mstd-agent] token 预算超限：${x.scope} (${x.sessionKey})`).catch(() => {});
+    },
+  });
+  const triage = createTriage({ caller, store: agentStore });
+  const brain = createBrain({
+    startPi,
+    store: agentStore,
+    semaphore,
+    extensions: [
+      join(ROOT, "pi-ext", "providers.ts"),
+      join(ROOT, "pi-ext", "reply.ts"),
+      join(ROOT, "pi-ext", "lark-read.ts"),
+    ],
+    piCwd: ROOT,
+    piEnv: {
+      MSTD_INTERNAL_URL: `http://127.0.0.1:${config.port}`,
+      MSTD_INTERNAL_TOKEN: internalToken,
+    },
+  });
+  const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }) });
+  const turnHandler = createTurnHandler({
+    triage,
+    brain,
+    caller,
+    renderReply,
+    outbound,
+    store: agentStore,
+    budget,
+    onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
+  });
+  internal = { token: internalToken, handleReply: turnHandler.handleReply };
   wireGateway({
     db,
     config: { ...config, larkCliPath: DEFAULT_LARK_CLI },
     spawnFn: spawn,
-    // 占位 handler：Phase B1 换成真回合执行器
-    handleTurn(turn) {
+    handleTurn: (turn) => {
       console.error(`[agent] turn kind=${turn.kind} session=${turn.sessionKey ?? "-"} mode=${turn.mode ?? "-"} items=${turn.items?.length ?? 0}`);
+      return turnHandler.handleTurn(turn);
     },
   });
   console.error(`[mstd] agent gateway on (bot=${config.botOpenId})`);
 }
 
 const app = createApp({
+  internal,
   db,
   config,
   feishu,
