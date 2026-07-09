@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseSessionKey } from "../sessions/session-key.mjs";
+import { shouldNudge, NUDGE_NOTE } from "../memory/compact.mjs";
 
 // 回合执行器：triage 四选一 → quick_reply 直出 / no_reply 落 observed / steer 注入 / escalate 走 brain。
 // 结构性强制：brain 的 finalText 永不出站；5.5 只能经 reply 工具（handleReply）表达。
@@ -15,6 +16,7 @@ export function createTurnHandler({
   budget,
   soul = "",
   snapshotFn = null,          // C4 接缝：({sessionKey}) => 记忆快照
+  compactor = null,           // C6 接缝：上下文压缩器
   caller = null,              // 供 renderReply 使用（renderReply 已柯里化时可为 null）
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
@@ -83,8 +85,10 @@ export function createTurnHandler({
     }
 
     // escalate（或 steer 但中枢已空闲 → 当 escalate 跑）
-    const brief = verdict.brief ?? verdict.note ?? renderContext(items);
+    let brief = verdict.brief ?? verdict.note ?? renderContext(items);
     try {
+      if (compactor) await compactor.maybeCompact({ session, sessionKey, brain, snapshot });
+      if (shouldNudge(store.transcript(session.id, { limit: 1000 }))) brief += `\n\n${NUDGE_NOTE}`;
       const result = await brain.turn({ session, sessionKey, brief, context: renderContext(items), snapshot });
       for (const e of result.events ?? []) onEvent({ type: "brain_event", sessionKey, event: e });
       // finalText 只落库为内部记录（role=tool），绝不出站
