@@ -1,5 +1,5 @@
 // 内部通道：仅供本机 Pi 扩展（reply/memory 等工具）回传 daemon。独立 Bearer token，与用户会话体系无关。
-export function mountInternalRoutes(app, { token, handleReply, memoryTool = null, searchTool = null, log = console.error }) {
+export function mountInternalRoutes(app, { token, handleReply, memoryTool = null, searchTool = null, spawnBackground = null, log = console.error }) {
   const guard = (req, res) => {
     if (!token || req.headers.authorization !== `Bearer ${token}`) {
       res.status(403).json({ ok: false, error: "forbidden" });
@@ -28,6 +28,18 @@ export function mountInternalRoutes(app, { token, handleReply, memoryTool = null
     if (!memoryTool) return res.status(501).json({ ok: false, error: "memory 未启用" });
     const { session_key: sessionKey, ...params } = req.body;
     res.json(memoryTool.run(params, { sessionKey }));
+  });
+
+  app.post("/internal/background", (req, res) => {
+    if (!guard(req, res)) return;
+    if (!spawnBackground) return res.status(501).json({ ok: false, error: "后台 job 未启用" });
+    const { session_key: sessionKey, kind, brief, params } = req.body;
+    try {
+      const jobId = spawnBackground({ sessionKey, kind, brief, params });
+      res.json({ ok: true, job_id: jobId });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String(e?.message ?? e) });
+    }
   });
 
   app.post("/internal/session-search", (req, res) => {
