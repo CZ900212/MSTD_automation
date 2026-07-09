@@ -10,6 +10,8 @@ export function createAdmit(db, { botOpenId }) {
 
     const policy = getPolicy.get(evt.chatId)?.policy ?? "mention_only";
     if (policy === "disabled") return { ok: false, reason: "group_disabled" };
+    // 观察期：全链门控照跑但一律不出站（turn-handler 落 observe_log）
+    if (policy === "observe_only") return { ok: true, mode: "observe_only" };
     if (evt.mentionsBot) return { ok: true, mode: "addressed" };
     if (policy === "ambient") return { ok: true, mode: "ambient" };
     return { ok: false, reason: "bot_not_mentioned_observe" };

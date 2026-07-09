@@ -44,6 +44,7 @@ import { createHeartbeat } from "./ticker/heartbeat.mjs";
 import { createDreaming } from "./ticker/dreaming.mjs";
 import { createSessionExpiry } from "./ticker/session-expiry.mjs";
 import { createProactiveLimiter } from "./gateway/rate-limit.mjs";
+import { createObserveReport } from "./gateway/observe-report.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -163,6 +164,7 @@ if (config.enableAgent && config.botOpenId) {
     compactor: createCompactor({ caller, store: agentStore }),
     journal: createJournal({ caller, files: memoryFiles }),
     limiter: createProactiveLimiter(db),
+    db,
     onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
   });
   // ---- Phase D：写路径卡片 + 后台 job + 回注 ----
@@ -249,6 +251,17 @@ if (config.enableAgent && config.botOpenId) {
   });
   ticker.register("session-expiry", 10, () => expiry.sweep());
   if (larkHealth) ticker.register("lark-health", 10, () => larkHealth.checkOnce().catch(() => {}));
+  // 观察期周报：每周一北京 09:00 DM 管理员
+  const observeReport = createObserveReport({ db, outbound, adminOpenId: config.alertOpenId });
+  let lastObsWeek = null;
+  ticker.register("observe-report", 1, () => {
+    const bj = new Date(Date.now() + 8 * 3600_000);
+    const week = `${bj.getUTCFullYear()}-w${Math.floor(bj.getTime() / (7 * 86_400_000))}`;
+    if (bj.getUTCDay() === 1 && bj.getUTCHours() === 9 && lastObsWeek !== week) {
+      lastObsWeek = week;
+      return observeReport.sendWeekly();
+    }
+  });
   ticker.start();
   internal.cronStore = cronStore;
   internal.dreaming = dreaming;

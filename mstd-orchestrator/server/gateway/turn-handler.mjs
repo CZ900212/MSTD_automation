@@ -19,6 +19,7 @@ export function createTurnHandler({
   compactor = null,           // C6 接缝：上下文压缩器
   journal = null,             // C7 接缝：公司总日志（fire-and-forget）
   limiter = null,             // F2 接缝：群主动发言限额器（ambient 专用）
+  db = null,                  // F5 接缝：观察期 observe_log 落库
   caller = null,              // 供 renderReply 使用（renderReply 已柯里化时可为 null）
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
@@ -77,6 +78,17 @@ export function createTurnHandler({
     // ambient 放行出站前记账（quick_reply/escalate 都算一次主动发言）
     if (mode === "ambient" && limiter && session.chat_id && (verdict.action === "quick_reply" || verdict.action === "escalate")) {
       limiter.record(session.chat_id, Date.now());
+    }
+
+    // 观察期：判定结果落 observe_log，消息进 observed 上下文，绝不出站/不进中枢
+    if (mode === "observe_only") {
+      appendItems(session.id, items, { observed: true });
+      if (db) {
+        db.prepare("INSERT INTO observe_log (id, chat_id, action, text, ts) VALUES (?, ?, ?, ?, ?)")
+          .run(randomUUID(), session.chat_id, verdict.action, verdict.text ?? verdict.brief ?? null, Date.now());
+      }
+      onEvent({ type: "observe_only", sessionKey, verdict });
+      return;
     }
 
     if (verdict.action === "no_reply") {
