@@ -80,7 +80,15 @@ memory/users/<open_id>.md   每人记忆（私聊画像）
 - **注入铁律**：群会话 = SOUL+ORG+本群；私聊 = SOUL+ORG+本人。**群 A 记忆与私聊记忆绝不进群 B。**
 - **冻结快照**：会话启动时冻结记忆注入（保 prompt 前缀缓存）；会话中写入立即落盘、下次会话生效。
 - **写入**：单一 `memory` 工具（add/replace/remove/read）；条目带**来源+时间戳**；写入前注入扫描（威胁模式规则内嵌，不依赖外部二进制）；**外部漂移检测**（人手改过文件则拒写并 `.bak` 备份）。
-- **蒸馏（补 Hermes 短板）**：每晚 cron "dreaming"任务扫当天会话，蒸馏要点入对应层、淘汰过期条目；对话中每 10 轮 nudge 提醒整理。双保险。
+### 4.3 夜间蒸馏（dreaming，补 Hermes 短板；机制参照 OpenClaw memory-core + 调研落地建议）
+
+- **触发**：每晚 cron（默认 03:30，挂单 ticker）；调试台留手动触发入口。
+- **输入切片**：按三层（ORG/群/人）**并行独立处理**；范围 = 当天 + 前一天 overlap 的会话 transcript；长会话按时间块切片；规则先筛高信号片段防 token 爆炸。
+- **两阶段模型**：V4 做 per-chunk 结构化提取（JSON：`content/source/ts/confidence/evidence/tags`；提示词强制"严格 grounding 于对话片段、禁止推断、低置信跳过"）→ 5.5 做跨块合并与冲突裁决。Opus 不参与。
+- **合并策略：append-only**——重复→跳过；矛盾→追加新条目 + 旧条目标 `invalidated_at`，**绝不静默覆盖**；单条字符上限，超限再精炼。
+- **过期判据**：事件类默认 30 天；偏好/事实类长期、被矛盾时更新；低置信自动降级归档。
+- **防污染保护**（OpenClaw dreaming 模式）：每晚产出人类可读蒸馏报告 `memory/dreams/YYYY-MM-DD.md`（新增了什么/淘汰了什么/依据），调试台可审查；ORG 层可配置人工审批 gate（先 report-only 影子运行再放开自动写入）；`memory/` 目录入 git，每次蒸馏前自动 commit 备份，可回滚。
+- **对话内双保险**：每 10 轮 nudge 提醒模型整理记忆（Hermes 模式）。
 
 ## 5. 消息管道、三模型协作与并行模型
 
