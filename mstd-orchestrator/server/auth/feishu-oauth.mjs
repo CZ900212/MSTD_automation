@@ -1,4 +1,4 @@
-// ⚠️ 占位骨架默认值：实现前须用 lark-cli / 飞书 OpenAPI 核实端点并通过 env 覆盖。
+// 端点默认：authorize/v1 + oauth/token/v2 + user_info/v1；可用 env 覆盖。待真机登录最终核实。
 const DEFAULTS = {
   authorizeUrl: "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
   tokenUrl: "https://open.feishu.cn/open-apis/authen/v2/oauth/token",

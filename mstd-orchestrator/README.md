@@ -56,8 +56,19 @@ node demo/run-meeting-job.mjs
 ## 待办（迁移到上海服务器前）
 
 - ✅ ~~补 GPT key~~（已到位，`$CZ_GPT_KEY`）；下一步用同 key 的 gpt-5.5 多模态建视觉工具。
-- guard hook（`tool_call` 门禁 + 审计入库）替换 lark.ts 里的粗过滤。
-- 状态层（SQLite 本地 / Postgres 服务器）：orch_jobs / decisions / events。
-- 触发层：`lark-cli event consume` 长连接（妙记生成 / card.action.trigger）。
+- ✅ ~~guard hook~~：已由 `lark_read` 白名单 + `lark_execute_approved_action` 四道锁取代。
+- ✅ ~~状态层~~：`server/db` 已落地 SQLite（`orch_jobs` / decisions / `job_events` / `orch_events`）；Postgres 归迁移计划。
+- ✅ ~~触发层~~：`MSTD_ENABLE_TRIGGER=1` 启 `minutes.minute.generated_v1` 长连接；`MSTD_BACKFILL=1` 启动回扫。
 - 部署：见 `../docs/superpowers/plans/2026-07-08-pi-orchestrator-migration.md`（注意服务器 1GB 内存约束）。
+
+## 运行完整闭环（本地）
+
+```bash
+cd mstd-orchestrator
+set -a; . ./.env; set +a
+node server/index.mjs            # 触发层/写层按 .env 开关
+# 另开终端：cd ../mstd-ui && npx vite   # UI 开发模式（代理 /api 到 :8787）
+# 流程：飞书扫码登录 → 触发/等妙记事件 → 时间线看第①段 → 审批（可编辑/删条目）→ 自动真写（仅测试白名单）→ 看板对账
 ```
+
+关键开关：`MSTD_ENABLE_WRITE` / `MSTD_TEST_OPEN_IDS` / `MSTD_SESSION_SECRET` / `MSTD_ENABLE_TRIGGER` / `MSTD_BACKFILL` / `MSTD_ALERT_OPEN_ID`。详见 `.env.example`。
