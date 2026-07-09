@@ -8,6 +8,8 @@ import { createEventBus } from "./jobs/event-bus.mjs";
 import { createEventBuffer } from "./jobs/event-buffer.mjs";
 import { createRuntimeRegistry } from "./jobs/runtime.mjs";
 import { makeFeishuClient } from "./auth/feishu-client.mjs";
+import { makeRunLark } from "./execute/run-lark.mjs";
+import { testTargetFromEnv } from "./execute/write-target.mjs";
 import { startPi } from "../supervisor/pi-client.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -37,6 +39,13 @@ const app = createApp({
     join(ROOT, "pi-ext", "lark.ts"),
   ],
   piCwd: ROOT,
+  writeDeps: {
+    runLark: makeRunLark({ profile: config.larkProfile }),
+    testTarget: testTargetFromEnv(process.env),
+    dbPath,
+    writeExtensions: [join(ROOT, "pi-ext", "providers.ts"), join(ROOT, "pi-ext", "lark-execute.ts")],
+    piCwd: ROOT,
+  },
 });
 
 const port = config.port;

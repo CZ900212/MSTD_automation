@@ -86,6 +86,39 @@ describe("decision", () => {
     const res = await auth(request(app).post(`/api/jobs/${job.id}/decision`)).send({ approve: true, decision_token: "nope" });
     expect(res.status).toBe(409);
   });
+
+  it("enableWrite + writeDeps → running_write then eventually done", async () => {
+    const writeApp = createApp({
+      db,
+      config: { sessionSecret: SECRET, sessionTtlSeconds: 3600, pi: {}, enableWrite: true },
+      startPi: () => ({ child: { kill() {} }, runJob: () => Promise.resolve({ finalText: "" }), close: () => Promise.resolve() }),
+      semaphore: createSemaphore(2),
+      bus: createEventBus(),
+      buffer: createEventBuffer(db),
+      registry: createRuntimeRegistry(),
+      now: () => 1000,
+      writeDeps: {
+        runLark: async () => ({ exitCode: 0, stdout: "{}", stderr: "" }),
+        testTarget: { allowOpenIds: new Set(["ou_a"]), allowTasklist: "" },
+        dbPath: ":memory:",
+        writeExtensions: [],
+        piCwd: ".",
+        makeSpawnPi: () => async () => { throw new Error("no pi in test"); },
+      },
+    });
+    const job = setupAwaitingJob({ openId: "ou_a" });
+    const dt = tokenFor(job.id);
+    const res = await auth(request(writeApp).post(`/api/jobs/${job.id}/decision`)).send({ approve: true, decision_token: dt });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("running_write");
+    // fire-and-forget write flow; poll until terminal
+    let status = getJobRow(db, job.id).status;
+    for (let i = 0; i < 50 && (status === "approved" || status === "running_write"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      status = getJobRow(db, job.id).status;
+    }
+    expect(status).toBe("done");
+  });
 });
 
 describe("abort", () => {

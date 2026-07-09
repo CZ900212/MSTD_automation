@@ -3,6 +3,7 @@ import { requireUser } from "../http/auth-middleware.mjs";
 import { createJob, getJobRow, getJob, listJobs, updateJobStatus, saveJobDraft } from "../store/jobs.mjs";
 import { TEMPLATES } from "./templates.mjs";
 import { runReadonlyPhase } from "./orchestrator.mjs";
+import { runWriteFlow } from "./write-flow.mjs";
 import { issueApprovalToken, consumeApprovalToken } from "../safety/approval.mjs";
 import { streamJobEvents } from "../http/sse.mjs";
 import { validateIntent } from "../safety/intent-schema.mjs";
@@ -150,8 +151,16 @@ export function mountJobRoutes(app, ctx) {
       approvalTokenId: tokenId, note, ts: now(),
     });
     updateJobStatus(db, job.id, "approved", now());
-    bus.publish(job.id, { event: "job_status", data: { status: "approved", write: "gated_phase4" } });
-    res.json({ ok: true, status: "approved", writeGated: true });
+    if (!config.enableWrite || !ctx.writeDeps) {
+      bus.publish(job.id, { event: "job_status", data: { status: "approved", write: "gated" } });
+      return res.json({ ok: true, status: "approved", writeGated: true });
+    }
+    res.json({ ok: true, status: "running_write" });
+    runWriteFlow({ db, config, startPi, bus, buffer, writeDeps: ctx.writeDeps, jobId: job.id, now })
+      .catch((err) => {
+        updateJobStatus(db, job.id, "partial_failed", now());
+        bus.publish(job.id, { event: "error", data: { level: "write_flow", text: String(err?.message ?? err) } });
+      });
   });
 
   app.post("/api/jobs/:id/abort", requireUser, (req, res) => {
