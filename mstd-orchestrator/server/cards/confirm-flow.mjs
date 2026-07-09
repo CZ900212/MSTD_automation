@@ -81,6 +81,39 @@ export function createConfirmFlow({
     return { ok: true, jobId: job.id, messageId, actionIds: actions.map((a) => a.action_key) };
   }
 
+  // E7：为既有 job（actions 已 recordActions）发确认卡——妙记等事件源迁移用
+  async function startConfirmFlowForJob({ jobId, actions = null, initiatorOpenId, deliverTo, title = "操作确认" }) {
+    const rows = actions ?? db.prepare("SELECT * FROM job_actions WHERE job_id = ? ORDER BY ordinal, id").all(jobId)
+      .map((r) => ({ ...r, payload: JSON.parse(r.canonical_payload_json), requires_open_id: !r.target_open_id }));
+    if (!rows.length) return { ok: false, error: "job 无待确认动作" };
+    const { token } = issueApprovalToken(db, { jobId, issuedToOpenId: initiatorOpenId, ttlMs, now: now() });
+
+    let previewMd;
+    try {
+      previewMd = renderCardCopy
+        ? await renderCardCopy({ brief: `将执行以下操作，向确认人说明：\n${fallbackPreview(rows)}` })
+        : fallbackPreview(rows);
+    } catch (e) {
+      log(`[confirm-flow] Opus 文案失败，降级确定性预览: ${e.message}`);
+      previewMd = fallbackPreview(rows);
+    }
+
+    const card = buildConfirmCard({
+      title,
+      previewMd,
+      actions: [],
+      formFields: rows.filter((a) => a.requires_open_id).map((a) => ({ actionKey: a.action_key, label: "选择负责人" })),
+      tokenRef: token,
+    });
+    const target = resolveTarget(deliverTo, initiatorOpenId);
+    const { messageId } = await outbound.sendCard({ ...target, cardJson: card, idempotencyKey: `card:${jobId}` });
+    db.prepare(
+      `INSERT INTO confirm_cards (id, job_id, message_id, session_key, initiator_open_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`
+    ).run(randomUUID(), jobId, messageId, deliverTo, initiatorOpenId, now(), now());
+    return { ok: true, jobId, messageId };
+  }
+
   function resolveTarget(sessionKeyOrTarget, initiatorOpenId) {
     try {
       const parsed = parseSessionKey(sessionKeyOrTarget);
@@ -230,5 +263,5 @@ export function createConfirmFlow({
     return { ok: allOk, resultsMd };
   }
 
-  return { startConfirmFlow, handleCardAction, executeConfirmed };
+  return { startConfirmFlow, startConfirmFlowForJob, handleCardAction, executeConfirmed };
 }

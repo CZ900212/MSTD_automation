@@ -13,7 +13,7 @@ function emit(bus, buffer, jobId, phase, sse) {
   bus.publish(jobId, seq == null ? sse : { ...sse, seq });
 }
 
-export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job, extensions = [], piOptions = {}, now = () => Date.now() }) {
+export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job, extensions = [], piOptions = {}, now = () => Date.now(), onActionsReady = null }) {
   updateJobStatus(db, job.id, "running_readonly", now());
   emit(bus, buffer, job.id, "readonly", { event: "job_status", data: { status: "running_readonly" } });
 
@@ -62,6 +62,19 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
       actionSetJson: JSON.stringify(actions),
       rawOutput: finalText,
     });
+    // 常驻 agent 链路（E7 迁移）：有 onActionsReady 钩子时走卡片确认，不再产生 awaiting_approval
+    if (onActionsReady) {
+      updateJobStatus(db, job.id, "awaiting_confirm", now());
+      emit(bus, buffer, job.id, "readonly", { event: "job_status", data: { status: "awaiting_confirm" } });
+      buffer.flush();
+      try {
+        await onActionsReady({ job: { ...job, status: "awaiting_confirm" }, actions });
+      } catch (err) {
+        emit(bus, buffer, job.id, "readonly", { event: "error", data: { level: "confirm_card_failed", text: String(err?.message ?? err) } });
+        buffer.flush();
+      }
+      return { status: "awaiting_confirm", actions };
+    }
     updateJobStatus(db, job.id, "awaiting_approval", now());
     emit(bus, buffer, job.id, "readonly", { event: "job_status", data: { status: "awaiting_approval" } });
     buffer.flush();

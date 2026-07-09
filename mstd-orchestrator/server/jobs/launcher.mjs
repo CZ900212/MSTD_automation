@@ -17,6 +17,7 @@ export function createJobLauncher({
   extensions = [],
   piCwd,
   now = () => Date.now(),
+  onActionsReady = null,     // E7：常驻 agent 卡片确认链路钩子
 }) {
   const queue = [];
 
@@ -33,6 +34,7 @@ export function createJobLauncher({
         extensions,
         piOptions: { ...(config.pi ?? {}), cwd: piCwd },
         now,
+        onActionsReady,
       });
     } finally {
       semaphore.release();

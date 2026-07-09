@@ -37,6 +37,12 @@ import { createConfirmFlow } from "./cards/confirm-flow.mjs";
 import { createBackgroundJobs } from "./jobs/background.mjs";
 import { createReinjector } from "./jobs/reinjector.mjs";
 import { createActorPool } from "./sessions/actor.mjs";
+import { createTicker } from "./ticker/ticker.mjs";
+import { createCronStore } from "./ticker/cron-jobs.mjs";
+import { createCronRunner } from "./ticker/cron-runner.mjs";
+import { createHeartbeat } from "./ticker/heartbeat.mjs";
+import { createDreaming } from "./ticker/dreaming.mjs";
+import { createSessionExpiry } from "./ticker/session-expiry.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadServerConfig(process.env);
@@ -66,6 +72,7 @@ const extensions = [
   join(ROOT, "pi-ext", "lark-read.ts"),
   join(ROOT, "pi-ext", "draft.ts"),
 ];
+let agentOnActionsReady = null;   // enableAgent 时由 Phase E 装配段赋值（E7 卡片确认链路）
 const launcher = createJobLauncher({
   db,
   config,
@@ -76,6 +83,7 @@ const launcher = createJobLauncher({
   registry,
   extensions,
   piCwd: ROOT,
+  onActionsReady: config.enableAgent ? (args) => agentOnActionsReady?.(args) : null,
 });
 
 let larkHealth = null;
@@ -83,6 +91,8 @@ if (config.larkProfile && bootLark) {
   larkHealth = startLarkHealth({
     runLark: bootLark,
     alert: makeDmAlert({ runLark: bootLark, openId: config.alertOpenId }),
+    // enableAgent 时巡检改挂单 ticker（E6），不再自带 interval
+    setIntervalFn: config.enableAgent ? () => ({ unref() {} }) : setInterval,
   });
   larkHealth.checkOnce().catch(() => {});
 }
@@ -210,7 +220,48 @@ if (config.enableAgent && config.botOpenId) {
       return turnHandler.handleTurn(turn);
     },
   });
-  console.error(`[mstd] agent gateway on (bot=${config.botOpenId})`);
+  // ---- Phase E：主动层（单 ticker 多周期）----
+  const memoryDir = process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory");
+  const ticker = createTicker({ intervalMs: 60_000 });
+  const cronStore = createCronStore(db);
+  const cronRunner = createCronRunner({ brain, agentStore, cronStore, snapshotFn });
+  ticker.register("cron", 1, () => cronRunner.runDue());
+  const heartbeat = createHeartbeat({ rootDir: memoryDir, caller, brain, agentStore, snapshotFn });
+  ticker.register("heartbeat", 5, () => heartbeat.tick());          // 5 分钟一扫（activeHours 内）
+  internal.heartbeat = heartbeat;
+  const dreaming = createDreaming({ db, files: memoryFiles, caller });
+  let lastDreamDay = null;
+  ticker.register("dreaming", 1, () => {
+    const bj = new Date(Date.now() + 8 * 3600_000);
+    const day = bj.toISOString().slice(0, 10);
+    if (bj.getUTCHours() === 3 && bj.getUTCMinutes() >= 30 && lastDreamDay !== day) {
+      lastDreamDay = day;
+      return dreaming.run();
+    }
+  });
+  const expiry = createSessionExpiry({
+    db, agentStore, brain, snapshotFn,
+    hasActiveJob: (key) => !!db.prepare(
+      "SELECT 1 FROM orch_jobs WHERE status IN ('running','queued','running_readonly','awaiting_confirm') AND params_json LIKE ? LIMIT 1"
+    ).get(`%${key}%`),
+  });
+  ticker.register("session-expiry", 10, () => expiry.sweep());
+  if (larkHealth) ticker.register("lark-health", 10, () => larkHealth.checkOnce().catch(() => {}));
+  ticker.start();
+  internal.cronStore = cronStore;
+  internal.dreaming = dreaming;
+
+  // E7：妙记等事件源的 job 抽取完成 → 卡片确认（不再产生 awaiting_approval）
+  agentOnActionsReady = async ({ job, actions }) => {
+    const params = JSON.parse(job.params_json ?? "{}");
+    const initiator = params.host_open_id || config.alertOpenId;
+    if (!initiator) return console.error(`[agent] job ${job.id} 无确认人（缺 host_open_id/alertOpenId），跳过发卡`);
+    await confirmFlow.startConfirmFlowForJob({
+      jobId: job.id, actions, initiatorOpenId: initiator, deliverTo: initiator, title: job.title ?? "会议纪要确认",
+    });
+  };
+
+  console.error(`[mstd] agent gateway on (bot=${config.botOpenId}) + ticker on`);
 }
 
 const app = createApp({
