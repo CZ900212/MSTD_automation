@@ -1,8 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { buildInsertIgnore } from "../db/dialect.mjs";
 
+// 真机约束：飞书 client_token 超长（约 >64 字符）报 99992402 field validation failed，
+// 因此对 (jobId, actionKey) 取确定性短哈希（32 hex），幂等语义不变。
 export function deriveIdempotencyKey(jobId, actionKey) {
-  return `${jobId}:${actionKey}`;
+  return createHash("sha256").update(`${jobId}:${actionKey}`).digest("hex").slice(0, 32);
 }
 
 const JOB_ACTION_COLS = [

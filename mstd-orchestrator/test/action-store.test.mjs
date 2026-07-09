@@ -18,8 +18,10 @@ const actions = [
 ];
 
 describe("action-store", () => {
-  it("derives idempotency key", () => {
-    expect(deriveIdempotencyKey("job1", "k1")).toBe("job1:k1");
+  it("derives idempotency key（真机 client_token 长度约束 → 32 hex 确定性短哈希）", () => {
+    expect(deriveIdempotencyKey("job1", "k1")).toMatch(/^[0-9a-f]{32}$/);
+    expect(deriveIdempotencyKey("job1", "k1")).toBe(deriveIdempotencyKey("job1", "k1"));
+    expect(deriveIdempotencyKey("job1", "k1")).not.toBe(deriveIdempotencyKey("job1", "k2"));
   });
 
   it("records actions as pending with idempotency key", () => {
@@ -27,7 +29,7 @@ describe("action-store", () => {
     const rows = actionsToExecute(db, "job1");
     expect(rows).toHaveLength(2);
     const keys = rows.map((r) => r.idempotency_key).sort();
-    expect(keys).toEqual(["job1:k1", "job1:k2"]);
+    expect(keys).toEqual([deriveIdempotencyKey("job1", "k1"), deriveIdempotencyKey("job1", "k2")].sort());
     expect(rows.every((r) => r.status === "pending")).toBe(true);
   });
 

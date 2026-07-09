@@ -28,7 +28,7 @@ describe("executeApprovedAction", () => {
     expect(out.status).toBe("succeeded");
     expect(seen[0]).toContain("--dry-run");
     expect(seen[1]).toContain("--idempotency-key");
-    expect(seen[1]).toContain("job1:" + r.action_key);
+    expect(seen[1]).toContain(r.idempotency_key);
     expect(seen[1]).not.toContain("--dry-run");
   });
 
