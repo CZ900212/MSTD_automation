@@ -59,6 +59,7 @@ label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color:
 .jobs-table th, .jobs-table td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; }
 .action-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
 .action-item { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.action-item.removed { opacity: .45; text-decoration: line-through; }
 .action-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .approval-actions { display: flex; gap: 10px; }
 .retry-banner { color: var(--warn-fg); background: var(--warn-bg); border: 1px solid var(--warn-border); padding: 8px 12px; border-radius: 10px; }

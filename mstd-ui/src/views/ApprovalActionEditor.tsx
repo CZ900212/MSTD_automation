@@ -18,15 +18,30 @@ export function ApprovalActionEditor({
   const [openIds, setOpenIds] = useState<Record<string, string>>(() =>
     Object.fromEntries(actions.map((a) => [a.action_key, assigneeOf(a)]))
   );
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [note, setNote] = useState("");
 
-  const canApprove = useMemo(
-    () => actions.every((a) => !a.requires_open_id || isValidOpenId(openIds[a.action_key])),
-    [actions, openIds]
+  const kept = useMemo(
+    () => actions.filter((a) => !removed.has(a.action_key)),
+    [actions, removed]
   );
 
+  const canApprove = useMemo(
+    () => kept.length > 0 && kept.every((a) => !a.requires_open_id || isValidOpenId(openIds[a.action_key])),
+    [kept, openIds]
+  );
+
+  function toggleRemoved(actionKey: string) {
+    setRemoved((prev) => {
+      const next = new Set(prev);
+      if (next.has(actionKey)) next.delete(actionKey);
+      else next.add(actionKey);
+      return next;
+    });
+  }
+
   function submitApprove() {
-    const edited = actions.map((a) => ({
+    const edited = kept.map((a) => ({
       ...a,
       target_open_id: openIds[a.action_key] || a.target_open_id,
       payload: { ...a.payload, assignee_open_id: openIds[a.action_key] || a.payload.assignee_open_id },
@@ -39,14 +54,18 @@ export function ApprovalActionEditor({
       <ul className="action-list">
         {actions.map((a) => {
           const value = openIds[a.action_key] ?? "";
-          const invalid = a.requires_open_id && !isValidOpenId(value);
+          const isRemoved = removed.has(a.action_key);
+          const invalid = !isRemoved && a.requires_open_id && !isValidOpenId(value);
           return (
-            <li key={a.action_key} className="action-item">
+            <li key={a.action_key} className={`action-item${isRemoved ? " removed" : ""}`}>
               <div className="action-head">
                 <b>{String(a.payload.title ?? a.kind)}</b>
                 <span className={`confidence-badge ${a.requires_open_id ? "low" : "high"}`}>
                   {a.requires_open_id ? "低置信 · 需人工补齐" : "高置信"}
                 </span>
+                <button type="button" className="ghost" onClick={() => toggleRemoved(a.action_key)}>
+                  {isRemoved ? "恢复" : "删除"}
+                </button>
               </div>
               <label>
                 负责人 open_id
@@ -54,6 +73,7 @@ export function ApprovalActionEditor({
                   className={`open-id-input ${invalid ? "invalid" : ""}`}
                   value={value}
                   placeholder="ou_ 开头"
+                  disabled={isRemoved}
                   onChange={(e) => setOpenIds((prev) => ({ ...prev, [a.action_key]: e.target.value }))}
                 />
               </label>
@@ -67,6 +87,7 @@ export function ApprovalActionEditor({
         <button type="button" className="primary" disabled={!canApprove} onClick={submitApprove}>批准并真写</button>
         <button type="button" className="ghost" onClick={() => onReject(note)}>驳回</button>
       </div>
+      {kept.length === 0 && <small className="hint">全部删除请直接驳回</small>}
     </div>
   );
 }
