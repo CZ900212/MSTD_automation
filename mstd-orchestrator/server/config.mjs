@@ -22,6 +22,7 @@ export function loadServerConfig(env = process.env) {
     enableAgent: String(env.MSTD_ENABLE_AGENT ?? "") === "1",
     botOpenId: String(env.MSTD_BOT_OPEN_ID ?? "").trim(),
     botName: String(env.MSTD_BOT_NAME ?? "").trim(),
+    adminOpenIds: new Set(String(env.MSTD_ADMIN_OPEN_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean)),
     dailyTokenBudget: Number(env.MSTD_DAILY_TOKEN_BUDGET ?? 2_000_000),
     sessionTokenBudget: Number(env.MSTD_SESSION_TOKEN_BUDGET ?? 300_000),
   };

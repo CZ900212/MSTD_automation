@@ -5,6 +5,7 @@ import { verifySessionToken } from "./http/session.mjs";
 import { mountAuthRoutes } from "./auth/routes.mjs";
 import { mountJobRoutes } from "./jobs/routes.mjs";
 import { mountInternalRoutes } from "./http/internal-routes.mjs";
+import { mountAdminRoutes } from "./http/admin-routes.mjs";
 
 // createApp(deps)：deps 随任务推进逐步补齐；骨架需 deps.db + deps.config.sessionSecret。
 export function createApp(deps) {
@@ -28,6 +29,8 @@ export function createApp(deps) {
   app.get("/api/me", (req, res) => res.json({ user: publicUser(req.user) }));
 
   if (deps.feishu) mountAuthRoutes(app, { db: deps.db, config: deps.config, feishu: deps.feishu, now });
+
+  if (deps.admin) mountAdminRoutes(app, { db: deps.db, config: deps.config, ...deps.admin });
 
   if (deps.startPi && deps.semaphore && deps.bus && deps.buffer && deps.registry) {
     mountJobRoutes(app, {

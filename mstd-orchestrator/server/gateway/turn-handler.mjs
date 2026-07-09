@@ -47,6 +47,8 @@ export function createTurnHandler({
     const idempotencyKey = randomUUID();
     if (parsed.kind === "p2p") return outbound.sendMessage({ openId: parsed.openId, text, idempotencyKey });
     if (parsed.kind === "group") return outbound.sendMessage({ chatId: parsed.chatId, text, idempotencyKey });
+    // debug 会话（web 调试台）：不真发 lark，落库即"出站"（前端轮询 transcript 显示）
+    if (parsed.kind === "debug") return { messageId: null };
     throw new Error(`会话不可出站: ${sessionKey}`);
   }
 

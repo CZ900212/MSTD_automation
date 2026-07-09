@@ -115,6 +115,7 @@ if (config.enableTrigger && config.larkProfile) {
 }
 
 let internal = null;
+let adminDeps = null;
 if (config.enableAgent && config.botOpenId) {
   const internalToken = process.env.MSTD_INTERNAL_TOKEN || randomUUID();
   const caller = createModelCaller({ env: process.env });
@@ -276,11 +277,30 @@ if (config.enableAgent && config.botOpenId) {
     });
   };
 
+  // ---- Phase G：调试台管理面 ----
+  adminDeps = {
+    files: memoryFiles,
+    agentStore,
+    cronStore,
+    dreaming,
+    debugTurn: async ({ debugId, text, operator }) => {
+      const sessionKey = `debug:${debugId}`;
+      const session = agentStore.getOrCreate(sessionKey, { kind: "debug", title: `[debug] ${operator}` });
+      await turnHandler.handleTurn({
+        kind: "message", session, sessionKey,
+        items: [{ content: text, senderOpenId: operator, senderName: "管理员", ts: Date.now() }],
+        mode: "addressed",
+      });
+      return { ok: true, sessionId: session.id };
+    },
+  };
+
   console.error(`[mstd] agent gateway on (bot=${config.botOpenId}) + ticker on`);
 }
 
 const app = createApp({
   internal,
+  admin: adminDeps,
   db,
   config,
   feishu,
