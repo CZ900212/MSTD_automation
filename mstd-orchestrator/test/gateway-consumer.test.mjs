@@ -53,7 +53,7 @@ describe("wireGateway 管道装配", () => {
     },
   });
 
-  function setup({ handleTurn }) {
+  function setup({ handleTurn, actors = { enqueue: vi.fn((_, callback) => callback()) } }) {
     vi.useFakeTimers();
     const db = openDb();
     migrate(db);
@@ -64,21 +64,42 @@ describe("wireGateway 管道装配", () => {
       config: { botOpenId: "ou_bot", larkCliPath: "/fake/lark-cli" },
       spawnFn,
       handleTurn,
+      actors,
     });
-    return { db, children, wired };
+    return { db, children, wired, actors };
   }
 
-  it("私聊消息走 去重→admit→合批→actor→handleTurn 全链", async () => {
+  it("真实私聊 NDJSON 经 debounce 后按会话 key 入队，handleTurn 只在 actor 回调内触发", async () => {
     const turns = [];
-    const { children, wired } = setup({ handleTurn: (t) => { turns.push(t); } });
+    let actorCallback;
+    const actors = {
+      enqueue: vi.fn((_, callback) => {
+        actorCallback = callback;
+      }),
+    };
+    const { children, wired } = setup({ handleTurn: (t) => { turns.push(t); }, actors });
     children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg()) + "\n"));
     children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg()) + "\n")); // 同 event_id 去重
     await vi.advanceTimersByTimeAsync(3000);
+    expect(actors.enqueue).toHaveBeenCalledWith("feishu:p2p:ou_a", expect.any(Function));
+    expect(turns).toHaveLength(0);
+    await actorCallback();
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({ kind: "message", sessionKey: "feishu:p2p:ou_a", mode: "addressed" });
     expect(turns[0].items).toHaveLength(1);
     wired.consumer.stop();
     vi.useRealTimers();
+  });
+
+  it("缺少 actors 时 fail-fast", () => {
+    const db = openDb();
+    migrate(db);
+    expect(() => wireGateway({
+      db,
+      config: { botOpenId: "ou_bot", larkCliPath: "/fake/lark-cli" },
+      spawnFn: vi.fn(() => fakeChild()),
+      handleTurn: vi.fn(),
+    })).toThrowError("wireGateway: actors 必填");
   });
 
   it("群聊未@ 落 observed 不唤醒", async () => {

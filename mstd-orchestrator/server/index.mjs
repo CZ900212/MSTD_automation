@@ -38,6 +38,7 @@ import { createConfirmFlow } from "./cards/confirm-flow.mjs";
 import { createBackgroundJobs } from "./jobs/background.mjs";
 import { createReinjector } from "./jobs/reinjector.mjs";
 import { createActorPool } from "./sessions/actor.mjs";
+import { createDebugTurn } from "./sessions/debug-turn.mjs";
 import { createTicker } from "./ticker/ticker.mjs";
 import { createCronStore } from "./ticker/cron-jobs.mjs";
 import { createCronRunner } from "./ticker/cron-runner.mjs";
@@ -144,6 +145,7 @@ let internal = null;
 let adminDeps = null;
 if (config.enableAgent && config.botOpenId) {
   const internalToken = process.env.MSTD_INTERNAL_TOKEN || randomUUID();
+  const actors = createActorPool();
   const modelLog = createModelLog(db);   // 模型链路可观测：降级/重试/预算命中落库，调试台消费
   const caller = createModelCaller({ env: process.env, onEvent: modelLog.record });
   const agentStore = createSessionStore(db);
@@ -202,8 +204,7 @@ if (config.enableAgent && config.botOpenId) {
     onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
   });
   // ---- Phase D：写路径卡片 + 后台 job + 回注 ----
-  const agentActors = createActorPool();
-  const reinjector = createReinjector({ store: agentStore, actors: agentActors, brain, outbound });
+  const reinjector = createReinjector({ store: agentStore, actors, brain, outbound });
   const backgroundJobs = createBackgroundJobs({
     db,
     semaphore,
@@ -248,6 +249,7 @@ if (config.enableAgent && config.botOpenId) {
     db,
     config: { ...config, larkCliPath: DEFAULT_LARK_CLI },
     spawnFn: spawn,
+    actors,
     handleTurn: (turn) => {
       console.error(`[agent] turn kind=${turn.kind} session=${turn.sessionKey ?? "-"} mode=${turn.mode ?? "-"} items=${turn.items?.length ?? 0}`);
       if (turn.kind === "card_action") {
@@ -283,7 +285,7 @@ if (config.enableAgent && config.botOpenId) {
     }
   });
   const expiry = createSessionExpiry({
-    db, agentStore, brain, snapshotFn,
+    db, agentStore, actors, brain, snapshotFn,
     hasActiveJob: (key) => !!db.prepare(
       "SELECT 1 FROM orch_jobs WHERE status IN ('running','queued','running_readonly','awaiting_confirm') AND params_json LIKE ? LIMIT 1"
     ).get(`%${key}%`),
@@ -321,16 +323,7 @@ if (config.enableAgent && config.botOpenId) {
     agentStore,
     cronStore,
     dreaming,
-    debugTurn: async ({ debugId, text, operator }) => {
-      const sessionKey = `debug:${debugId}`;
-      const session = agentStore.getOrCreate(sessionKey, { kind: "debug", title: `[debug] ${operator}` });
-      await turnHandler.handleTurn({
-        kind: "message", session, sessionKey,
-        items: [{ content: text, senderOpenId: operator, senderName: "管理员", ts: Date.now() }],
-        mode: "addressed",
-      });
-      return { ok: true, sessionId: session.id };
-    },
+    debugTurn: createDebugTurn({ actors, agentStore, handleTurn: turnHandler.handleTurn }),
   };
 
   console.error(`[mstd] agent gateway on (bot=${config.botOpenId}) + ticker on`);

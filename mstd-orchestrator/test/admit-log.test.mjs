@@ -29,6 +29,7 @@ describe("admit 判定落库（可观测）", () => {
       config: { botOpenId: "ou_bot", larkCliPath: "/fake" },
       spawnFn: vi.fn(() => { const c = fakeChild(); children.push(c); return c; }),
       handleTurn: () => {},
+      actors: { enqueue: vi.fn((_, callback) => callback()) },
     });
     // 群未@ → bot_not_mentioned_observe
     children[0].stdout.emit("data", Buffer.from(flat({ eventId: "v-observe" })));

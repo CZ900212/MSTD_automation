@@ -2,17 +2,16 @@ import { createGatewayConsumer } from "./consumer.mjs";
 import { createInbox } from "./inbox.mjs";
 import { createAdmit } from "./admit.mjs";
 import { createDebouncer } from "./debounce.mjs";
-import { createActorPool } from "../sessions/actor.mjs";
 import { createSessionStore } from "../sessions/store.mjs";
 import { buildSessionKey } from "../sessions/session-key.mjs";
 
 // 管道装配：consumer → inbox(去重) → admit → debounce → actor → handleTurn
 // handleTurn 占位到 Phase B1 换成真回合执行器（接缝）
-export function wireGateway({ db, config, spawnFn, handleTurn, log = console.error }) {
+export function wireGateway({ db, config, spawnFn, handleTurn, actors, log = console.error }) {
+  if (typeof actors?.enqueue !== "function") throw new Error("wireGateway: actors 必填");
   const inbox = createInbox(db, { botOpenId: config.botOpenId, botName: config.botName });
   const admitter = createAdmit(db, { botOpenId: config.botOpenId });
   const debouncer = createDebouncer({});
-  const actors = createActorPool();
   const store = createSessionStore(db);
 
   const consumer = createGatewayConsumer({

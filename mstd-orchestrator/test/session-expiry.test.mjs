@@ -8,15 +8,16 @@ const BJ_0400 = Date.UTC(2026, 6, 8, 20, 0, 0);
 const NOW = BJ_0400 + 6 * 3600_000;   // 北京 10:00
 
 describe("会话过期重置（flush 先行 + 豁免）", () => {
-  let db, store, brain, expiry, activeJobs;
+  let db, store, actors, brain, expiry, activeJobs;
   beforeEach(() => {
     db = openDb();
     migrate(db);
     store = createSessionStore(db);
+    actors = { enqueue: vi.fn((key, callback) => callback()) };
     brain = { turn: vi.fn(async () => ({ finalText: "", events: [] })), isBusy: () => false };
     activeJobs = new Set();
     expiry = createSessionExpiry({
-      db, agentStore: store, brain,
+      db, agentStore: store, actors, brain,
       hasActiveJob: (key) => activeJobs.has(key),
     });
   });
@@ -39,6 +40,7 @@ describe("会话过期重置（flush 先行 + 豁免）", () => {
     expect(statuses["feishu:p2p:ou_idle"]).toBe("archived");
     expect(statuses["feishu:p2p:ou_early"]).toBe("archived");
     expect(statuses["feishu:p2p:ou_fresh"]).toBe("active");
+    expect(actors.enqueue).toHaveBeenCalledTimes(2);
   });
 
   it("归档前先 memory flush 回合", async () => {
@@ -51,7 +53,64 @@ describe("会话过期重置（flush 先行 + 豁免）", () => {
     await expiry.sweep(NOW);
     expect(order).toEqual(["flush"]);
     expect(brain.turn.mock.calls[0][0].brief).toContain("memory");
+    expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("archived");
     void origArchive;
+  });
+
+  it("候选排队期间被 touch 后，锁内复查阻止 flush 与归档", async () => {
+    const s = mkSession("feishu:p2p:ou_race", NOW - 25 * 3600_000);
+    store.append(s.id, { role: "user", content: "排队前已有内容", ts: NOW - 25 * 3600_000 });
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(NOW - 25 * 3600_000, s.id);
+    let queuedCallback;
+    actors.enqueue.mockImplementation((_, callback) => {
+      queuedCallback = callback;
+    });
+
+    const result = await expiry.sweep(NOW);
+    expect(result.archived).toBe(0);
+    expect(actors.enqueue).toHaveBeenCalledWith("feishu:p2p:ou_race", expect.any(Function));
+    store.touch(s.id, NOW);
+    await queuedCallback();
+
+    expect(brain.turn).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
+  });
+
+  it("候选排队期间出现活跃后台 job 后，锁内复查阻止 flush 与归档", async () => {
+    const s = mkSession("feishu:p2p:ou_job_race", NOW - 25 * 3600_000);
+    store.append(s.id, { role: "user", content: "排队前已有内容", ts: NOW - 25 * 3600_000 });
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(NOW - 25 * 3600_000, s.id);
+    let queuedCallback;
+    actors.enqueue.mockImplementation((_, callback) => {
+      queuedCallback = callback;
+    });
+
+    const result = await expiry.sweep(NOW);
+    activeJobs.add("feishu:p2p:ou_job_race");
+    await queuedCallback();
+
+    expect(result.archived).toBe(0);
+    expect(brain.turn).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
+  });
+
+  it("flush 期间被 touch 后，最终条件归档不计数且保持 active", async () => {
+    const s = mkSession("feishu:p2p:ou_flush_race", NOW - 25 * 3600_000);
+    store.append(s.id, { role: "user", content: "需要 flush 的内容", ts: NOW - 25 * 3600_000 });
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(NOW - 25 * 3600_000, s.id);
+    let releaseFlush;
+    brain.turn.mockImplementation(() => new Promise((resolve) => {
+      releaseFlush = resolve;
+    }));
+
+    const pending = expiry.sweep(NOW);
+    await vi.waitFor(() => expect(brain.turn).toHaveBeenCalledTimes(1));
+    store.touch(s.id, NOW);
+    releaseFlush({ finalText: "", events: [] });
+    const result = await pending;
+
+    expect(result.archived).toBe(0);
+    expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
   });
 
   it("有活跃后台 job 的会话豁免", async () => {

@@ -1,18 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
-import { createActorPool } from "../server/sessions/actor.mjs";
 import { createReinjector } from "../server/jobs/reinjector.mjs";
 
 describe("后台 job 回注（版本判定 + 进度心跳）", () => {
-  let db, store, brain, outbound, reinject;
+  let db, store, actors, brain, outbound, reinject;
   beforeEach(() => {
     db = openDb();
     migrate(db);
     store = createSessionStore(db);
+    actors = { enqueue: vi.fn((_, callback) => callback()) };
     brain = { turn: vi.fn(async () => ({ finalText: "", events: [] })), isBusy: () => false };
     outbound = { editMessage: vi.fn(async () => ({})), sendMessage: vi.fn(async () => ({ messageId: "om_x" })) };
-    reinject = createReinjector({ store, actors: createActorPool(), brain, outbound, versionThreshold: 3 });
+    reinject = createReinjector({ store, actors, brain, outbound, versionThreshold: 3 });
   });
 
   it("新鲜回注：版本差 ≤3 → 正常播报 prompt", async () => {
@@ -24,6 +24,7 @@ describe("后台 job 回注（版本判定 + 进度心跳）", () => {
     expect(arg.brief).toContain("播报");
     expect(arg.brief).not.toContain("翻篇");
     expect(arg.context).toContain("3 家供应商");
+    expect(actors.enqueue).toHaveBeenCalledWith("feishu:p2p:ou_a", expect.any(Function));
   });
 
   it("过时回注：版本差 >3 → prompt 标注话题可能翻篇", async () => {
@@ -39,9 +40,31 @@ describe("后台 job 回注（版本判定 + 进度心跳）", () => {
     expect(brain.turn.mock.calls[0][0].brief).toContain("失败");
   });
 
+  it("origin 会话 actor callback 释放前不进入 brain.turn", async () => {
+    store.getOrCreate("feishu:p2p:ou_hold", { kind: "p2p" });
+    let release;
+    actors.enqueue.mockImplementation((_, callback) => new Promise((resolve, reject) => {
+      release = () => Promise.resolve(callback()).then(resolve, reject);
+    }));
+
+    const pending = reinject.onJobComplete({
+      jobId: "j-hold",
+      sessionKey: "feishu:p2p:ou_hold",
+      sessionVersion: 0,
+      ok: true,
+      result: "稍后回注",
+    });
+    expect(actors.enqueue).toHaveBeenCalledWith("feishu:p2p:ou_hold", expect.any(Function));
+    expect(brain.turn).not.toHaveBeenCalled();
+
+    await release();
+    await pending;
+    expect(brain.turn).toHaveBeenCalledTimes(1);
+  });
+
   it("进度心跳：每 3 分钟编辑同一条消息，不发新消息；stop 后停止", () => {
     vi.useFakeTimers();
-    reinject = createReinjector({ store, actors: createActorPool(), brain, outbound });  // fake timer 生效后构造
+    reinject = createReinjector({ store, actors, brain, outbound });  // fake timer 生效后构造
     reinject.trackProgress({ jobId: "j4", messageId: "om_prog" });
     vi.advanceTimersByTime(3 * 60_000);
     vi.advanceTimersByTime(3 * 60_000);

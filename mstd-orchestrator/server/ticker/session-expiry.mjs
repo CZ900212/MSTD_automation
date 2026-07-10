@@ -5,6 +5,7 @@ const FLUSH_BRIEF =
 export function createSessionExpiry({
   db,
   agentStore,
+  actors,
   brain,
   snapshotFn = null,
   idleMs = 24 * 3600_000,
@@ -26,21 +27,29 @@ export function createSessionExpiry({
     ).all(cutoff);
     let archived = 0;
     for (const s of stale) {
-      if (hasActiveJob(s.session_key)) continue;
-      // 有内容的会话才值得 flush（空会话直接归档）
-      const hasContent = agentStore.transcript(s.id, { limit: 1 }).length > 0;
-      if (hasContent) {
-        try {
-          await brain.turn({
-            session: s, sessionKey: s.session_key, brief: FLUSH_BRIEF,
-            snapshot: snapshotFn ? snapshotFn({ sessionKey: s.session_key }) : null,
-          });
-        } catch (e) {
-          log(`[expiry] flush 回合失败 ${s.session_key}（仍归档）: ${e?.message ?? e}`);
+      const didArchive = await actors.enqueue(s.session_key, async () => {
+        const current = db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(s.id);
+        if (!current || current.status !== "active" || current.updated_at >= cutoff || await hasActiveJob(current.session_key)) {
+          return 0;
         }
-      }
-      db.prepare("UPDATE agent_sessions SET status = 'archived' WHERE id = ?").run(s.id);
-      archived += 1;
+        // 有内容的会话才值得 flush（空会话直接归档）
+        const hasContent = agentStore.transcript(current.id, { limit: 1 }).length > 0;
+        if (hasContent) {
+          try {
+            await brain.turn({
+              session: current, sessionKey: current.session_key, brief: FLUSH_BRIEF,
+              snapshot: snapshotFn ? snapshotFn({ sessionKey: current.session_key }) : null,
+            });
+          } catch (e) {
+            log(`[expiry] flush 回合失败 ${current.session_key}（仍归档）: ${e?.message ?? e}`);
+          }
+        }
+        const result = db.prepare(
+          "UPDATE agent_sessions SET status = 'archived' WHERE id = ? AND status = 'active' AND updated_at < ?"
+        ).run(current.id, cutoff);
+        return result.changes === 1 ? 1 : 0;
+      });
+      if (didArchive === 1) archived += 1;
     }
     return { archived };
   }
