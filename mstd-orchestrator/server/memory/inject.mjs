@@ -4,13 +4,20 @@ import { parseSessionKey } from "../sessions/session-key.mjs";
 
 const JOURNAL_DIGEST_MAX = 1500;
 
+// 尾截后对齐条目边界（journal 每条一行、以 "- " 开头）：丢弃被切半的首行。
+// 单条超长找不到边界时保留原始尾截兜底——宁带半句不空手。
+function digestJournal(journal) {
+  if (journal.length <= JOURNAL_DIGEST_MAX) return journal;
+  const tail = journal.slice(-JOURNAL_DIGEST_MAX);
+  if (tail.startsWith("- ")) return tail;
+  const boundary = tail.indexOf("\n- ");
+  return boundary >= 0 ? tail.slice(boundary + 1) : tail;
+}
+
 export function buildMemorySnapshot({ files, sessionKey, now = Date.now() }) {
   const soul = files.readLayer("soul").content;
   const org = files.readLayer("org").content;
-  const journal = files.readJournal(now);
-  const journalDigest = journal.length > JOURNAL_DIGEST_MAX
-    ? journal.slice(-JOURNAL_DIGEST_MAX)
-    : journal;
+  const journalDigest = digestJournal(files.readJournal(now));
 
   let scoped = "";
   let parsed = null;

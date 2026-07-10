@@ -49,6 +49,24 @@ describe("记忆注入器（冻结快照 + 隔离铁律）", () => {
     expect(s.scoped).toBe("");
   });
 
+  it("journalDigest 超长截断对齐条目边界：不带被切半的首行", () => {
+    // 造 60 条各 ~40 字符的条目（总量 >1500），digest 应从完整 "- " 条目开始
+    for (let i = 0; i < 60; i++) {
+      files.appendJournal(`- 10:${String(i).padStart(2, "0")} [私聊·张三] 第${i}条要点内容一二三四五六七八九十`, now);
+    }
+    const s = buildMemorySnapshot({ files, sessionKey: "cron:daily", now });
+    expect(s.journalDigest.length).toBeLessThanOrEqual(1500);
+    expect(s.journalDigest.startsWith("- ")).toBe(true);          // 首行是完整条目
+    expect(s.journalDigest.trimEnd().endsWith("十")).toBe(true);  // 最新条目保留在尾部
+  });
+
+  it("journalDigest 单条超长无边界可对齐时保留尾截兜底", () => {
+    files.appendJournal(`- 11:00 ${"长".repeat(2000)}`, now);
+    const s = buildMemorySnapshot({ files, sessionKey: "cron:daily", now });
+    expect(s.journalDigest.length).toBeLessThanOrEqual(1500);
+    expect(s.journalDigest.length).toBeGreaterThan(0);
+  });
+
   it("快照冻结不可变", () => {
     const s = buildMemorySnapshot({ files, sessionKey: "feishu:p2p:ou_a", now });
     expect(Object.isFrozen(s)).toBe(true);
