@@ -13,6 +13,9 @@ export function createSessionStore(db) {
   const insertFts = db.prepare(
     "INSERT INTO agent_messages_fts (message_id, session_id, content) VALUES (?, ?, ?)"
   );
+  const touchSession = db.prepare(
+    "UPDATE agent_sessions SET updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END WHERE id = ?"
+  );
 
   function getOrCreate(sessionKey, meta = {}, now = Date.now()) {
     const found = getBySessionKey.get(sessionKey);
@@ -65,7 +68,7 @@ export function createSessionStore(db) {
   }
 
   function touch(sessionId, now = Date.now()) {
-    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(now, sessionId);
+    touchSession.run(now, now, sessionId);
   }
 
   return { getOrCreate, append, transcript, softDelete, bumpVersion, touch, recentObserved, markObservedConsumed };

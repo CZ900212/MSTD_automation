@@ -3,6 +3,9 @@ import { EventEmitter } from "node:events";
 import { createGatewayConsumer } from "../server/gateway/consumer.mjs";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { wireGateway } from "../server/gateway/wire.mjs";
+import { createActorPool } from "../server/sessions/actor.mjs";
+import { createSessionStore } from "../server/sessions/store.mjs";
+import { createSessionExpiry } from "../server/ticker/session-expiry.mjs";
 
 function fakeChild() {
   const c = new EventEmitter();
@@ -48,7 +51,7 @@ describe("wireGateway 管道装配", () => {
         chat_id: over.chatId ?? "oc_1", chat_type: over.chatType ?? "p2p", message_type: "text",
         content: JSON.stringify({ text: over.text ?? "你好" }),
         mentions: over.mentions ?? [],
-        create_time: "1720000000000",
+        create_time: String(over.createTime ?? 1720000000000),
       },
     },
   });
@@ -91,6 +94,37 @@ describe("wireGateway 管道装配", () => {
     vi.useRealTimers();
   });
 
+  it("admitted 消息在 debounce 前刷新会话，阻止 expiry 抢先 flush 与归档", async () => {
+    const now = Date.UTC(2026, 6, 10, 8, 0, 0);
+    const staleAt = now - 48 * 3600_000;
+    const turns = [];
+    const actors = createActorPool();
+    const { db, children, wired } = setup({ handleTurn: (turn) => { turns.push(turn); }, actors });
+    vi.setSystemTime(now);
+    try {
+      const store = createSessionStore(db);
+      const session = store.getOrCreate("feishu:p2p:ou_a", { kind: "p2p" }, staleAt);
+      store.append(session.id, { role: "user", content: "旧会话内容", ts: staleAt });
+      const brain = { turn: vi.fn(async () => ({ finalText: "", events: [] })) };
+      const expiry = createSessionExpiry({ db, agentStore: store, actors, brain });
+
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({ createTime: now })) + "\n"));
+      const result = await expiry.sweep(now);
+
+      expect(result.archived).toBe(0);
+      expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(session.id).status).toBe("active");
+      expect(brain.turn).not.toHaveBeenCalled();
+      expect(turns).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({ sessionKey: "feishu:p2p:ou_a", mode: "addressed" });
+    } finally {
+      wired.consumer.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("缺少 actors 时 fail-fast", () => {
     const db = openDb();
     migrate(db);
@@ -113,5 +147,30 @@ describe("wireGateway 管道装配", () => {
     expect(observed[0].content).toBe("闲聊");
     wired.consumer.stop();
     vi.useRealTimers();
+  });
+
+  it("未通过 admit 的 disabled 群消息不刷新会话生命周期", () => {
+    const now = Date.UTC(2026, 6, 10, 8, 0, 0);
+    const staleAt = now - 48 * 3600_000;
+    const { db, children, wired } = setup({ handleTurn: vi.fn() });
+    vi.setSystemTime(now);
+    try {
+      db.prepare(
+        "INSERT INTO group_policies (chat_id, policy, hourly_proactive_limit, updated_at) VALUES (?, 'disabled', 4, ?)"
+      ).run("oc_1", staleAt);
+      const store = createSessionStore(db);
+      const session = store.getOrCreate("feishu:group:oc_1", { kind: "group", chatId: "oc_1" }, staleAt);
+
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({
+        eventId: "disabled-current",
+        chatType: "group",
+        createTime: now,
+      })) + "\n"));
+
+      expect(db.prepare("SELECT updated_at FROM agent_sessions WHERE id = ?").get(session.id).updated_at).toBe(staleAt);
+    } finally {
+      wired.consumer.stop();
+      vi.useRealTimers();
+    }
   });
 });

@@ -21,4 +21,17 @@ describe("session store", () => {
     expect(store.bumpVersion(s1.id)).toBe(1);
     expect(store.bumpVersion(s1.id)).toBe(2);
   });
+
+  it("touch 只推进 updated_at，不被迟到时间回退", () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const session = store.getOrCreate("feishu:p2p:ou_touch", { kind: "p2p" }, 2000);
+
+    store.touch(session.id, 1000);
+    expect(db.prepare("SELECT updated_at FROM agent_sessions WHERE id = ?").get(session.id).updated_at).toBe(2000);
+
+    store.touch(session.id, 3000);
+    expect(db.prepare("SELECT updated_at FROM agent_sessions WHERE id = ?").get(session.id).updated_at).toBe(3000);
+  });
 });

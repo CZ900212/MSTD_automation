@@ -35,6 +35,7 @@ export function wireGateway({ db, config, spawnFn, handleTurn, actors, log = con
           store.append(session.id, { role: "user", senderOpenId: evt.senderOpenId, senderName: evt.senderName, content: evt.content, observed: true, ts: evt.ts });
         return;
       }
+      store.touch(session.id, Date.now());
       debouncer.push(`${sessionKey}|${evt.senderOpenId}`, evt, (items) =>
         actors.enqueue(sessionKey, () => handleTurn({ kind: "message", session, sessionKey, items, mode: verdict.mode }))
       );
