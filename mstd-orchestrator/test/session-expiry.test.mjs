@@ -203,6 +203,47 @@ describe("会话过期重置（flush 先行 + 豁免）", () => {
     expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
   });
 
+  it.each([
+    ["Promise", () => Promise.resolve(false)],
+    ["非 boolean", () => 0],
+  ])("第二次 hasActiveJob 返回%s时在 flush 后明确拒绝且不归档", async (_label, invalidFactory) => {
+    const s = mkSession(`feishu:p2p:ou_invalid_second_${_label}`, NOW - 25 * 3600_000);
+    store.append(s.id, { role: "user", content: "先 flush 再检查", ts: NOW - 25 * 3600_000 });
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(NOW - 25 * 3600_000, s.id);
+    const archiveRun = vi.fn();
+    const expiryDb = {
+      prepare(sql) {
+        const statement = db.prepare(sql);
+        if (!sql.startsWith("UPDATE agent_sessions SET status = 'archived'")) return statement;
+        return {
+          run(...args) {
+            archiveRun(...args);
+            return statement.run(...args);
+          },
+        };
+      },
+    };
+    let checks = 0;
+    const strictExpiry = createSessionExpiry({
+      db: expiryDb,
+      agentStore: store,
+      actors,
+      brain,
+      hasActiveJob: () => {
+        checks += 1;
+        return checks === 1 ? false : invalidFactory();
+      },
+    });
+
+    await expect(strictExpiry.sweep(NOW)).rejects.toThrowError(
+      "createSessionExpiry: hasActiveJob 必须同步返回 boolean"
+    );
+    expect(checks).toBe(2);
+    expect(brain.turn).toHaveBeenCalledTimes(1);
+    expect(archiveRun).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
+  });
+
   it("有活跃后台 job 的会话豁免", async () => {
     mkSession("feishu:p2p:ou_busy", NOW - 25 * 3600_000);
     activeJobs.add("feishu:p2p:ou_busy");
