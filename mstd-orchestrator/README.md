@@ -49,6 +49,7 @@ cp .env.example .env && chmod 600 .env   # 填 key；密钥红线：只进 .env�
 set -a; . ./.env; set +a
 node server/index.mjs                    # 缺关键 env 会 fail-fast 打印全清单
 # web 调试台：cd ../mstd-ui && npx vite  # 六 tab：工作台/看板/会话/调试台/记忆/调试对话
+#   /api 代理默认 http://localhost:8787，daemon 不在本机时用 MSTD_API_URL 覆盖
 ```
 
 启动要求（`MSTD_ENABLE_AGENT=1` 时 fail-fast 强制）：`MSTD_BOT_OPEN_ID` / `MSTD_BOT_NAME` / `LARK_PROFILE` / 三模型 key / `MSTD_SESSION_SECRET`。写闸 `MSTD_ENABLE_WRITE=1` 时必须给 `MSTD_TEST_OPEN_IDS` 或 `MSTD_TEST_CHAT_IDS`（白名单 fail-closed，空=全拒）。全部开关见 `.env.example`。

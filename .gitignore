@@ -32,5 +32,6 @@ coverage/
 *.sqlite3
 
 # Local runtime artifacts
-mstd-orchestrator/db/*.db
+mstd-orchestrator/db/
 mstd-orchestrator/out/
+lark-*.png
