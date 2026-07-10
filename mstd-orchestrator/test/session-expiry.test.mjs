@@ -113,6 +113,23 @@ describe("会话过期重置（flush 先行 + 豁免）", () => {
     expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
   });
 
+  it("flush 期间出现活跃后台 job 后，二次复查阻止归档", async () => {
+    const sessionKey = "feishu:p2p:ou_flush_job";
+    const s = mkSession(sessionKey, NOW - 25 * 3600_000);
+    store.append(s.id, { role: "user", content: "会触发 memory flush", ts: NOW - 25 * 3600_000 });
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(NOW - 25 * 3600_000, s.id);
+    brain.turn.mockImplementation(async () => {
+      activeJobs.add(sessionKey);
+      return { finalText: "", events: [] };
+    });
+
+    const result = await expiry.sweep(NOW);
+
+    expect(activeJobs.has(sessionKey)).toBe(true);
+    expect(result.archived).toBe(0);
+    expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
+  });
+
   it("有活跃后台 job 的会话豁免", async () => {
     mkSession("feishu:p2p:ou_busy", NOW - 25 * 3600_000);
     activeJobs.add("feishu:p2p:ou_busy");

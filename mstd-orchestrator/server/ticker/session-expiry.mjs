@@ -44,6 +44,7 @@ export function createSessionExpiry({
             log(`[expiry] flush 回合失败 ${current.session_key}（仍归档）: ${e?.message ?? e}`);
           }
         }
+        if (await hasActiveJob(current.session_key)) return 0;
         const result = db.prepare(
           "UPDATE agent_sessions SET status = 'archived' WHERE id = ? AND status = 'active' AND updated_at < ?"
         ).run(current.id, cutoff);

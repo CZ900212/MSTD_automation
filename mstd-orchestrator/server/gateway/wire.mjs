@@ -26,13 +26,14 @@ export function wireGateway({ db, config, spawnFn, handleTurn, actors, log = con
       const t0 = Date.now();
       const verdict = admitter.admit(evt);
       inbox.recordVerdict(evt.eventId, { ...verdict, gate: "admit", elapsedMs: Date.now() - t0 });
+      const shouldObserve = !verdict.ok && verdict.reason === "bot_not_mentioned_observe";
+      if (!verdict.ok && !shouldObserve) return;
       const sessionKey = evt.chatType === "p2p"
         ? buildSessionKey({ kind: "p2p", openId: evt.senderOpenId })
         : buildSessionKey({ kind: "group", chatId: evt.chatId, topicId: evt.topicId ?? undefined });
       const session = store.getOrCreate(sessionKey, { kind: evt.chatType === "p2p" ? "p2p" : "group", chatId: evt.chatId });
-      if (!verdict.ok) {
-        if (verdict.reason === "bot_not_mentioned_observe")
-          store.append(session.id, { role: "user", senderOpenId: evt.senderOpenId, senderName: evt.senderName, content: evt.content, observed: true, ts: evt.ts });
+      if (shouldObserve) {
+        store.append(session.id, { role: "user", senderOpenId: evt.senderOpenId, senderName: evt.senderName, content: evt.content, observed: true, ts: evt.ts });
         return;
       }
       store.touch(session.id, Date.now());

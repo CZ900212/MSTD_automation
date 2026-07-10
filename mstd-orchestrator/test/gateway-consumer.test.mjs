@@ -46,7 +46,10 @@ describe("wireGateway 管道装配", () => {
   const rawMsg = (over = {}) => ({
     header: { event_id: over.eventId ?? "we1", event_type: "im.message.receive_v1" },
     event: {
-      sender: { sender_id: { open_id: over.sender ?? "ou_a" } },
+      sender: {
+        sender_type: over.senderType ?? "user",
+        sender_id: over.sender === null ? {} : { open_id: over.sender ?? "ou_a" },
+      },
       message: {
         chat_id: over.chatId ?? "oc_1", chat_type: over.chatType ?? "p2p", message_type: "text",
         content: JSON.stringify({ text: over.text ?? "你好" }),
@@ -56,7 +59,11 @@ describe("wireGateway 管道装配", () => {
     },
   });
 
-  function setup({ handleTurn, actors = { enqueue: vi.fn((_, callback) => callback()) } }) {
+  function setup({
+    handleTurn,
+    actors = { enqueue: vi.fn((_, callback) => callback()) },
+    log = vi.fn(),
+  }) {
     vi.useFakeTimers();
     const db = openDb();
     migrate(db);
@@ -68,8 +75,9 @@ describe("wireGateway 管道装配", () => {
       spawnFn,
       handleTurn,
       actors,
+      log,
     });
-    return { db, children, wired, actors };
+    return { db, children, wired, actors, log };
   }
 
   it("真实私聊 NDJSON 经 debounce 后按会话 key 入队，handleTurn 只在 actor 回调内触发", async () => {
@@ -168,6 +176,46 @@ describe("wireGateway 管道装配", () => {
       })) + "\n"));
 
       expect(db.prepare("SELECT updated_at FROM agent_sessions WHERE id = ?").get(session.id).updated_at).toBe(staleAt);
+    } finally {
+      wired.consumer.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("disabled 群首条消息不物化 active session", () => {
+    const { db, children, wired } = setup({ handleTurn: vi.fn() });
+    try {
+      db.prepare(
+        "INSERT INTO group_policies (chat_id, policy, hourly_proactive_limit, updated_at) VALUES (?, 'disabled', 4, 0)"
+      ).run("oc_disabled");
+
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({
+        eventId: "disabled-first",
+        chatId: "oc_disabled",
+        chatType: "group",
+      })) + "\n"));
+
+      expect(db.prepare("SELECT 1 FROM agent_sessions WHERE session_key = ?").get("feishu:group:oc_disabled")).toBeUndefined();
+    } finally {
+      wired.consumer.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("真实 app self-echo 不物化 session、不触发回合且不误报 parse error", () => {
+    const handleTurn = vi.fn();
+    const log = vi.fn();
+    const { db, children, wired } = setup({ handleTurn, log });
+    try {
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({
+        eventId: "app-self-echo",
+        sender: null,
+        senderType: "app",
+      })) + "\n"));
+
+      expect(db.prepare("SELECT COUNT(*) AS count FROM agent_sessions").get().count).toBe(0);
+      expect(handleTurn).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
     } finally {
       wired.consumer.stop();
       vi.useRealTimers();
