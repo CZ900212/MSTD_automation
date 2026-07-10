@@ -48,7 +48,7 @@
 - **执行源全覆盖**:index.mjs 中 gateway、reinjector、debugTurn、session-expiry 共用同一实例;cron/background 使用一次性唯一会话。真实并发正确性由 Task 2 的 brain 回合互斥兜底;本任务测试必须通过真实网关事件/各工厂入口证明 `actors.enqueue` 被调用,不能只直接测试 actor 自己。
 - session expiry 的候选查询可在 actor 外做,但 actor 回调开始后必须按 id 重读 `agent_sessions`,重新计算 `status/updated_at/cutoff/hasActiveJob`;候选排队期间若有新消息 touch,不得 flush 或归档。最终 archive UPDATE 也带 `status='active' AND updated_at < cutoff`,只按 `changes===1` 计数。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在现有测试文件追加以下失败用例:
 
@@ -57,12 +57,12 @@
 3. `debug-turn.test.mjs`:调用 `createDebugTurn`,断言形如 `debug:debugId` 的 key 经 actors spy 入队后才执行 `handleTurn`。
 4. `session-expiry.test.mjs`:让 actors spy 只捕获 callback 不立即执行;候选查询后先 `store.touch`/更新 `updated_at`,再执行 callback,断言 `brain.turn` 未调用且 session 仍 active。另保留真正 stale 时 flush→archive 的正例。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run test/gateway-consumer.test.mjs test/reinject.test.mjs test/debug-turn.test.mjs test/session-expiry.test.mjs`
 Expected: FAIL(网关仍自建 pool、debug helper 不存在、expiry 不做锁内复查)
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `wire.mjs`:签名改为必填 `actors`;入口校验 `if (!actors?.enqueue) throw new Error("wireGateway: actors 必填")`;删除函数体内 `createActorPool()`。
 
@@ -72,17 +72,25 @@ Expected: FAIL(网关仍自建 pool、debug helper 不存在、expiry 不做锁�
 
 `session-expiry.mjs`:对每个候选执行 `await actors.enqueue(s.session_key, async () => { ... })`;callback 第一行按 `s.id` 重读,并在任何 flush 前重新判断 active、`updated_at < cutoff`、`!hasActiveJob(session_key)`。后续 flush/归档都在同一 callback 内,从而与 gateway/reinject/debug 的同会话工作串行。
 
-- [ ] **Step 4: 跑测试确认通过 + 全量回归**
+- [x] **Step 4: 跑测试确认通过 + 全量回归**
 
 Run: `npx vitest run test/gateway-consumer.test.mjs test/reinject.test.mjs test/debug-turn.test.mjs test/session-expiry.test.mjs && npx vitest run`
 Expected: 全绿
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mstd-orchestrator/server/gateway/wire.mjs mstd-orchestrator/server/sessions/debug-turn.mjs mstd-orchestrator/server/ticker/session-expiry.mjs mstd-orchestrator/server/index.mjs mstd-orchestrator/test/gateway-consumer.test.mjs mstd-orchestrator/test/reinject.test.mjs mstd-orchestrator/test/debug-turn.test.mjs mstd-orchestrator/test/session-expiry.test.mjs
 git commit -m "fix(mstd): 全局唯一 actor 注册表——网关与回注/后台共用,同会话不再双队列并发"
 ```
+
+#### Task 1 实施偏差与补强
+
+- `wireGateway` 在 admitted 消息进入 debounce 前用接收时钟单调 `touch`,关闭消息已接收但尚未入 actor 时被 expiry 抢先归档的窗口。非 observed reject 在 session 物化前返回;`bot_not_mentioned_observe` 继续按原契约建会话并 append。
+- `session-expiry` 在 flush 后再次同步检查 active job;`hasActiveJob` 被收紧为同步 boolean 契约,Promise/非 boolean 明确抛错并 fail-closed。第二次检查到条件 UPDATE 之间无 `await`/微任务让出。
+- 因 `wireGateway` 的 `actors` 改为必填,同步适配了既有 `test/admit-log.test.mjs` 调用点。`store.touch` 改为单调推进,避免迟到事件回退 `updated_at`。
+- `card_action` 没有可靠 `sessionKey`,仍保持直达确认流水线,不制造伪 key;本任务 actor 串行边界是 message session。
+- 提交链:`54ff304`、`1f299a3`、`e790c47`、`f2f5cc7`、`6e46f14`。最终专项 5 文件 28/28;orchestrator 383 passed、4 个 E2E 门控 skip;UI 51/51。非 skip 真机 E2E 按本计划 Task 13 的统一发布门禁执行。
 
 ---
 
