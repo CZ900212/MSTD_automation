@@ -130,6 +130,79 @@ describe("会话过期重置（flush 先行 + 豁免）", () => {
     expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
   });
 
+  it("第二次同步 job 检查返回后不让出微任务，立即执行归档 UPDATE", async () => {
+    const s = mkSession("feishu:p2p:ou_sync_check", NOW - 25 * 3600_000);
+    store.append(s.id, { role: "user", content: "需要 flush 的内容", ts: NOW - 25 * 3600_000 });
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(NOW - 25 * 3600_000, s.id);
+    const order = [];
+    const expiryDb = {
+      prepare(sql) {
+        const statement = db.prepare(sql);
+        if (!sql.startsWith("UPDATE agent_sessions SET status = 'archived'")) return statement;
+        return {
+          run(...args) {
+            order.push("archive-update");
+            return statement.run(...args);
+          },
+        };
+      },
+    };
+    let checks = 0;
+    const syncExpiry = createSessionExpiry({
+      db: expiryDb,
+      agentStore: store,
+      actors,
+      brain,
+      hasActiveJob: () => {
+        checks += 1;
+        order.push(`check${checks}`);
+        if (checks === 2) queueMicrotask(() => order.push("job-microtask"));
+        return false;
+      },
+    });
+
+    const result = await syncExpiry.sweep(NOW);
+
+    expect(result.archived).toBe(1);
+    expect(order).toEqual(["check1", "check2", "archive-update", "job-microtask"]);
+  });
+
+  it.each([
+    ["Promise", Promise.resolve(false)],
+    ["非 boolean", 0],
+  ])("hasActiveJob 返回%s时明确拒绝且不 flush/归档", async (_label, invalidValue) => {
+    const s = mkSession(`feishu:p2p:ou_invalid_${_label}`, NOW - 25 * 3600_000);
+    store.append(s.id, { role: "user", content: "不能进入 flush", ts: NOW - 25 * 3600_000 });
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(NOW - 25 * 3600_000, s.id);
+    const archiveRun = vi.fn();
+    const expiryDb = {
+      prepare(sql) {
+        const statement = db.prepare(sql);
+        if (!sql.startsWith("UPDATE agent_sessions SET status = 'archived'")) return statement;
+        return {
+          run(...args) {
+            archiveRun(...args);
+            return statement.run(...args);
+          },
+        };
+      },
+    };
+    const strictExpiry = createSessionExpiry({
+      db: expiryDb,
+      agentStore: store,
+      actors,
+      brain,
+      hasActiveJob: () => invalidValue,
+    });
+
+    await expect(strictExpiry.sweep(NOW)).rejects.toThrowError(
+      "createSessionExpiry: hasActiveJob 必须同步返回 boolean"
+    );
+    expect(brain.turn).not.toHaveBeenCalled();
+    expect(archiveRun).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
+  });
+
   it("有活跃后台 job 的会话豁免", async () => {
     mkSession("feishu:p2p:ou_busy", NOW - 25 * 3600_000);
     activeJobs.add("feishu:p2p:ou_busy");

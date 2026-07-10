@@ -20,6 +20,14 @@ export function createSessionExpiry({
     return reset > nowTs ? reset - 86_400_000 : reset;
   }
 
+  function checkActiveJob(sessionKey) {
+    const active = hasActiveJob(sessionKey);
+    if (typeof active !== "boolean") {
+      throw new TypeError("createSessionExpiry: hasActiveJob 必须同步返回 boolean");
+    }
+    return active;
+  }
+
   async function sweep(nowTs = Date.now()) {
     const cutoff = Math.max(nowTs - idleMs, lastResetTs(nowTs));
     const stale = db.prepare(
@@ -29,7 +37,7 @@ export function createSessionExpiry({
     for (const s of stale) {
       const didArchive = await actors.enqueue(s.session_key, async () => {
         const current = db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(s.id);
-        if (!current || current.status !== "active" || current.updated_at >= cutoff || await hasActiveJob(current.session_key)) {
+        if (!current || current.status !== "active" || current.updated_at >= cutoff || checkActiveJob(current.session_key)) {
           return 0;
         }
         // 有内容的会话才值得 flush（空会话直接归档）
@@ -44,7 +52,7 @@ export function createSessionExpiry({
             log(`[expiry] flush 回合失败 ${current.session_key}（仍归档）: ${e?.message ?? e}`);
           }
         }
-        if (await hasActiveJob(current.session_key)) return 0;
+        if (checkActiveJob(current.session_key)) return 0;
         const result = db.prepare(
           "UPDATE agent_sessions SET status = 'archived' WHERE id = ? AND status = 'active' AND updated_at < ?"
         ).run(current.id, cutoff);
