@@ -53,10 +53,16 @@ describe("outbound（唯一出站通道）", () => {
       .mockResolvedValueOnce(netFail)
       .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "empty" })  // 空返回也算瞬时
       .mockResolvedValueOnce(okResp);
-    const ob = createOutbound({ runLark, retries: 5, retryDelayMs: 1, log: () => {} });
+    const events = [];
+    const ob = createOutbound({ runLark, retries: 5, retryDelayMs: 1, log: () => {}, onEvent: (e) => events.push(e) });
     const out = await ob.sendMessage({ chatId: "oc_1", text: "x", idempotencyKey: "ik" });
     expect(out.messageId).toBe("om_9");
     expect(runLark).toHaveBeenCalledTimes(3);
+    // 两次瞬时失败各上报一条 outbound_retry
+    expect(events.filter((e) => e.type === "outbound_retry")).toEqual([
+      expect.objectContaining({ what: "发送", attempt: 1 }),
+      expect.objectContaining({ what: "发送", attempt: 2 }),
+    ]);
   });
 
   it("永久错误（权限/参数）不重试，立即抛", async () => {

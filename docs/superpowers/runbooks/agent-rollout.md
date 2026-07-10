@@ -71,10 +71,11 @@
 | token 花费异常飙升 | 查 `token_usage` 表按日聚合 | 降 `MSTD_DAILY_TOKEN_BUDGET`/`MSTD_SESSION_TOKEN_BUDGET`；查是否某群 ambient 太话痨 → 降策略 |
 | 主动消息刷屏投诉 | 立即把该群策略降 `mention_only` | 查限额器 `proactive_log`；必要时调低 `hourly_proactive_limit` |
 | daemon 反复重启 | 看 fail-fast 清单输出 | 多为 env 缺失/秘钥轮换后未更新 .env |
+| 回复变慢/答非所问（疑似降级中） | 调试台看板·模型链路事件（`model_log`） | `model_retry` 密集=网关抖动（curl 探 CZ 网关）；`brain_fallback`=中枢换 provider 跑（回合会慢一档）；`pipeline_error`=全链耗尽，查三家 key/网络 |
 
 ## 6. 日常运维节奏
 
-- **每天**：扫一眼调试台看板（job 失败、审计异常）；dreams 报告（apply 期）
+- **每天**：扫一眼调试台看板（job 失败、审计异常、模型链路事件）；dreams 报告（apply 期）
 - **每周一**：看观察期信噪周报，决策群策略升降级
 - **每月**：`.env` key 轮换检查；`agent-memory` git 仓大小；SQLite `VACUUM`（或迁移 Postgres 计划）
 - **升级部署**：先 `MSTD_ENABLE_AGENT=0` 起新版本跑 fail-fast + 单测，再开闸；数据库迁移由 `schema_migrations` 自动追踪，不重复执行

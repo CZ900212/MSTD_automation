@@ -21,6 +21,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createModelCaller } from "./models/caller.mjs";
 import { createBudget } from "./models/budget.mjs";
+import { createModelLog } from "./models/model-log.mjs";
 import { createTriage } from "./models/triage.mjs";
 import { createBrain } from "./models/brain.mjs";
 import { renderReply } from "./models/reply.mjs";
@@ -143,7 +144,8 @@ let internal = null;
 let adminDeps = null;
 if (config.enableAgent && config.botOpenId) {
   const internalToken = process.env.MSTD_INTERNAL_TOKEN || randomUUID();
-  const caller = createModelCaller({ env: process.env });
+  const modelLog = createModelLog(db);   // 模型链路可观测：降级/重试/预算命中落库，调试台消费
+  const caller = createModelCaller({ env: process.env, onEvent: modelLog.record });
   const agentStore = createSessionStore(db);
   const alert = config.alertOpenId && bootLark ? makeDmAlert({ runLark: bootLark, openId: config.alertOpenId }) : null;
   const budget = createBudget(db, {
@@ -151,6 +153,7 @@ if (config.enableAgent && config.botOpenId) {
     sessionLimit: config.sessionTokenBudget,
     onExceed: (x) => {
       console.error(`[budget] 超限 scope=${x.scope} session=${x.sessionKey}`);
+      modelLog.record({ type: "budget_exceeded", sessionKey: x.sessionKey, detail: x.scope });
       alert?.(`[mstd-agent] token 预算超限：${x.scope} (${x.sessionKey})`).catch(() => {});
     },
   });
@@ -180,8 +183,9 @@ if (config.enableAgent && config.botOpenId) {
       MSTD_INTERNAL_URL: `http://127.0.0.1:${config.port}`,
       MSTD_INTERNAL_TOKEN: internalToken,
     },
+    onEvent: modelLog.record,
   });
-  const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }) });
+  const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: modelLog.record });
   const turnHandler = createTurnHandler({
     triage,
     brain,

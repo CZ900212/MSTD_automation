@@ -9,6 +9,7 @@ import { issueSessionToken } from "../server/http/session.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
 import { createMemoryFiles } from "../server/memory/files.mjs";
 import { createCronStore } from "../server/ticker/cron-jobs.mjs";
+import { createModelLog } from "../server/models/model-log.mjs";
 
 const SECRET = "test-secret";
 
@@ -83,5 +84,20 @@ describe("调试台管理 API（admin 白名单）", () => {
     const r = await asAdmin(request(app).post("/api/admin/debug-chat").send({ debug_id: "d1", text: "你好" }));
     expect(r.status).toBe(200);
     expect(debugTurns).toEqual(["你好"]);
+  });
+
+  it("模型链路事件：GET model-log 倒序返回，支持 kind 过滤；非管理员 403", async () => {
+    const mlog = createModelLog(db, { now: () => 9000 });
+    mlog.record({ type: "model_fallback", chain: "fast", from: "v4-flash", to: "opus-4.6", error: "HTTP 500" });
+    mlog.record({ type: "budget_exceeded", sessionKey: "feishu:p2p:ou_x", detail: "session" });
+
+    const all = (await asAdmin(request(app).get("/api/admin/model-log"))).body;
+    expect(all.entries).toHaveLength(2);
+    expect(all.entries.map((e) => e.kind).sort()).toEqual(["budget_exceeded", "model_fallback"]);
+
+    const filtered = (await asAdmin(request(app).get("/api/admin/model-log?kind=model_fallback"))).body;
+    expect(filtered.entries).toEqual([expect.objectContaining({ kind: "model_fallback", from_key: "v4-flash", to_key: "opus-4.6" })]);
+
+    expect((await asUser(request(app).get("/api/admin/model-log"))).status).toBe(403);
   });
 });

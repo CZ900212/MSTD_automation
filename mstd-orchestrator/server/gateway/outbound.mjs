@@ -7,8 +7,10 @@ const MESSAGE_ID = /^om_[a-zA-Z0-9]+$/;
 // 瞬时错误可重试（发送/发卡带幂等 key，重发安全；更卡/编辑天然幂等）
 const TRANSIENT_ERROR_TYPES = new Set(["network", "timeout", "rate_limit", "internal"]);
 
-export function createOutbound({ runLark, retries = 5, retryDelayMs = 10_000, log = console.error }) {
+export function createOutbound({ runLark, retries = 5, retryDelayMs = 10_000, log = console.error, onEvent = null }) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 可观测上报 fail-safe：观察者出错绝不反噬出站
+  const emit = (evt) => { try { onEvent?.(evt); } catch { /* 忽略 */ } };
 
   async function exec(argv, what) {
     let lastErr;
@@ -24,6 +26,7 @@ export function createOutbound({ runLark, retries = 5, retryDelayMs = 10_000, lo
       if (!transient) throw lastErr;
       if (attempt < retries) {
         log(`[outbound] ${what}瞬时失败（第 ${attempt}/${retries} 次），${retryDelayMs}ms 后重试: ${lastErr.message.slice(0, 200)}`);
+        emit({ type: "outbound_retry", what, attempt, error: lastErr.message.slice(0, 200) });
         await sleep(retryDelayMs);
       }
     }

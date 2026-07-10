@@ -94,6 +94,16 @@ export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore
     res.json({ jobs });
   }));
 
+  // 模型链路可观测：降级/重试/预算命中/出站重试流水（model_log，只读）
+  app.get("/api/admin/model-log", guard((req, res) => {
+    const kind = req.query.kind ? String(req.query.kind) : null;
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const entries = kind
+      ? db.prepare("SELECT * FROM model_log WHERE kind = ? ORDER BY ts DESC LIMIT ?").all(kind, limit)
+      : db.prepare("SELECT * FROM model_log ORDER BY ts DESC LIMIT ?").all(limit);
+    res.json({ entries });
+  }));
+
   app.get("/api/admin/audit", guard((req, res) => {
     const decisions = db.prepare("SELECT * FROM decisions ORDER BY ts DESC LIMIT 100").all();
     const actions = db.prepare("SELECT id, job_id, kind, status, target_open_id, ts FROM job_actions ORDER BY ts DESC LIMIT 100").all();

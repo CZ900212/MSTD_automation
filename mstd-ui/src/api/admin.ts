@@ -51,6 +51,24 @@ export const removeCronJob = (id: string) =>
 export const listAdminJobs = () =>
   apiFetch<{ jobs: AdminJob[] }>("/api/admin/jobs").then((r) => r.jobs);
 
+export type ModelLogEntry = {
+  id: string; kind: string; chain: string | null; from_key: string | null; to_key: string | null;
+  session_key: string | null; attempt: number | null; detail: string | null; ts: number;
+};
+
+export const getModelLog = (kind?: string) =>
+  apiFetch<{ entries: ModelLogEntry[] }>(`/api/admin/model-log${kind ? `?kind=${kind}` : ""}`).then((r) => r.entries);
+
+// 模型链路事件可读化（降级/重试/预算命中一眼看穿）
+export const MODEL_LOG_LABEL: Record<string, string> = {
+  model_retry: "调用重试",
+  model_fallback: "链内降级",
+  pipeline_error: "全链耗尽",
+  brain_fallback: "中枢降级",
+  budget_exceeded: "预算命中",
+  outbound_retry: "出站重试",
+};
+
 export const getAudit = () =>
   apiFetch<{ decisions: unknown[]; actions: { id: string; job_id: string; kind: string; status: string; target_open_id: string | null; ts: number }[] }>("/api/admin/audit");
 

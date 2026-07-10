@@ -99,6 +99,39 @@ describe("brain（5.5 Pi 会话进程管理）", () => {
     expect(degraded.client.runJob.mock.calls[0][0]).toContain("重要任务");
   });
 
+  it("onEvent 结构化上报 spawn/turn 两类降级", async () => {
+    const events = [];
+    // spawn 降级：首 provider 拉不起来
+    const startPiSpawn = vi.fn((opts) => {
+      if (opts.provider === REASON_PROVIDERS[0].provider) throw new Error("spawn fail");
+      return mockClient();
+    });
+    const b1 = createBrain({ startPi: startPiSpawn, store, retries: 1, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {}, log: () => {}, onEvent: (e) => events.push(e) });
+    await b1.turn({ session, sessionKey: "k1", brief: "x" });
+    expect(events).toEqual([expect.objectContaining({
+      type: "brain_fallback", phase: "spawn", sessionKey: "k1",
+      from: REASON_PROVIDERS[0].key, to: REASON_PROVIDERS[1].key,
+    })]);
+    expect(events[0].error).toContain("spawn fail");
+
+    // 回合级降级：runJob 失败
+    events.length = 0;
+    const startPiTurn = vi.fn((opts) => {
+      const c = mockClient();
+      if (opts.provider === REASON_PROVIDERS[0].provider) {
+        c.runJob = vi.fn(async () => { throw new Error("503"); });
+      }
+      return c;
+    });
+    const b2 = createBrain({ startPi: startPiTurn, store, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {}, log: () => {}, onEvent: (e) => { events.push(e); throw new Error("observer boom"); } });
+    const out = await b2.turn({ session, sessionKey: "k2", brief: "x" });
+    expect(out.finalText).toBe("done");
+    expect(events).toEqual([expect.objectContaining({
+      type: "brain_fallback", phase: "turn", sessionKey: "k2",
+      from: REASON_PROVIDERS[0].key, to: REASON_PROVIDERS[1].key,
+    })]);
+  });
+
   it("回合中全链耗尽才抛错", async () => {
     const startPi = vi.fn(() => {
       const c = mockClient();

@@ -24,8 +24,11 @@ export function createBrain({
   turnTimeoutMs = 240_000,
   replayLimit = 50,
   log = console.error,
+  onEvent = null,
 } = {}) {
   const pool = new Map(); // sessionKey -> { client, idleTimer, replayed, busy, providerKey }
+  // 可观测上报 fail-safe：观察者出错绝不反噬回合执行
+  const emit = (evt) => { try { onEvent?.(evt); } catch { /* 忽略 */ } };
 
   async function spawnWithFallback(sessionKey, startIdx = 0) {
     const errors = [];
@@ -47,8 +50,10 @@ export function createBrain({
           await sleepFn(retryDelayMs);
         }
       }
-      if (i < REASON_PROVIDERS.length - 1)
+      if (i < REASON_PROVIDERS.length - 1) {
         log(`[brain-fallback] session=${sessionKey} from=${p.key} to=${REASON_PROVIDERS[i + 1].key}`);
+        emit({ type: "brain_fallback", phase: "spawn", sessionKey, from: p.key, to: REASON_PROVIDERS[i + 1].key, error: String(errors.at(-1)?.message ?? "") });
+      }
     }
     throw new Error(`brain 全部 provider 拉起失败: ${errors.at(-1)?.message}`);
   }
@@ -133,6 +138,7 @@ export function createBrain({
         startIdx = (failedIdx >= 0 ? failedIdx : startIdx) + 1;
         if (startIdx < REASON_PROVIDERS.length) {
           log(`[brain-fallback] 回合失败 session=${sessionKey} from=${entry.providerKey} to=${REASON_PROVIDERS[startIdx].key}: ${String(e?.message ?? e).slice(0, 200)}`);
+          emit({ type: "brain_fallback", phase: "turn", sessionKey, from: entry.providerKey, to: REASON_PROVIDERS[startIdx].key, error: String(e?.message ?? e).slice(0, 200) });
         }
       } finally {
         entry.busy = false;

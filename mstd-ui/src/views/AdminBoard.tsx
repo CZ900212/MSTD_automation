@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  listCronJobs, addCronJob, setCronEnabled, removeCronJob, listAdminJobs, getAudit,
-  type CronJob, type AdminJob,
+  listCronJobs, addCronJob, setCronEnabled, removeCronJob, listAdminJobs, getAudit, getModelLog,
+  MODEL_LOG_LABEL, type CronJob, type AdminJob, type ModelLogEntry,
 } from "../api/admin";
 
 // 任务看板（G4）：cron 管理 + 后台 job 状态 + 审计查询。
@@ -9,6 +9,7 @@ export function AdminBoard() {
   const [crons, setCrons] = useState<CronJob[]>([]);
   const [jobs, setJobs] = useState<AdminJob[]>([]);
   const [actions, setActions] = useState<{ id: string; job_id: string; kind: string; status: string; target_open_id: string | null; ts: number }[]>([]);
+  const [modelLog, setModelLog] = useState<ModelLogEntry[]>([]);
   const [form, setForm] = useState({ schedule: "0 9 * * *", prompt: "", deliverTo: "" });
   const [error, setError] = useState("");
 
@@ -17,6 +18,7 @@ export function AdminBoard() {
       setCrons(await listCronJobs());
       setJobs(await listAdminJobs());
       setActions((await getAudit()).actions);
+      setModelLog(await getModelLog());
     } catch (e) {
       setError(String(e));
     }
@@ -102,6 +104,26 @@ export function AdminBoard() {
               </tr>
             ))}
             {actions.length === 0 && <tr><td colSpan={4}>（无记录）</td></tr>}
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h3>模型链路事件（降级 / 重试 / 预算）</h3>
+        <table>
+          <thead><tr><th>事件</th><th>链</th><th>路径</th><th>会话</th><th>详情</th><th>时间</th></tr></thead>
+          <tbody>
+            {modelLog.map((m) => (
+              <tr key={m.id}>
+                <td>{MODEL_LOG_LABEL[m.kind] ?? m.kind}</td>
+                <td>{m.chain || "—"}</td>
+                <td>{m.from_key ? (m.to_key ? `${m.from_key} → ${m.to_key}` : `${m.from_key}${m.attempt ? `（第 ${m.attempt} 次）` : ""}`) : "—"}</td>
+                <td>{m.session_key || "—"}</td>
+                <td>{m.detail || "—"}</td>
+                <td>{new Date(m.ts).toLocaleString()}</td>
+              </tr>
+            ))}
+            {modelLog.length === 0 && <tr><td colSpan={6}>（链路健康，无事件）</td></tr>}
           </tbody>
         </table>
       </section>

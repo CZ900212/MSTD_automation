@@ -62,6 +62,35 @@ describe("model caller", () => {
     expect(captured.headers.Authorization).toBe("Bearer ck");
   });
 
+  it("onEvent 结构化上报：每次失败尝试 model_retry，降级 model_fallback", async () => {
+    let n = 0;
+    const fetchFn = vi.fn(async () => {
+      n += 1;
+      if (n <= 5) return errResponse;
+      return okResponse("ok", "m");
+    });
+    const events = [];
+    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {}, log: () => {}, onEvent: (e) => events.push(e) });
+    await caller.call("fast", { messages: [{ role: "user", content: "x" }] });
+    const retries = events.filter((e) => e.type === "model_retry");
+    expect(retries).toHaveLength(5);
+    expect(retries[0]).toMatchObject({ chain: "fast", model: "v4-flash", attempt: 1 });
+    expect(retries[0].error).toContain("500");
+    const fallbacks = events.filter((e) => e.type === "model_fallback");
+    expect(fallbacks).toEqual([expect.objectContaining({ chain: "fast", from: "v4-flash", to: "opus-4.6" })]);
+  });
+
+  it("onEvent 全链耗尽上报 pipeline_error；onEvent 抛错不影响主流程", async () => {
+    const fetchFn = vi.fn(async () => errResponse);
+    const events = [];
+    const caller = createModelCaller({
+      fetchFn, env: ENV, sleepFn: async () => {}, retries: 1, log: () => {},
+      onEvent: (e) => { events.push(e); throw new Error("observer boom"); },
+    });
+    await expect(caller.call("fast", { messages: [{ role: "user", content: "x" }] })).rejects.toThrow(PipelineError);
+    expect(events.filter((e) => e.type === "pipeline_error")).toEqual([expect.objectContaining({ chain: "fast" })]);
+  });
+
   it("三条链定义与用户定案一致", () => {
     expect(CHAINS.fast).toEqual(["v4-flash", "opus-4.6", "gpt-5.5"]);
     expect(CHAINS.reason).toEqual(["gpt-5.5", "opus-4.8", "v4-pro"]);

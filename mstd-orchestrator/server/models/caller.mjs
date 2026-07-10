@@ -62,8 +62,11 @@ export function createModelCaller({
   retryDelayMs = 10_000,
   maxTokens = 8192,
   log = console.error,
+  onEvent = null,
 } = {}) {
   const registry = modelRegistry(env);
+  // 可观测上报 fail-safe：观察者出错绝不反噬调用主链路
+  const emit = (evt) => { try { onEvent?.(evt); } catch { /* 忽略 */ } };
 
   async function callOne(modelKey, { system, messages, thinking }) {
     const m = registry[modelKey];
@@ -98,13 +101,17 @@ export function createModelCaller({
           return await callOne(modelKey, { system, messages, thinking: wantThinking });
         } catch (e) {
           lastErr = e;
+          emit({ type: "model_retry", chain, model: modelKey, attempt, error: e.message });
           await sleepFn(retryDelayMs);
         }
       }
       errors.push(lastErr);
-      if (i < keys.length - 1)
+      if (i < keys.length - 1) {
         log(`[model-fallback] chain=${chain} from=${modelKey} to=${keys[i + 1]}: ${lastErr.message}`);
+        emit({ type: "model_fallback", chain, from: modelKey, to: keys[i + 1], error: lastErr.message });
+      }
     }
+    emit({ type: "pipeline_error", chain, error: errors.map((e) => e.message).join(" | ") });
     throw new PipelineError(chain, errors);
   }
 
