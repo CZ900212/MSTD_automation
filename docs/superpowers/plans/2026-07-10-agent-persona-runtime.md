@@ -18,18 +18,25 @@
 - `agent-memory/` 是独立 git 仓(主仓 gitignore),SOUL.md 改动在该仓内提交,不进主仓。
 - 现有测试若因**设计变更**(如 observed 退役)失败,按新语义改断言,不是删测试。
 
+## 与另一份计划的关系(用户裁决记录)
+
+`2026-07-10-resident-agent-security-reliability-fixes.md`(提交 0e0fa83,并行产生)**不被本计划取代**,但存在两处冲突,执行本计划时按以下口径:
+1. **迁移编号**:012 归本计划(`012_inbox_raw.sql`);对方计划的 012-014 在其执行时顺延重编号(两者都未 apply,以先执行者占号)。
+2. **Pi 内置工具策略**:对方 Task 1 的"禁 bash/read + Docker sandbox_exec"与用户本次明示决策(常驻中枢保留 bash/read,云端 harness 定位)冲突——该 Task 执行前需按用户决策修订;对方计划其余内容(确认流水完整性、session generations、turn effects、env 白名单转发)与本计划互补,不冲突。
+
 ---
 
 ### Task 1: C0.1 全局唯一 actor 注册表
 
 **Files:**
 - Modify: `mstd-orchestrator/server/gateway/wire.mjs`(签名加 `actors` 注入,删内部 `createActorPool()`)
-- Modify: `mstd-orchestrator/server/index.mjs`(全局唯一 pool;删 `index.mjs:205` 的 `agentActors`)
+- Modify: `mstd-orchestrator/server/index.mjs`(全局唯一 pool;删 `index.mjs:205` 的 `agentActors`;debugTurn 执行体、session-expiry 也经同一 pool)
+- Modify: `mstd-orchestrator/server/ticker/session-expiry.mjs`(接受 `actors`,到期处理经 enqueue)
 - Test: `mstd-orchestrator/test/actor-unify.test.mjs`
 
 **Interfaces:**
 - Consumes: `createActorPool()`(`server/sessions/actor.mjs`,已有,`{ enqueue(sessionKey, asyncFn) }`)。
-- Produces: `wireGateway({ db, config, spawnFn, handleTurn, actors, log })` —— `actors` 必填改为可注入(默认自建保持向后兼容)。index.mjs 中网关与 reinjector 共用同一实例。
+- Produces: `wireGateway({ db, config, spawnFn, handleTurn, actors, log })` —— `actors` 可注入(默认自建保持向后兼容)。**执行源全覆盖**:index.mjs 中网关、reinjector、debugTurn(index.mjs:327 附近)、session-expiry 共用同一实例;cron/background 用一次性唯一会话天然无冲突,注明即可。真实网关驱动的并发正确性由 Task 2 的 brain 回合互斥兜底(纵深),本任务的测试证明各源确实经同一 pool 入队。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -75,7 +82,8 @@ Expected: FAIL(`wireGateway` 不接收 `actors`,`gw.actors !== actors`)
 - [ ] **Step 3: 实现**
 
 `wire.mjs`:签名改 `wireGateway({ db, config, spawnFn, handleTurn, actors = createActorPool(), log = console.error })`,删除函数体内 `const actors = createActorPool();`(第 15 行),返回值已含 `actors` 不变。
-`index.mjs`:在 enableAgent 块开头(约 147 行)`const actors = createActorPool();`;`index.mjs:205` 的 `const agentActors = createActorPool();` 删除,`createReinjector({ store: agentStore, actors, brain, outbound })` 改用它;`wireGateway(...)` 调用点(grep `wireGateway(`)追加 `actors`。`createActorPool` 的 import 若 index 已有则复用。
+`index.mjs`:在 enableAgent 块开头(约 147 行)`const actors = createActorPool();`;`index.mjs:205` 的 `const agentActors = createActorPool();` 删除,`createReinjector({ store: agentStore, actors, brain, outbound })` 改用它;`wireGateway(...)` 调用点(grep `wireGateway(`)追加 `actors`;debugTurn 执行体(index.mjs:327 附近,grep `debugTurn`)外包 `actors.enqueue(debugSessionKey, ...)`;session-expiry 构造(grep `createSessionExpiry` 或 `session-expiry`)注入 `actors`,其对某会话的到期处理(session-expiry.mjs:34 附近)改 `actors.enqueue(sessionKey, ...)`。`createActorPool` 的 import 若 index 已有则复用。
+测试追加(同文件):session-expiry 与 debug 源经 enqueue——给两者传 `{ enqueue: spy }` 桩,断言处理函数经 spy 调用且 sessionKey 正确。
 
 - [ ] **Step 4: 跑测试确认通过 + 全量回归**
 
@@ -286,7 +294,25 @@ export function createSessionTokenRegistry() {
 }
 ```
 
-`brain.mjs`:`createBrain({ ..., tokens = null })`;spawn 处(`spawning` 的 async 体内)`const internalToken = tokens?.issue(sessionKey) ?? null;` 传入 `startPi` 的 env(`MSTD_INTERNAL_TOKEN: internalToken ?? piEnv.MSTD_INTERNAL_TOKEN`),entry 记 `internalToken`;`recycle()`、`shutdown()`、`runTurn` 的 catch 分支(杀 Pi 换 provider 处)统一 `tokens?.revoke(entry.internalToken)`。
+`brain.mjs`:`createBrain({ ..., tokens = null })`;**token 按每次 startPi 尝试签发**(评审修正:不能按 ensure 签发——fallback/retry 会共用,全败时无 entry 可吊销)。`spawnWithFallback` 循环体内:
+
+```js
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        const internalToken = tokens?.issue(sessionKey) ?? null;
+        try {
+          const client = startPi({ ...,
+            env: { ...piEnv, MSTD_SESSION_KEY: sessionKey, ...(internalToken ? { MSTD_INTERNAL_TOKEN: internalToken } : {}) },
+          });
+          return { client, providerKey: p.key, internalToken };
+        } catch (e) {
+          tokens?.revoke(internalToken);          // 失败尝试的 token 立即吊销
+          errors.push(e);
+          await sleepFn(retryDelayMs);
+        }
+      }
+```
+
+entry 记 `internalToken`(ensure 从 spawnWithFallback 返回值取);`recycle()`、`shutdown()`、`runTurn` 的 catch 分支(杀 Pi 换 provider 处)统一 `tokens?.revoke(entry.internalToken)`。
 `internal-routes.mjs`:签名加 `tokens, modelLog = null`;guard 重写:
 
 ```js
@@ -326,15 +352,17 @@ git commit -m "feat(mstd): 内部通道会话绑定 token——per-spawn 签发/
 - Create: `mstd-orchestrator/server/sessions/deliver-grants.mjs`
 - Modify: `mstd-orchestrator/server/gateway/turn-handler.mjs`(handleReply 校验 target)
 - Modify: `mstd-orchestrator/server/ticker/cron-runner.mjs`(执行前 grant、finally revoke)
-- Modify: `mstd-orchestrator/server/memory/tool.mjs`(read 也过授权)
+- Modify: `mstd-orchestrator/server/http/internal-routes.mjs`(heartbeat add 锁定 deliverTo=本会话)
+- Modify: `mstd-orchestrator/server/memory/tool.mjs`(read 也过授权;journal 走 readJournal)
 - Modify: `mstd-orchestrator/server/index.mjs`(接线 grants)
 - Test: `mstd-orchestrator/test/deliver-grants.test.mjs` + `test/memory-tool.test.mjs`(追加)
 
 **Interfaces:**
 - Produces: `createDeliverGrants()` → `{ grant(sessionKey, target), allowed(sessionKey, target) -> boolean, revoke(sessionKey) }`;`target === sessionKey` 恒 allowed。
 - `createTurnHandler({ ..., grants = null })`:handleReply 中 `deliverKey !== sessionKey && !grants?.allowed(sessionKey, deliverKey)` → `{ ok: false, error: "target 越权:仅限当前会话或任务声明的投递目标" }`(不出站)。
-- `createCronRunner({ ..., grants = null })`:`runOne` 在 `brain.turn` 前 `grants?.grant(sessionKey, job.deliver_to)`,finally `grants?.revoke(sessionKey)`。heartbeat 投递路径执行时核对:若经 handleReply 则同样 grant,若直连 outbound 则不涉及。
-- `memoryTool.run` 的 `read`:`soul/org/journal` 任意会话可读;`group`/`user` 层仅本会话对应 id 可读(cron/debug 会话不可读 scoped 层)。
+- `createCronRunner({ ..., grants = null })`:`runOne` 在 `brain.turn` 前 `grants?.grant(sessionKey, job.deliver_to)`,finally `grants?.revoke(sessionKey)`。
+- **heartbeat 两难解法(P0)**:①创建面收口——`/internal/heartbeat` 的 `add` 强制 `deliverTo = 绑定 sessionKey`(客户端传入其他值 → 拒绝并提示"跨会话提醒走 propose_actions 确认卡");Pi 从此无法创建指向他会话的提醒,confused deputy 消除。②投递面——heartbeat runner 是受信 daemon 代码,到期投递时按存储的 deliverTo 投(创建时已锁定为创建者会话);执行时核对其路径:直连 outbound 则无涉 grants,若经 handleReply 则 runner 在投递前 `grants.grant(心跳会话, deliverTo)` finally revoke。存量 heartbeat 文件里指向他会话的旧条目视为受信历史,不迁移。
+- `memoryTool.run` 的 `read`:`soul/org` 任意会话可读;**`journal` 走 `files.readJournal()`**(评审修正:`readLayer("journal")` 会报未知层);`group`/`user` 层仅本会话对应 id 可读(cron/debug 会话不可读 scoped 层)。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -369,6 +397,21 @@ describe("C0.4 投递授权", () => {
     expect(t.run({ action: "read", layer: "user", id: "ou_a" }, { sessionKey: "feishu:p2p:ou_a" }).ok).toBe(true);
     expect(t.run({ action: "read", layer: "user", id: "ou_b" }, { sessionKey: "feishu:p2p:ou_a" }).ok).toBe(false);
     expect(t.run({ action: "read", layer: "group", id: "oc_A" }, { sessionKey: "cron:job-1" }).ok).toBe(false);
+    expect(t.run({ action: "read", layer: "journal" }, { sessionKey: "feishu:p2p:ou_a" }).ok).toBe(true);  // journal 走 readJournal()
+  });
+```
+
+内部路由测试追加(P0 heartbeat 收口):
+
+```js
+  it("C0.4 heartbeat add 锁定 deliverTo=本会话;指向他会话 403", async () => {
+    const tok = reg.issue("feishu:p2p:ou_a");
+    const bad = await request(app).post("/internal/heartbeat").set("Authorization", `Bearer ${tok}`)
+      .send({ session_key: "feishu:p2p:ou_a", action: "add", due_iso: "2026-07-11T09:00:00+08:00", text: "提醒", deliver_to: "feishu:group:oc_x" });
+    expect(bad.status).toBe(403);
+    const ok = await request(app).post("/internal/heartbeat").set("Authorization", `Bearer ${tok}`)
+      .send({ session_key: "feishu:p2p:ou_a", action: "add", due_iso: "2026-07-11T09:00:00+08:00", text: "提醒" });
+    expect(ok.status).toBe(200);   // 省略 deliver_to = 本会话
   });
 ```
 
@@ -421,7 +464,8 @@ export function createDeliverGrants() {
     }
 ```
 
-`tool.mjs`:`authorize` 拆读写——新增只读判定,`read` 分支改 `const auth = authorizeRead(ctx, layer, id); if (!auth.ok) return auth;`:
+`internal-routes.mjs` heartbeat 路由(60-70 行):`add` 分支改 `const deliverTo = sessionKey;`——body 里的 `deliver_to` 若存在且 ≠ sessionKey,直接 `res.status(403).json({ ok: false, error: "跨会话提醒请走 propose_actions 确认卡" })`。
+`tool.mjs`:`read` 分支——`journal` 层单独走 `files.readJournal()`;其余 `const auth = authorizeRead(ctx, layer, id); if (!auth.ok) return auth;`:
 
 ```js
   function authorizeRead({ sessionKey }, layer, id) {
@@ -495,6 +539,16 @@ describe("C2 入站 @ 规范化", () => {
   it("正则元字符名不炸;连续空白压缩", () => {
     expect(normalizeContent("@C+(测)  在吗", { botNames: ["C+(测)"], botOpenId: BOT })).toBe("[@我] 在吗");
   });
+  it("边界正确:@_user_10 不被 @_user_1 截断;@小达人 不是 @小达", () => {
+    const mentions = [
+      { key: "@_user_1", id: { open_id: BOT }, name: "小达" },
+      { key: "@_user_10", id: { open_id: "ou_wang" }, name: "王十" },
+    ];
+    expect(normalizeContent("@_user_10 和 @_user_1 都看下", { botNames: ["小达"], botOpenId: BOT, mentions }))
+      .toBe("@王十 和 [@我] 都看下");
+    expect(normalizeContent("@小达人 你好,@小达 在吗", { botNames: ["小达"], botOpenId: BOT }))
+      .toBe("@小达人 你好,[@我] 在吗");
+  });
 });
 ```
 
@@ -539,20 +593,27 @@ export function buildBotNames(env = process.env) {
 }
 
 export function normalizeContent(content, { botNames = [], botOpenId = "", mentions = [] } = {}) {
-  let out = String(content ?? "");
-  for (const m of mentions) {                       // 结构化占位:@_user_N
-    const key = m?.key;
-    if (!key) continue;
+  const src = String(content ?? "");
+  // 单趟 token-aware 替换(评审修正:级联替换会让 @_user_1 截断 @_user_10、@小达 吃掉 @小达人)。
+  // 替换表:结构化 key(@_user_N,后面不能紧跟数字)+ 纯文本 @<botName>(后面不能紧跟字母/数字/CJK 续字)。
+  const byKey = new Map();
+  for (const m of mentions) {
+    if (!m?.key) continue;
     const openId = m?.id?.open_id ?? m?.open_id ?? null;
-    const label = openId === botOpenId ? "[@我]" : `@${m?.name ?? "成员"}`;
-    out = out.split(key).join(label);
+    byKey.set(m.key, openId === botOpenId ? "[@我]" : `@${m?.name ?? "成员"}`);
   }
-  for (const name of botNames) {                    // 纯文本:@<名字>(lark-cli 扁平事件形态)
-    out = out.replace(new RegExp(`@${escapeRe(name)}`, "g"), "[@我]");
-  }
+  const alts = [
+    ...[...byKey.keys()].map((k) => `${escapeRe(k)}(?!\\d)`),
+    ...botNames.map((n) => `@${escapeRe(n)}(?![\\p{L}\\p{N}])`),
+  ].sort((a, b) => b.length - a.length);
+  if (!alts.length) return src.replace(/[ \t]{2,}/g, " ").trim();
+  const re = new RegExp(alts.join("|"), "gu");
+  const out = src.replace(re, (hit) => byKey.get(hit) ?? "[@我]");
   return out.replace(/[ \t]{2,}/g, " ").trim();
 }
 ```
+
+(注意 `byKey.get(hit)`:结构化命中时 hit 就是 key 本身,`(?!\d)` 是零宽断言不吃字符;纯文本命中查不到 key → 落到 `[@我]`。已知局限注明:扁平事件丢失 mentions 元数据,与 bot 同名的真人 @ 无法区分——靠改名后的唯一名「小达」+边界断言缓解,写进 README 记号说明。)
 
 `inbox.mjs`:①`createInbox(db, { botOpenId, botName = "", botAliases = [] })`,组内 `const botNames = [...new Set([botName, ...botAliases].filter(Boolean))].sort((a,b)=>b.length-a.length);`;②`normalizeFlat` 的 mentionsBot 改 `mentionIds.includes(botOpenId) || botNames.some((n) => content.includes(\`@${n}\`))`(检测在前);③两条路径都在返回前 `const normalized = normalizeContent(text 或 content, { botNames, botOpenId, mentions });`(try/catch 兜底原文并 log),事件加 `rawContent: 原文`,`content: normalized`;④`markSeen` INSERT 加 `raw_content` 列(值 `evt.kind === "message" ? evt.rawContent ?? evt.content : null`)。
 `config.mjs:24` 后加 `botAliases: String(env.MSTD_BOT_ALIASES ?? "").split(",").map((s) => s.trim()).filter(Boolean),`。`wire.mjs:12` 传 `botAliases: config.botAliases`。
@@ -579,8 +640,8 @@ git commit -m "feat(mstd): 入站@规范化为[@我](双名+结构化mentions)�
 - Test: `mstd-orchestrator/test/store-recent.test.mjs`
 
 **Interfaces:**
-- Produces: `store.recent(sessionId, { limit = 50, roles = null })` → 最近 n 条(时序返回;`ORDER BY ts DESC, id DESC` 取数后 reverse;roles 数组过滤);`store.replaySet(sessionId, { limit = 50 })` → `{ summary: string|null, messages: [] }`(summary = 最新一条 `role='system'` 且 content 以 `〔压缩摘要〕` 开头;messages = recent(limit) 排除 system)。
-- brain 重放格式:summary 存在时先输出 `## 会话历史(进程重启重放)` 下的 `〔压缩摘要〕...` 行,再接 recent 行。
+- Produces: `store.recent(sessionId, { limit = 50, roles = null })` → 最近 n 条(时序返回;`ORDER BY ts DESC, rowid DESC` 取数后 reverse——**同 ts 用 SQLite rowid 定序**,评审修正:uuid 主键排序是随机的;Postgres 迁移时以自增主键替代,与 FTS5 并列为方言例外,README 记一笔);`store.replaySet(sessionId, { limit = 50 })` → `{ summary: string|null, messages: [] }`(summary = **全部** `role='system'` 且 content 以 `〔压缩摘要〕` 开头的行按时序 join——评审修正:compactor 每轮压缩追加一条摘要且互不合并,只取最新会永久丢早期历史;messages = recent(limit) 排除 system)。
+- brain 重放格式:summary 存在时先输出 `## 会话历史(进程重启重放)` 下的摘要行,再接 recent 行;**role=tool 标注 `[内部记录]`**,不冒充用户发言。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -614,12 +675,15 @@ describe("C3 store.recent / replaySet", () => {
       .toEqual(r.map((m) => m.content));      // 重复调用次序稳定
   });
 
-  it("replaySet 组合最新压缩摘要 + 近况(排除 system)", () => {
-    store.append(s.id, { role: "system", content: "〔压缩摘要〕早期结论A", ts: 0 });
+  it("replaySet 收集全部压缩摘要(多轮压缩不丢早期历史)+ 近况(排除 system)", () => {
+    store.append(s.id, { role: "system", content: "〔压缩摘要〕第一轮结论A", ts: 0 });
+    store.append(s.id, { role: "system", content: "〔压缩摘要〕第二轮结论B", ts: 5 });
     store.append(s.id, { role: "user", content: "近1", ts: 10 });
     store.append(s.id, { role: "assistant", content: "近2", ts: 11 });
     const { summary, messages } = store.replaySet(s.id, { limit: 50 });
-    expect(summary).toContain("早期结论A");
+    expect(summary).toContain("第一轮结论A");
+    expect(summary).toContain("第二轮结论B");
+    expect(summary.indexOf("第一轮")).toBeLessThan(summary.indexOf("第二轮"));  // 时序
     expect(messages.map((m) => m.content)).toEqual(["近1", "近2"]);
   });
 });
@@ -636,20 +700,21 @@ Expected: FAIL(`store.recent` 不存在)
 
 ```js
   // 最近 n 条(时序返回)。transcript 是 ORDER BY ts 取最早,勿用于"近期"语义。
+  // 同 ts 用 rowid 定序(uuid 主键排序随机)——SQLite 方言例外,Postgres 迁移换自增主键,同 FTS5 先例。
   function recent(sessionId, { limit = 50, roles = null } = {}) {
     const roleClause = roles?.length ? ` AND role IN (${roles.map(() => "?").join(",")})` : "";
     const rows = db.prepare(
-      `SELECT * FROM agent_messages WHERE session_id = ? AND active = 1${roleClause} ORDER BY ts DESC, id DESC LIMIT ?`
+      `SELECT * FROM agent_messages WHERE session_id = ? AND active = 1${roleClause} ORDER BY ts DESC, rowid DESC LIMIT ?`
     ).all(...[sessionId, ...(roles ?? []), limit]);
     return rows.reverse();
   }
 
-  // 重放集:最新压缩摘要 + 近况原文(compact 之后的长会话重放不丢早期结论)
+  // 重放集:全部压缩摘要(时序)+ 近况原文——多轮压缩后早期历史仍在
   function replaySet(sessionId, { limit = 50 } = {}) {
-    const sys = db.prepare(
-      "SELECT content FROM agent_messages WHERE session_id = ? AND active = 1 AND role = 'system' ORDER BY ts DESC, id DESC LIMIT 1"
-    ).get(sessionId);
-    const summary = sys?.content?.startsWith("〔压缩摘要〕") ? sys.content : null;
+    const sums = db.prepare(
+      "SELECT content FROM agent_messages WHERE session_id = ? AND active = 1 AND role = 'system' ORDER BY ts, rowid"
+    ).all(sessionId).filter((r) => r.content?.startsWith("〔压缩摘要〕"));
+    const summary = sums.length ? sums.map((r) => r.content).join("\n") : null;
     return { summary, messages: recent(sessionId, { limit, roles: ["user", "assistant", "tool"] }) };
   }
 ```
@@ -662,7 +727,8 @@ Expected: FAIL(`store.recent` 不存在)
 ```js
     if (replay) {
       const { summary, messages } = store.replaySet(session.id, { limit: replayLimit });
-      const lines = messages.map((m) => `[${m.role === "assistant" ? "我" : m.sender_name ?? m.sender_open_id ?? "用户"}]: ${m.content}`);
+      const label = (m) => m.role === "assistant" ? "我" : m.role === "tool" ? "内部记录" : m.sender_name ?? m.sender_open_id ?? "用户";
+      const lines = messages.map((m) => `[${label(m)}]: ${m.content}`);
       const block = [summary, ...lines].filter(Boolean).join("\n");
       if (block) parts.push(`## 会话历史(进程重启重放)\n${block}`);
     }
@@ -770,10 +836,16 @@ const HHMM = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour:
 
 ```js
     if (deliverKey !== sessionKey) {
-      const targetSession = store.getOrCreate(deliverKey);
-      store.append(targetSession.id, { role: "assistant", content: rendered.text, platformMessageId: messageId, ts: Date.now() });
+      // 评审修正:必须带 meta,否则会永久创建 chat_id=null 的群 session
+      const p = parseSessionKey(deliverKey);
+      if (p.kind === "group" || p.kind === "p2p") {
+        const targetSession = store.getOrCreate(deliverKey, { kind: p.kind, chatId: p.kind === "group" ? p.chatId : null });
+        store.append(targetSession.id, { role: "assistant", content: rendered.text, platformMessageId: messageId, ts: Date.now() });
+      }
     }
 ```
+
+(回写只 append assistant 记录,不触发 ambient limiter——limiter 管的是"群内主动开口"判定,cron 投递的授权已由 grants 承担;在 limiter 相关测试里补一条断言:跨目标回写不消耗限额。)
 
 - [ ] **Step 4: 跑测试确认通过 + 全量回归**
 
@@ -820,8 +892,10 @@ describe("C1 persona 系统提示词纯函数", () => {
     expect(p).toContain("不是在讨论你");                        // @语义
     expect(p).toContain("2026年7月10日");                      // 日期只到"日"
     expect(p).toContain("/tmp/agent-workspace");               // workspace
-    expect(p).toContain("reply");                              // 工具纪律
+    expect(p).toContain("reply");                              // 工具纪律(真名,已核实注册名)
     expect(p).toContain("propose_actions");
+    expect(p).toContain("spawn_background_job");
+    expect(p).toContain("lark_read");
     expect(p).toContain("陈述句");                              // 记忆纪律
     expect(p).not.toMatch(/coding|编码助手/);                   // 无 coding-agent 残留
   });
@@ -868,7 +942,7 @@ export function buildPersonaPrompt({ soul, dateStr, workspace }: { soul: string;
 
 - **reply 是你唯一的发声通道**。要对用户说的一切(哪怕一句"收到")都必须经 reply 提交简报;整回合不调用 reply = 你选择沉默,用户什么都收不到。你的其他文字输出只有你自己看得见。
 - 任何写操作(建任务/发消息/日程/审批)只能走 propose_actions 发确认卡,经用户确认才执行;绝不尝试绕过。
-- 长任务用 background_job;查飞书用 lark-read;翻历史用 session_search。
+- 长任务用 spawn_background_job;查飞书用 lark_read;翻历史用 session_search;定时提醒用 heartbeat_update(只能提醒当前会话)。
 - **记忆纪律**:用 memory 工具记值得长期记住的事实/偏好/决定;写**陈述句**不写指令句("张三偏好简短回复"✓/"以后都简短回复"✗);任务进度、一次性结论、七天内会过期的信息不进记忆。
 - 有把握的直接答;没把握的说清楚不确定在哪。宁可承认不知道,不编造。`,
   ].join("\n");
@@ -940,11 +1014,18 @@ git commit -m "feat(mstd): persona 扩展整体替换中枢系统提示词——
 - [ ] **Step 1: 写失败测试**(追加)
 
 ```js
-  it("C4 复述/总结类即使 V4 给 quick_reply 也强制 escalate", async () => {
-    const caller = { call: vi.fn(async () => ({ text: '{"action":"quick_reply","text":"聊了吃饭"}' })) };
-    const t = createTriage({ caller, store });
-    const v = await t.triage({ session, items: [{ senderName: "李四", content: "[@我] 刚才群里聊了什么?复述一下" }], mode: "addressed" });
-    expect(v.action).toBe("escalate");
+  it("C4 复述/总结类强制 escalate:quick_reply 和 no_reply 都拦(addressed);ambient 不拦", async () => {
+    const mk = (text) => ({ call: vi.fn(async () => ({ text })) });
+    const items = [{ senderName: "李四", content: "[@我] 刚才群里聊了什么?复述一下" }];
+    const v1 = await createTriage({ caller: mk('{"action":"quick_reply","text":"聊了吃饭"}'), store })
+      .triage({ session, items, mode: "addressed" });
+    expect(v1.action).toBe("escalate");
+    const v2 = await createTriage({ caller: mk('{"action":"no_reply"}'), store })
+      .triage({ session, items, mode: "addressed" });
+    expect(v2.action).toBe("escalate");                        // 点名复述绝不静默
+    const v3 = await createTriage({ caller: mk('{"action":"no_reply"}'), store })
+      .triage({ session, items: [{ senderName: "张三", content: "谁来复述下会议?" }], mode: "ambient" });
+    expect(v3.action).toBe("no_reply");                        // 旁听闲聊不强插
   });
   it("C4 分诊系统提示词包含记号说明", async () => {
     let sys;
@@ -962,11 +1043,11 @@ Expected: FAIL
 
 - [ ] **Step 3: 实现**
 
-`triage.mjs`:①导出 `export const RECAP_INTENT = /复述|总结|回顾|(刚才|之前|最近).{0,12}(聊|说|讨论)|聊了什么|说了什么|捋一下|会议纪要/;`;②`enforce` 开头加:
+`triage.mjs`:①导出 `export const RECAP_INTENT = /复述|总结|回顾|(刚才|之前|最近).{0,12}(聊|说|讨论)|聊了什么|说了什么|捋一下|会议纪要/;`;②`enforce(verdict, items)` 签名改 `enforce(verdict, items, mode)`(triage 调用处传 mode),开头加(评审修正:no_reply 也拦,否则点名复述会静默;仅非 ambient 生效,旁听不强插):
 
 ```js
     const joined = items.map((i) => i.content).join("\n");
-    if (verdict.action === "quick_reply" && RECAP_INTENT.test(joined)) {
+    if (mode !== "ambient" && ["quick_reply", "no_reply"].includes(verdict.action) && RECAP_INTENT.test(joined)) {
       return { action: "escalate", brief: `复述/总结类请求(需完整上下文):${joined.slice(0, 100)}` };
     }
 ```
@@ -985,7 +1066,7 @@ quick_reply 的 text 必须以助手本人口吻说话——你就是这个助�
 mode=ambient(旁听)时保持更高沉默倾向:只在能提供明确价值(直接求助、你确切知道答案、纠正重要错误)时开口,闲聊/寒暄/与你无关一律 no_reply。`;
 ```
 
-④`agent-memory/SOUL.md` 全文替换(在 agent-memory 仓内 `git add SOUL.md && git commit -m "SOUL: 干练同事风人格 rev2(好坏示例+反客服腔)"`):
+④`agent-memory/SOUL.md` 全文替换。**前置(评审修正:该目录当前无 .git)**:先初始化独立仓——`cd mstd-orchestrator/agent-memory && git init && git add -A && git commit -m "init: 五层记忆基线"`;之后 `git add SOUL.md && git commit -m "SOUL: 干练同事风人格 rev2(好坏示例+反客服腔)"`(主仓 gitignore 不变,该仓独立演进,dreaming 的 git 回滚依赖它):
 
 ```markdown
 # 身份
@@ -1048,7 +1129,7 @@ git commit -m "feat(mstd): 分诊提示词记号化+复述类代码级强制esca
 **Files:**
 - Modify: `mstd-orchestrator/server/models/reply.mjs`
 - Modify: `mstd-orchestrator/server/gateway/turn-handler.mjs`(handleReply 解析 deliverKind 传入)
-- Test: `mstd-orchestrator/test/reply.test.mjs`(grep `renderReply` 定位,追加)
+- Test: `mstd-orchestrator/test/reply.test.mjs`(已确认存在,追加)
 
 **Interfaces:**
 - Produces: `renderReply({ caller, soul, context, brief, kind, tone, deliverKind = "p2p" })`;`deliverKind ∈ {"group","p2p"}`(card_copy 不受影响)。turn-handler 由 `parseSessionKey(deliverKey).kind` 得出(group→"group",其余→"p2p")。
@@ -1063,11 +1144,13 @@ git commit -m "feat(mstd): 分诊提示词记号化+复述类代码级强制esca
     expect(sys).toContain("群聊");
     expect(sys).toContain("三句");
     expect(sys).toContain("表格");           // 渲染声明
-    expect(sys).not.toContain("图片");        // 不承诺图片 → 明令不输出图片语法(字样按实现,断言禁止句在场)
+    expect(sys).toContain("不要输出图片");    // 明令禁止图片语法(评审修正:断言禁止句在场,与实现一致)
     await renderReply({ caller, brief: "x", deliverKind: "p2p" });
     expect(sys).toContain("私聊");
   });
 ```
+
+Run: `npx vitest run test/reply.test.mjs`
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -1249,7 +1332,13 @@ git commit -m "feat(mstd): 出站 Markdown 确定性检测走卡片 markdown 组
 **Interfaces:**
 - Consumes: Task 5 的双名 mentionsBot(必须先部署)。
 
-- [ ] **Step 1**: `.env` 设 `MSTD_BOT_ALIASES` 为旧应用名,重启 daemon,真机发 `@旧名 在吗` 验证 addressed 触发(看日志 `[agent] triage`)。
+- [ ] **Step 1**: 在 `mstd-orchestrator/.env` 写入(值含空格和单引号,必须双引号包裹——`zsh -n` 校验通过再用):
+
+```bash
+MSTD_BOT_ALIASES="user613148's Feishu CLI"
+```
+
+重启 daemon(`pkill -f server/index.mjs`,然后 `set -a; . ./.env; set +a; node server/index.mjs`),真机发 `@旧名 在吗` 验证 addressed 触发(看日志 `[agent] triage`)。
 - [ ] **Step 2**: 浏览器 subagent 到 open.feishu.cn 开发者后台(应用 `cli_aac4855d1a781cd6`)改机器人名/应用名为「小达」,创建新版本提交发布(参照 1.0.2 发版先例;若需管理员审核,通知用户)。
 - [ ] **Step 3**: 发版生效后 `.env` 改 `MSTD_BOT_NAME=小达`(旧名留在 aliases),重启 daemon;真机分别用 @新名、@旧名各发一条,两条都触发 addressed 且入库 content 为 `[@我] …`。
 - [ ] **Step 4**: 回滚预案(写进 runbook):恢复 `.env` 双名配置 → 重启 → 后台重新发布旧显示名版本。
@@ -1271,11 +1360,25 @@ git commit -m "docs(mstd): 机器人改名 SOP(aliases 先行/发版/双名验�
 
 - [ ] **Step 1**: 更新上述文档(README 测试节补:改动 gateway/内部通道后全量回归提示不变)。
 - [ ] **Step 2**: `cd mstd-orchestrator && npx vitest run` 与 `cd mstd-ui && npx vitest run` 全绿;记录两侧计数。
-- [ ] **Step 3**: 真机验收(遵守 README E2E 三条硬约束:杀残留 daemon、串行、白名单 env):
+- [ ] **Step 3**: 真机验收(遵守 README E2E 三条硬约束:杀残留 daemon、串行、白名单 env)。**必须先导出门控 env,并断言"passed"而非 skipped**(评审修正:漏导出时三套全 skip 且退出码为 0,会假绿):
+
+```bash
+cd mstd-orchestrator
+pkill -f server/index.mjs || true
+set -a; . ./.env; set +a
+export MSTD_E2E=1 MSTD_ENABLE_WRITE=1 MSTD_SESSION_SECRET=$(openssl rand -hex 16)
+export MSTD_TEST_OPEN_IDS=ou_aca75bd11914b20bda06e2462a569593
+export MSTD_TEST_CHAT_IDS=oc_11b72bc3d3bdedff7c86f3c4c61560fc,oc_b67c4510743e68be6a9a91f3906e7f97
+for t in e2e-write e2e-p2p e2e-group; do
+  out=$(npx vitest run test/$t.test.mjs 2>&1); echo "$out" | tail -5
+  echo "$out" | grep -q " passed" || { echo "FAIL/SKIP: $t"; exit 1; }
+  echo "$out" | grep -q "skipped" && { echo "被 skip 视为失败: $t"; exit 1; }
+done
+```
+
   1. 测试群闲聊 3 条不同话题 → `@小达 刚才群里聊了什么?复述一下` → 回复非空、话题命中、**不含旧应用名字样**;紧接着再问一次复述,第二次仍有料。
   2. `@小达 在吗` → 回复无客服腔(人工评判,对照 SOUL 示例)。
   3. 私聊让它输出一个对比表格 → 收到卡片且表格渲染正常。
-  4. `for t in e2e-write e2e-p2p e2e-group; do npx vitest run test/$t.test.mjs; done` 回归 PASS。
 - [ ] **Step 4**: Commit
 
 ```bash
@@ -1285,8 +1388,9 @@ git commit -m "docs(mstd): 人格运行时上线文档同步——记号约定/�
 
 ---
 
-## Self-Review 结论(计划作者自查)
+## Self-Review 结论(计划作者自查,rev2 含外部评审修正)
 
 - Spec 覆盖:C0.1→T1、C0.2→T2、C0.3→T3、C0.4→T4、C2→T5、C3.1/2→T6、C3.3/4/5→T7、C1→T8、C4→T9/T10、C6→T10/T11、C5→T12、测试验收→各任务+T13。spec §3 C3.6(shouldNudge 可选项)→ T7 步骤④。
 - 类型一致性:`createSessionTokenRegistry`(T3 定义,T3/T4 消费);`createDeliverGrants`(T4);`store.recent/replaySet`(T6 定义,T7/T6 换用点消费);`hasRichMarkdown`/`buildMarkdownMessageCard`(T11);`buildPersonaPrompt`(T8);`RECAP_INTENT`(T9)。已互相核对。
 - 既有测试更新点已在各任务 Step 4 标注(内部路由静态 token 用例、cron target 桩、observed 旧断言、triage 旧文案断言、brain store 桩补 replaySet)。
+- **rev2 外部评审修正已并入**:P0 heartbeat 创建面收口(T4);actor 覆盖 debug/session-expiry(T1);normalize 单趟 token-aware+边界断言(T5);replaySet 全量摘要+tool 标注(T6);T10 测试与实现一致化+文件名落定;E2E 门控 env+反 skip 断言(T13);.env 双引号语法(T12);agent-memory git init 前置(T9);token 按 startPi 尝试签发(T3);跨目标回写带 meta(T7);journal 读走 readJournal(T4);同 ts 排序用 rowid(T6,方言例外记 README);persona 工具真名 spawn_background_job/lark_read(T8);复述 guard 拦 no_reply 且 ambient 豁免(T9);与 security-reliability-fixes 计划的关系与迁移编号协调(Global Constraints 后专节)。
