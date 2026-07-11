@@ -93,6 +93,22 @@ describe("brain（5.5 Pi 会话进程管理）", () => {
     expect(prompt).not.toContain("[用户]: 内部X");
   });
 
+  // Task 8 §5.2 审卷补杀：C1 后 soul 由 persona 扩展整体注入,记忆段把 soul 加回来即红
+  it("buildPrompt 记忆段:org/journal/scoped 有序保留,snapshot.soul 绝不进 prompt", async () => {
+    const c = mockClient();
+    const brain = createBrain({ startPi: () => c, store, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    await brain.turn({
+      session, sessionKey: "k8", brief: "问",
+      snapshot: { soul: "SOUL_MUST_NOT_APPEAR_88", org: "ORG_88", journalDigest: "JOURNAL_88", scoped: "SCOPED_88" },
+    });
+    const prompt = c.runJob.mock.calls[0][0];
+    expect(prompt).not.toContain("SOUL_MUST_NOT_APPEAR_88");
+    const idx = (t) => { const i = prompt.indexOf(t); expect(i, t).toBeGreaterThanOrEqual(0); return i; };
+    expect(idx("## 记忆")).toBeLessThan(idx("ORG_88"));
+    expect(idx("ORG_88")).toBeLessThan(idx("JOURNAL_88"));
+    expect(idx("JOURNAL_88")).toBeLessThan(idx("SCOPED_88"));
+  });
+
   // §5.2 审卷补杀：重放快照按回合冻结——降级换 provider 不得重读 store 看到漂移历史
   it("降级重放快照冻结：两个 provider 的历史块一致,replaySet 只读一次", async () => {
     let n = 0;

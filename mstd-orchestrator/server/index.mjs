@@ -1,6 +1,8 @@
+import { existsSync, statSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb, migrate } from "./db/index.mjs";
+import { buildResidentExtensions } from "./pi/resident-extensions.mjs";
 import { loadServerConfig } from "./config.mjs";
 import { createApp } from "./app.mjs";
 import { createSemaphore } from "./jobs/semaphore.mjs";
@@ -147,6 +149,15 @@ if (config.enableTrigger && config.larkProfile) {
 let internal = null;
 let adminDeps = null;
 if (config.enableAgent && config.botOpenId) {
+  // C1:SOUL fail-fast——只 stat 不读(内容由每个 Pi 进程的 persona hook 读一次)
+  const soulPath = join(process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory"), "SOUL.md");
+  if (!existsSync(soulPath) || statSync(soulPath).size === 0) {
+    console.error(`[mstd] SOUL.md 缺失或为空(${soulPath}),拒绝以空人格启动 agent`);
+    process.exit(1);
+  }
+  // C1:中枢 bash/文件工具的工作目录迁出源码树(S1 纵深缓解)
+  const agentWorkspace = process.env.MSTD_AGENT_WORKSPACE || join(ROOT, "agent-workspace");
+  mkdirSync(agentWorkspace, { recursive: true });
   // C0.3：内部通道改会话绑定 token(per-spawn 签发,吊销随 Pi 生命周期),废除静态共享 token
   const sessionTokens = createSessionTokenRegistry();
   const actors = createActorPool();
@@ -175,19 +186,11 @@ if (config.enableAgent && config.botOpenId) {
     idleMs: Number(process.env.MSTD_PI_IDLE_MS ?? 600_000),
     // 回合超时后沿 reason 链降级重跑；provider 挂起型故障的止损上限
     turnTimeoutMs: Number(process.env.MSTD_TURN_TIMEOUT_MS ?? 240_000),
-    extensions: [
-      join(ROOT, "pi-ext", "providers.ts"),
-      join(ROOT, "pi-ext", "reply.ts"),
-      join(ROOT, "pi-ext", "memory.ts"),
-      join(ROOT, "pi-ext", "session-search.ts"),
-      join(ROOT, "pi-ext", "propose-actions.ts"),
-      join(ROOT, "pi-ext", "background-job.ts"),
-      join(ROOT, "pi-ext", "lark-read.ts"),
-      join(ROOT, "pi-ext", "heartbeat.ts"),
-    ],
-    piCwd: ROOT,
+    extensions: buildResidentExtensions(ROOT),   // C1:production source of truth,persona 第一
+    piCwd: agentWorkspace,                       // C1:bash/文件工具迁出源码树
     piEnv: {
       MSTD_INTERNAL_URL: `http://127.0.0.1:${config.port}`,
+      MSTD_SOUL_PATH: soulPath,                  // persona hook 每 Pi 进程读一次
     },
     onEvent: modelLog.record,
     tokens: sessionTokens,

@@ -241,7 +241,8 @@ export function createBrain({
   function buildPrompt({ brief, context, snapshot, replayBlock = null }) {
     const parts = [];
     if (snapshot) {
-      const mem = [snapshot.soul, snapshot.org, snapshot.journalDigest, snapshot.scoped].filter(Boolean).join("\n\n");
+      // C1:soul 由 persona 扩展作为系统提示词整体注入,记忆段不再重复
+      const mem = [snapshot.org, snapshot.journalDigest, snapshot.scoped].filter(Boolean).join("\n\n");
       if (mem) parts.push(`## 记忆\n${mem}`);
     }
     if (replayBlock) parts.push(`## 会话历史（进程重启重放）\n${replayBlock}`);
