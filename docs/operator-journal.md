@@ -93,3 +93,30 @@ subagent 做变异测试审卷(13 个变异注入,10 击杀 + 1 近等价)。缺
   E2E 正确姿势 = 先 `set -a; source .env; set +a` 再带四个门控变量跑。
 - 评分卡:未跑真机剧本(网关故障中),不打分;安全维度新增代码棘轮
   (内部通道冒名 403,24 个专项用例)。
+
+## 2026-07-11 - 阶段一 Task 4A:C0.4 投递面授权(1e5adae)
+
+封堵 C0.3 审核暴露的 reply.target / heartbeat 跨会话面。fable 实现 subagent
+承接(单实现线程),TDD 全程,净增 33+ 用例。
+
+- §5.1 opus 对抗审核:安全维度未发现可被 Pi 触发的越权(deliverTrusted 不挂路由、
+  grant 生命周期 finally revoke 无泄漏、owner_session_key 无 UPDATE 面、claim 三重
+  限定、strict-iso 恶意 ISO 矩阵全 fail-closed、CHECK+FK 挡普通 Pi 造跨会话 row)。
+  唯一可靠性缺陷(releaseStale 仅启动跑一次→崩溃遗留 delivering 永久卡死)当场修:
+  改每 tick 先回收,补 P 用例+变异复验。其余为 Task 4B 接线前的惰性悬置项(addApproved
+  未接线)与文案面,记录不阻断。
+- §5.2 fable 变异审卷(Codex 仍 503,连续第三任务降级):8 变异 7 击杀。存活项
+  = claimDue 去 `AND status='pending'` 守卫;opus 已独立确认 better-sqlite3 同步单
+  进程下并发双 claim 架构性不可达,判近等价变异(纵深防御未来 async/多进程);
+  已补 claim-once 契约(锚 SELECT status 过滤)+ owner 不可变全生命周期回归两条强化。
+- 验证:orchestrator 452 passed/4 gated skip(strict);E2E full 待网关恢复重跑。
+- 阶段一进度:Task 1(codex 期,54ff304 等)、Task 2(18d40ea)、Task 3(2d11bdd)、
+  Task 4A(1e5adae)完成;下一 = Task 4B(schedule_reminder 接四道锁,把 addApproved
+  接上确认卡 executor)。
+
+### Codex 引擎连续三任务不可用(§5.2 应发问题信,信道受阻)
+
+按 §5.2「连续两任务无法用 Codex 就发问题信」,现已连续三任务降级 fable。
+但问题信信道本身被 wrangler 部署权限阻塞(见首条日志),无法发出。改在此备案,
+并列为最高优先级待用户处理项:恢复 Codex(网关)或授权邮件信道部署二选一,
+否则测试审卷将长期单靠 fable 独立 subagent(异族互审结构性要求打折)。
