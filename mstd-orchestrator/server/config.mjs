@@ -13,6 +13,7 @@ export function loadServerConfig(env = process.env) {
     enableTrigger: String(env.MSTD_ENABLE_TRIGGER ?? "") === "1",
     backfill: String(env.MSTD_BACKFILL ?? "") === "1",
     alertOpenId: String(env.MSTD_ALERT_OPEN_ID ?? "").trim(),
+    minutesBroadcastChat: String(env.MSTD_MINUTES_BROADCAST_CHAT ?? "").trim(),   // 妙记派发执行后播报的群 chat_id
     feishu: resolveFeishuConfig(env),
     pi: {
       provider: env.PI_PROVIDER ?? "cz-gpt",

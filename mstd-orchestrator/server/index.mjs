@@ -16,6 +16,7 @@ import { startPi } from "../supervisor/pi-client.mjs";
 import { reconcileOnBoot } from "./execute/reconcile-startup.mjs";
 import { createJobLauncher } from "./jobs/launcher.mjs";
 import { startMinutesConsumer } from "./triggers/minutes-consumer.mjs";
+import { resolveMinutesInitiator, makeFetchMinutesOwner, createMinutesBroadcast } from "./triggers/minutes-agent.mjs";
 import { backfillMinutes } from "./triggers/backfill.mjs";
 import { startLarkHealth, makeDmAlert } from "./health/lark-profile.mjs";
 import { wireGateway } from "./gateway/wire.mjs";
@@ -217,6 +218,12 @@ if (config.enableAgent && config.botOpenId) {
   });
   // ---- Phase D：写路径卡片 + 后台 job + 回注 ----
   const reinjector = createReinjector({ store: agentStore, actors, brain, outbound });
+  // 迭代二 T2.1：妙记派发执行完 → 指定群播报（未配置 MSTD_MINUTES_BROADCAST_CHAT 则静默跳过）
+  const minutesBroadcast = createMinutesBroadcast({
+    db,
+    handleReply: (args) => turnHandler.handleReply(args),
+    chatKey: config.minutesBroadcastChat ? `feishu:group:${config.minutesBroadcastChat}` : "",
+  });
   const backgroundJobs = createBackgroundJobs({
     db,
     semaphore,
@@ -247,6 +254,7 @@ if (config.enableAgent && config.botOpenId) {
     heartbeat: heartbeatStore,
     onExecuted: ({ jobId, sessionKey, resultsMd, ok }) => {
       reinjector.onJobComplete({ jobId, sessionKey, sessionVersion: 0, ok, result: `写操作执行结果：\n${resultsMd}` });
+      minutesBroadcast.onJobExecuted({ jobId, ok, resultsMd });   // 自含错误处理，fire-and-forget
     },
   });
   internal = {
@@ -331,8 +339,13 @@ if (config.enableAgent && config.botOpenId) {
   // E7：妙记等事件源的 job 抽取完成 → 卡片确认（不再产生 awaiting_approval）
   agentOnActionsReady = async ({ job, actions }) => {
     const params = JSON.parse(job.params_json ?? "{}");
-    const initiator = params.host_open_id || config.alertOpenId;
-    if (!initiator) return console.error(`[agent] job ${job.id} 无确认人（缺 host_open_id/alertOpenId），跳过发卡`);
+    // 迭代二 T2.2：host_open_id → 妙记 owner 反查 → alertOpenId 三级兜底
+    const initiator = await resolveMinutesInitiator({
+      params,
+      fetchOwner: bootLark ? makeFetchMinutesOwner({ runLark: bootLark }) : null,
+      alertOpenId: config.alertOpenId,
+    });
+    if (!initiator) return console.error(`[agent] job ${job.id} 无确认人（host_open_id/owner 反查/alertOpenId 全空），跳过发卡`);
     await confirmFlow.startConfirmFlowForJob({
       jobId: job.id, actions, initiatorOpenId: initiator, deliverTo: initiator, title: job.title ?? "会议纪要确认",
     });

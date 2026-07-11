@@ -45,7 +45,8 @@ export function startMinutesConsumer({
     try {
       const job = launcher.submit({
         templateId: "meeting_to_task",
-        params: { minute_token: minuteToken },
+        // owner_id（事件若带）透传为确认人；缺席时由 onActionsReady 侧反查/兜底
+        params: { minute_token: minuteToken, ...(evt.owner_id ? { host_open_id: evt.owner_id } : {}) },
         title: `[自动] ${evt.title ?? minuteToken}`,
       });
       bindTriggerJob(db, eventId, job.id);
