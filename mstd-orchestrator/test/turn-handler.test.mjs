@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
 import { createTurnHandler } from "../server/gateway/turn-handler.mjs";
@@ -17,7 +18,7 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
       triage: { triage: vi.fn() },
       brain: { turn: vi.fn(async () => ({ finalText: "裸文本不许出站", events: [] })), steer: vi.fn(), isBusy: () => false },
       renderReply: vi.fn(async () => ({ text: "渲染稿", usage: { total_tokens: 3 } })),
-      outbound: { sendMessage: vi.fn(async () => ({ messageId: "om_9" })), editMessage: vi.fn() },
+      outbound: { sendMessage: vi.fn(async () => ({ messageId: "om_9" })), sendCard: vi.fn(async () => ({ messageId: "om_card_9" })), editMessage: vi.fn() },
       store,
       budget: { allow: vi.fn(() => ({ ok: true })), record: vi.fn() },
       soul: "SOUL",
@@ -118,6 +119,172 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
     const self = await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "自会话", target: "feishu:p2p:ou_a" });
     expect(self.ok).toBe(true);
     expect(deps.outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ openId: "ou_a" }));
+  });
+
+  // Task 10 C4:deliverKind 生产链路——scene 由 deliverKey 决定,不是只在直接调用 renderReply 时存在
+  it("C4 deliverKind:cron→group grant 走 group;p2p 当前会话走 p2p;debug 按 p2p", async () => {
+    deps.grants.grant("cron:job-1", "feishu:group:oc_1");
+    const out = await handler.handleReply({ sessionKey: "cron:job-1", kind: "message", brief: "播报", target: "feishu:group:oc_1" });
+    expect(out.ok).toBe(true);
+    expect(deps.renderReply).toHaveBeenCalledWith(expect.objectContaining({ deliverKind: "group" }));
+    expect(deps.outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ chatId: "oc_1" }));
+
+    deps.renderReply.mockClear();
+    await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "回复" });
+    expect(deps.renderReply).toHaveBeenCalledWith(expect.objectContaining({ deliverKind: "p2p" }));
+
+    deps.renderReply.mockClear();
+    await handler.handleReply({ sessionKey: "debug:web:u1", kind: "message", brief: "调试" });
+    expect(deps.renderReply).toHaveBeenCalledWith(expect.objectContaining({ deliverKind: "p2p" }));
+  });
+
+  // Task 11 C6:唯一文本出口 deliverText——Markdown 走消息卡,纯文本走 text,绝不双发
+  it("C6 quick_reply/正式 reply 共用 deliverText:md→sendCard,纯文本→sendMessage", async () => {
+    const md = "| a | b |\n|---|---|\n| 1 | 2 |";
+    // 1. quick_reply 表格 → sendCard,body 唯一元素 tag=markdown
+    deps.triage.triage.mockResolvedValue({ action: "quick_reply", text: md });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.outbound.sendCard).toHaveBeenCalledTimes(1);
+    const cardArg = deps.outbound.sendCard.mock.calls[0][0];
+    expect(cardArg.openId).toBe("ou_a");
+    expect(cardArg.cardJson.body.elements).toEqual([{ tag: "markdown", content: md }]);
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();     // 不双发
+
+    // 2. quick_reply 纯文本 → sendMessage
+    deps.outbound.sendCard.mockClear(); deps.outbound.sendMessage.mockClear();
+    deps.triage.triage.mockResolvedValue({ action: "quick_reply", text: "收到" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.outbound.sendMessage).toHaveBeenCalledTimes(1);
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+
+    // 3. 已 grant 的 cron handleReply 渲染出表格且 target group → sendCard(chatId=oc_1)
+    deps.outbound.sendCard.mockClear(); deps.outbound.sendMessage.mockClear();
+    deps.renderReply.mockResolvedValue({ text: md, usage: null });
+    deps.grants.grant("cron:job-1", "feishu:group:oc_1");
+    const out = await handler.handleReply({ sessionKey: "cron:job-1", kind: "message", brief: "播报", target: "feishu:group:oc_1" });
+    expect(out.ok).toBe(true);
+    expect(deps.outbound.sendCard).toHaveBeenCalledWith(expect.objectContaining({ chatId: "oc_1" }));
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+
+    // 4. p2p handleReply 纯文本 → sendMessage(openId=ou_a)
+    deps.outbound.sendCard.mockClear(); deps.outbound.sendMessage.mockClear();
+    deps.renderReply.mockResolvedValue({ text: "纯文本回复", usage: null });
+    await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "回复" });
+    expect(deps.outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ openId: "ou_a", text: "纯文本回复" }));
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+  });
+
+  // §5.2 审卷补杀:零出站断言必须同时盖住 sendMessage 与 sendCard;出站路径恰一次
+  it("C6 零出站语义盖双通道:no_reply/card_copy/越权/budget 拒绝都不许发卡", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "no_reply" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "ambient" });
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+
+    await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "card_copy", brief: "文案" });
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+
+    const denied = await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "偷发", target: "feishu:p2p:ou_v" });
+    expect(denied.ok).toBe(false);
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+
+    deps.budget.allow.mockReturnValue({ ok: false, scope: "daily" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.outbound.sendMessage).toHaveBeenCalledTimes(1);   // 拒绝文案恰一次
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+  });
+
+  // §5.2 审卷补杀:默认幂等键被删即红——隐式路径也必须带非空 string key
+  it("C6 隐式幂等键:quick_reply 文本与 md 卡片路径都带非空 idempotencyKey", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "quick_reply", text: "收到" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    const k1 = deps.outbound.sendMessage.mock.calls[0][0].idempotencyKey;
+    expect(typeof k1).toBe("string");
+    expect(k1.length).toBeGreaterThan(0);
+
+    deps.triage.triage.mockResolvedValue({ action: "quick_reply", text: "# 标题\n内容" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    const k2 = deps.outbound.sendCard.mock.calls[0][0].idempotencyKey;
+    expect(typeof k2).toBe("string");
+    expect(k2.length).toBeGreaterThan(0);
+    expect(k2).not.toBe(k1);
+  });
+
+  // §5.2 审卷补杀:debug"不真发"语义锁——md 也不发卡,platformMessageId 落 null
+  it("C6 debug 会话:md 也零出站,落库即出站且 platform_message_id 为空", async () => {
+    const dbg = store.getOrCreate("debug:web:u1", { kind: "debug" });
+    deps.renderReply.mockResolvedValue({ text: "# 富文本\n| a |\n|---|", usage: null });
+    const out = await handler.handleReply({ sessionKey: "debug:web:u1", kind: "message", brief: "调试" });
+    expect(out.ok).toBe(true);
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+    const rows = store.transcript(dbg.id);
+    expect(rows.at(-1).role).toBe("assistant");
+    expect(rows.at(-1).platform_message_id ?? null).toBeNull();
+  });
+
+  // §5.2 审卷补杀:不可出站会话的 guard 可达——cron 自会话 reply 必须炸,零出站零落库
+  it("C6 cron 自会话(无 target):deliverText 拒绝,零出站零 assistant", async () => {
+    const cronSession = store.getOrCreate("cron:job-9", { kind: "p2p" });
+    await expect(handler.handleReply({ sessionKey: "cron:job-9", kind: "message", brief: "x" }))
+      .rejects.toThrow(/不可出站/);
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+    expect(store.transcript(cronSession.id).filter((r) => r.role === "assistant")).toHaveLength(0);
+  });
+
+  // §5.2 审卷补杀:deliverKind 场景矩阵表驱动(杀"部分来源用 sessionKey"的杂交变异)
+  it.each([
+    ["feishu:group:oc_g", undefined, "group", "群自会话"],
+    ["feishu:p2p:ou_a", "feishu:group:oc_1", "group", "p2p→group"],
+    ["feishu:group:oc_g", "feishu:p2p:ou_b", "p2p", "group→p2p"],
+    ["cron:job-1", "feishu:p2p:ou_b", "p2p", "cron→p2p"],
+  ])("C4 deliverKind 矩阵:%s target=%s → %s(%s)", async (sessionKey, target, want) => {
+    store.getOrCreate(sessionKey, sessionKey.startsWith("feishu:group:") ? { kind: "group", chatId: sessionKey.split(":")[2] } : { kind: "p2p" });
+    if (target) deps.grants.grant(sessionKey, target);
+    const out = await handler.handleReply({ sessionKey, kind: "message", brief: "x", target });
+    expect(out.ok).toBe(true);
+    expect(deps.renderReply).toHaveBeenCalledWith(expect.objectContaining({ deliverKind: want }));
+  });
+
+  // §5.2 审卷补杀:parseSessionKey 抛错兜底 p2p 的 catch 分支真被走到(card_copy 隔离出站)
+  it("C4 不可解析 target:catch 兜底 p2p,card_copy 不出站", async () => {
+    deps.grants.grant("feishu:p2p:ou_a", "weird-key-no-colon-format");
+    await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "card_copy", brief: "文案", target: "weird-key-no-colon-format" });
+    expect(deps.renderReply).toHaveBeenCalledWith(expect.objectContaining({ deliverKind: "p2p" }));
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+    expect(deps.outbound.sendCard).not.toHaveBeenCalled();
+  });
+
+  // §5.2 审卷补杀:卡片 messageId 传播 + sendCard 失败原子性(零 assistant 落库)
+  it("C6 卡片 message_id 落库;sendCard 失败不落 assistant", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "quick_reply", text: "# 表\n| a |\n|---|" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    const rows = store.transcript(session.id);
+    expect(rows.at(-1).platform_message_id).toBe("om_card_9");
+
+    deps.outbound.sendCard.mockRejectedValueOnce(new Error("card api down"));
+    deps.renderReply.mockResolvedValue({ text: "# 又一个富文本标题\n正文", usage: null });
+    const before = store.transcript(session.id).length;
+    await expect(handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "x" }))
+      .rejects.toThrow("card api down");
+    expect(store.transcript(session.id)).toHaveLength(before);    // 失败零落库
+  });
+
+  // §5.2 审卷补杀:结构锁——outbound.send* 只许出现在 deliverText 实现内(恰 2 处);
+  // 新路径想直调 outbound 必须先来改这条测试,评审自然看见
+  it("C6 结构锁:turn-handler 源码 outbound.send 调用恰 2 处(均在 deliverText)", () => {
+    const src = readFileSync(new URL("../server/gateway/turn-handler.mjs", import.meta.url), "utf8");
+    expect(src.match(/outbound\.send(Message|Card)\(/g)).toHaveLength(2);
+  });
+
+  it("C6 deliverText 幂等键透传:卡片路径也带 idempotencyKey", async () => {
+    // deliverTrusted 前缀"提醒："后表格信号仍在行首,应走卡片
+    const md = "开会安排\n| 时间 | 地点 |\n|---|---|\n| 15:00 | 3F |";
+    const r = await handler.deliverTrusted({ deliverKey: "feishu:group:oc_x", text: md, idempotencyKey: "hb:1" });
+    expect(r.ok).toBe(true);
+    expect(deps.outbound.sendCard).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "hb:1" }));
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
   });
 
   it("未注入 grants 时跨会话 target fail-closed", async () => {

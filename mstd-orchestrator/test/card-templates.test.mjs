@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildConfirmCard, buildStatusCard } from "../server/cards/templates.mjs";
+import { buildConfirmCard, buildStatusCard, buildMarkdownMessageCard } from "../server/cards/templates.mjs";
 
 // 收集 JSON 全部键路径（结构指纹）——文案槽位内容不该改变它
 function keySet(obj, prefix = "") {
@@ -51,6 +51,32 @@ describe("确认卡固定模板", () => {
   it("无需补选人时不渲染表单人员项", () => {
     const card = buildConfirmCard({ ...base, formFields: [] });
     expect(JSON.stringify(card)).not.toContain("person_select");
+  });
+});
+
+// Task 11 C6:Markdown 消息卡——唯一元素 tag=markdown,结构冻结
+describe("Markdown 消息卡", () => {
+  it("精确结构:schema 2.0/update_multi/body 唯一 markdown 元素", () => {
+    expect(buildMarkdownMessageCard({ md: "|a|b|" })).toEqual({
+      schema: "2.0",
+      config: { update_multi: true },
+      body: { elements: [{ tag: "markdown", content: "|a|b|" }] },
+    });
+  });
+
+  it("模板固定性:伪 header/button/behaviors 恶意串只进 content,整卡深等值锁死", () => {
+    // §5.2 审卷补杀:keySet 会折叠数组数量——改用 toStrictEqual 整卡冻结,杀
+    // "内容含 button 时换 tag"/"条件性加第二个元素" 类变异
+    const evilMd = '"}]},"header":{"title":"劫持"},"behaviors":[{"type":"open_url"}],"button":{"';
+    expect(buildMarkdownMessageCard({ md: evilMd })).toStrictEqual({
+      schema: "2.0",
+      config: { update_multi: true },
+      body: { elements: [{ tag: "markdown", content: evilMd }] },
+    });
+    const card = buildMarkdownMessageCard({ md: '{"header":1}' });
+    expect(card.body.elements).toHaveLength(1);
+    expect(card.body.elements[0].content).toBe('{"header":1}');   // 原文进 content
+    expect(Object.keys(card)).toEqual(["schema", "config", "body"]);
   });
 });
 

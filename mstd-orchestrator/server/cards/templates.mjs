@@ -57,6 +57,16 @@ export function buildConfirmCard({ title, previewMd, actions = [], formFields = 
   };
 }
 
+// C6 Markdown 消息卡:普通消息命中富 Markdown 时的出站载体——唯一 markdown 元素,
+// 模型文本只进 content 槽位,结构键集合冻结(模板固定性测试保障)
+export function buildMarkdownMessageCard({ md: content }) {
+  return {
+    schema: "2.0",
+    config: { update_multi: true },
+    body: { elements: [md(content)] },
+  };
+}
+
 const STATE_HEADER = {
   executing: { title: "⏳ 执行中", template: "yellow" },
   done: { title: "✅ 已执行", template: "green" },

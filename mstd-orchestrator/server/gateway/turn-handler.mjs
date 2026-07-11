@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { parseSessionKey } from "../sessions/session-key.mjs";
 import { formatHistoryLine, whoLabel } from "../sessions/history-format.mjs";
 import { NUDGE_NOTE } from "../memory/compact.mjs";
+import { hasRichMarkdown } from "./md-detect.mjs";
+import { buildMarkdownMessageCard } from "../cards/templates.mjs";
 
 // 群窗口时间戳:北京时间 HH:MM
 const HHMM = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
@@ -47,13 +49,19 @@ export function createTurnHandler({
     return items.map((it) => `[${it.senderName ?? it.senderOpenId ?? "用户"}]: ${it.content}`).join("\n");
   }
 
-  async function sendToSession(sessionKey, text, idempotencyKey = randomUUID()) {
+  // C6 唯一文本出口:命中富 Markdown → 消息卡(markdown 组件),否则纯 text。
+  // budget refusal/quick_reply/正式 handleReply/deliverTrusted 四条路径都只许走这里。
+  async function deliverText(sessionKey, text, { idempotencyKey = randomUUID() } = {}) {
     const parsed = parseSessionKey(sessionKey);
-    if (parsed.kind === "p2p") return outbound.sendMessage({ openId: parsed.openId, text, idempotencyKey });
-    if (parsed.kind === "group") return outbound.sendMessage({ chatId: parsed.chatId, text, idempotencyKey });
     // debug 会话（web 调试台）：不真发 lark，落库即"出站"（前端轮询 transcript 显示）
     if (parsed.kind === "debug") return { messageId: null };
-    throw new Error(`会话不可出站: ${sessionKey}`);
+    const targetArg = parsed.kind === "p2p" ? { openId: parsed.openId }
+      : parsed.kind === "group" ? { chatId: parsed.chatId } : null;
+    if (!targetArg) throw new Error(`会话不可出站: ${sessionKey}`);
+    if (hasRichMarkdown(text)) {
+      return outbound.sendCard({ ...targetArg, cardJson: buildMarkdownMessageCard({ md: text }), idempotencyKey });
+    }
+    return outbound.sendMessage({ ...targetArg, text, idempotencyKey });
   }
 
   async function handleTurn(turn) {
@@ -65,7 +73,7 @@ export function createTurnHandler({
 
     if (!budget.allow(sessionKey).ok) {
       appendItems(session.id, items);
-      const { messageId } = await sendToSession(sessionKey, BUDGET_REFUSAL);
+      const { messageId } = await deliverText(sessionKey, BUDGET_REFUSAL);
       store.append(session.id, { role: "assistant", content: BUDGET_REFUSAL, platformMessageId: messageId, ts: Date.now() });
       return;
     }
@@ -124,7 +132,7 @@ export function createTurnHandler({
     appendItems(session.id, items);
 
     if (verdict.action === "quick_reply") {
-      const { messageId } = await sendToSession(sessionKey, verdict.text);
+      const { messageId } = await deliverText(sessionKey, verdict.text);
       store.append(session.id, { role: "assistant", content: verdict.text, platformMessageId: messageId, ts: Date.now() });
       journal?.recordTurn({ sessionKey, sessionTitle: session.title, items, replyText: verdict.text });
       return;
@@ -168,13 +176,16 @@ export function createTurnHandler({
     const recent = store.recent(session.id, { limit: 20, roles: ["user", "assistant", "tool"] })
       .map(formatHistoryLine).join("\n");
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
+    // Task 10 C4:投递场景由 deliverKey(裁决后的真实去向)决定,群短平快/私聊展开
+    let deliverKind = "p2p";
+    try { if (parseSessionKey(deliverKey).kind === "group") deliverKind = "group"; } catch { /* debug 等按 p2p */ }
     const rendered = await renderReply({
-      caller, soul: snapshot?.soul ?? soul, context: recent, brief, kind, tone,
+      caller, soul: snapshot?.soul ?? soul, context: recent, brief, kind, tone, deliverKind,
     });
     if (rendered.usage) budget.record(sessionKey, rendered.usage);
     if (kind === "card_copy") return { ok: true, text: rendered.text };
 
-    const { messageId } = await sendToSession(deliverKey, rendered.text);
+    const { messageId } = await deliverText(deliverKey, rendered.text);
     store.append(session.id, { role: "assistant", content: rendered.text, platformMessageId: messageId, ts: Date.now() });
     // C3.4 跨目标回写:目标会话自己的窗口里必须有这条投递(带 meta,不许造 chat_id=null 的群 session)。
     // 只 append assistant 记录,不触发 ambient limiter——跨会话授权已由 grants 承担。
@@ -199,7 +210,7 @@ export function createTurnHandler({
     }
     const message = `提醒：${text}`;
     const session = store.getOrCreate(deliverKey, { kind: parsed.kind, chatId: parsed.chatId ?? null });
-    const { messageId } = await sendToSession(deliverKey, message, idempotencyKey);
+    const { messageId } = await deliverText(deliverKey, message, { idempotencyKey });
     store.append(session.id, { role: "assistant", content: message, platformMessageId: messageId, ts: Date.now() });
     onEvent({ type: "trusted_delivered", sessionKey: deliverKey, messageId });
     return { ok: true, message_id: messageId };
