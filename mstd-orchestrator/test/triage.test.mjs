@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createTriage, RECAP_INTENT, ADVICE_INTENT } from "../server/models/triage.mjs";
+import { createTriage, RECAP_INTENT, ADVICE_INTENT, estimateTokens, budgetWindow } from "../server/models/triage.mjs";
 
 const mkCaller = (text) => ({ call: vi.fn(async () => ({ text, model: "v4-flash", usage: null })) });
 const store = { recent: () => [] };
@@ -254,5 +254,39 @@ describe("判断+解释类强制切慢机(ADVICE_INTENT)", () => {
     expect(ADVICE_INTENT.test("好的,收到")).toBe(false);
     expect(ADVICE_INTENT.test("会议改到下午三点")).toBe(false);
     expect(ADVICE_INTENT.test("帮我把文档发给张三")).toBe(false);
+  });
+});
+
+// 2048-token 预算窗口(用户定案):末条触界不截断,整条放入
+describe("budgetWindow/estimateTokens", () => {
+  it("estimateTokens:CJK≈1/字,ASCII≈1/4字符", () => {
+    expect(estimateTokens("四个汉字")).toBe(4);
+    expect(estimateTokens("abcdefgh")).toBe(2);
+    expect(estimateTokens("")).toBe(0);
+  });
+
+  it("按预算从最新往回收,顺序保持时间正序;预算刚好用尽即停", () => {
+    const rows = ["旧".repeat(10), "中".repeat(10), "新".repeat(10)];
+    expect(budgetWindow(rows, { budget: 20 })).toEqual(["中".repeat(10), "新".repeat(10)]);   // 恰好用尽,旧不进
+    expect(budgetWindow(rows, { budget: 25 })).toEqual(rows);                                 // 旧是触界者→整条放入
+    expect(budgetWindow(rows, { budget: 100 })).toEqual(rows);
+  });
+
+  it("触界的那条整条放入不截断(窗口可略超预算)", () => {
+    const rows = ["超长的一条".repeat(20), "短"];
+    const win = budgetWindow(rows, { budget: 10 });
+    expect(win).toEqual(["超长的一条".repeat(20), "短"]);  // 第二条(往回数)触界,整条保留
+    expect(win[0].length).toBe(100);                       // 没有被截断
+  });
+
+  it("空输入返回空窗口", () => {
+    expect(budgetWindow([], { budget: 100 })).toEqual([]);
+  });
+
+  it("triage 用预算窗口而非固定 20 条:store.recent 上限放宽到 200", async () => {
+    const recent = vi.fn(() => []);
+    const t = createTriage({ caller: mkCaller('{"action":"no_reply"}'), store: { recent } });
+    await t.triage({ session, items, mode: "ambient" });
+    expect(recent).toHaveBeenCalledWith("s1", expect.objectContaining({ limit: 200 }));
   });
 });

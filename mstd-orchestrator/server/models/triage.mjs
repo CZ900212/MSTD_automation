@@ -29,12 +29,33 @@ function renderItems(items) {
     .join("\n");
 }
 
-export function createTriage({ caller, store, soul = "" }) {
+// 自然参与上下文窗口(用户定案 2026-07-12):token 估算,CJK≈1 token/字、ASCII≈1 token/4 字符
+export function estimateTokens(text) {
+  let t = 0;
+  for (const ch of String(text)) t += ch.charCodeAt(0) > 0x2e7f ? 1 : 0.25;
+  return Math.ceil(t);
+}
+
+// 按预算从最新往回收消息;触界的那条**整条放入不截断**(窗口可略超预算),然后停
+export function budgetWindow(rows, { budget = 2048, format = (r) => String(r) } = {}) {
+  const out = [];
+  let used = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const line = format(rows[i]);
+    out.unshift(line);
+    used += estimateTokens(line);
+    if (used >= budget) break;
+  }
+  return out;
+}
+
+export function createTriage({ caller, store, soul = "", windowTokens = 2048 }) {
   async function triage({ session, items, mode, snapshot = null, brainBusy = false }) {
     // C3.2:近期语义用 store.recent(transcript 取的是最早 n 条),历史行走统一 helper;
-    // 排除 system——压缩摘要不得以 [用户] 身份泄入分诊上下文
-    const recent = store.recent(session.id, { limit: 20, roles: ["user", "assistant", "tool"] })
-      .map(formatHistoryLine).join("\n");
+    // 排除 system——压缩摘要不得以 [用户] 身份泄入分诊上下文。
+    // 上限 200 行只是 SQL 取数保护,真正的边界是 token 预算窗口
+    const rows = store.recent(session.id, { limit: 200, roles: ["user", "assistant", "tool"] });
+    const recent = budgetWindow(rows, { budget: windowTokens, format: formatHistoryLine }).join("\n");
     const memoryBlock = snapshot
       ? `\n## 记忆快照\n${[snapshot.org, snapshot.journalDigest, snapshot.scoped].filter(Boolean).join("\n")}`
       : "";

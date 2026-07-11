@@ -177,7 +177,8 @@ if (config.enableAgent && config.botOpenId) {
   const memoryFiles = createMemoryFiles({ rootDir: process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory") });
   const memoryTool = createMemoryTool({ files: memoryFiles });
   const snapshotFn = ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey });
-  const triage = createTriage({ caller, store: agentStore });
+  // 分诊上下文:2048-token 预算窗口(末条不截断),自然参与判定的依据
+  const triage = createTriage({ caller, store: agentStore, windowTokens: Number(process.env.MSTD_TRIAGE_WINDOW_TOKENS ?? 2048) });
   const brain = createBrain({
     startPi,
     store: agentStore,
