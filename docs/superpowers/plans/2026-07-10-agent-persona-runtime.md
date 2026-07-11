@@ -367,6 +367,15 @@ git add mstd-orchestrator/server/http/session-tokens.mjs mstd-orchestrator/serve
 git commit -m "feat(mstd): 内部通道会话绑定 token——per-spawn 签发/回收吊销,冒名 session_key 403 落 model_log"
 ```
 
+**实施偏差(2026-07-11,Fable 操作员):**
+1. token 吊销未按原文在 recycle/shutdown/runTurn-catch 三处分别调用,而是统一收敛到
+   `closeEntry` 的 finally(所有 Pi 终结路径——空闲回收、回合降级、关停、
+   spawn-after-shutdown——都经此漏斗),行为等价且不漏路径。
+2. `spawnWithFallback` 不再改返回 `{client, providerKey, internalToken}` 结构,
+   直接在 entry 上记 `internalToken`(既有结构已是 entry,改结构反而多余)。
+3. 内部路由此前无独立测试文件,"旧测试改 registry 签发"不适用;新建
+   test/internal-routes.test.mjs 全量覆盖新 guard 语义(6 用例)。
+
 ---
 
 ### Task 4A: C0.4 reply.target/memory 授权 + owner-bound heartbeat 队列

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createBrain, REASON_PROVIDERS } from "../server/models/brain.mjs";
+import { createSessionTokenRegistry } from "../server/http/session-tokens.mjs";
 
 function mockClient() {
   return {
@@ -153,4 +154,111 @@ describe("brain（5.5 Pi 会话进程管理）", () => {
     expect(startPi).toHaveBeenCalledTimes(REASON_PROVIDERS.length);
   });
 
+});
+
+describe("C0.3 会话绑定 token(brain 生命周期)", () => {
+  it("spawn 发会话 token 注入 env,空闲回收即吊销", async () => {
+    const reg = createSessionTokenRegistry();
+    let envSeen;
+    const startPi = vi.fn((opts) => { envSeen = opts.env; return mockClient(); });
+    const timers = [];
+    const brain = createBrain({
+      startPi, store, tokens: reg, idleMs: 1000, sleepFn: async () => {},
+      setTimeoutFn: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      clearTimeoutFn: () => {},
+    });
+    await brain.turn({ session, sessionKey: "k1", brief: "x" });
+    const tok = envSeen.MSTD_INTERNAL_TOKEN;
+    expect(typeof tok).toBe("string");
+    expect(envSeen.MSTD_SESSION_KEY).toBe("k1");
+    expect(reg.resolve(tok)).toBe("k1");
+    timers.at(-1).fn();                       // 空闲回收
+    await new Promise((r) => setImmediate(r));
+    expect(reg.resolve(tok)).toBeNull();      // 已吊销
+  });
+
+  it("每次 startPi 尝试用不同 token;失败尝试立即吊销", async () => {
+    const reg = createSessionTokenRegistry();
+    const seen = [];
+    const startPi = vi.fn(({ env }) => {
+      seen.push(env.MSTD_INTERNAL_TOKEN);
+      if (seen.length < 3) throw new Error("spawn fail");
+      return mockClient();
+    });
+    const brain = createBrain({ startPi, store, tokens: reg, retries: 3, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    await brain.turn({ session, sessionKey: "k1", brief: "x" });
+    expect(new Set(seen).size).toBe(3);
+    expect(reg.resolve(seen[0])).toBeNull();
+    expect(reg.resolve(seen[1])).toBeNull();
+    expect(reg.resolve(seen[2])).toBe("k1");
+  });
+
+  it("所有 provider 全部拉起失败:已签发 token 全部吊销", async () => {
+    const reg = createSessionTokenRegistry();
+    const seen = [];
+    const startPi = vi.fn(({ env }) => {
+      seen.push(env.MSTD_INTERNAL_TOKEN);
+      throw new Error("spawn fail");
+    });
+    const brain = createBrain({ startPi, store, tokens: reg, retries: 1, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {}, log: () => {} });
+    await expect(brain.turn({ session, sessionKey: "k1", brief: "x" })).rejects.toThrow(/拉起失败/);
+    expect(seen).toHaveLength(REASON_PROVIDERS.length);
+    for (const tok of seen) expect(reg.resolve(tok)).toBeNull();
+  });
+
+  it("回合降级回收旧 Pi 时旧 token 吊销,新 Pi 使用新 token", async () => {
+    const reg = createSessionTokenRegistry();
+    const seen = [];
+    const startPi = vi.fn((opts) => {
+      seen.push(opts.env.MSTD_INTERNAL_TOKEN);
+      const c = mockClient();
+      if (opts.provider === REASON_PROVIDERS[0].provider) {
+        c.runJob = vi.fn(async () => { throw new Error("503"); });
+      }
+      return c;
+    });
+    const brain = createBrain({ startPi, store, tokens: reg, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {}, log: () => {} });
+    const out = await brain.turn({ session, sessionKey: "k1", brief: "x" });
+    expect(out.finalText).toBe("done");
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+    await new Promise((r) => setImmediate(r));
+    expect(reg.resolve(seen[0])).toBeNull();  // 被回收的 5.5 Pi
+    expect(reg.resolve(seen[1])).toBe("k1");  // 降级 Pi 持新 token
+  });
+
+  it("spawn-after-shutdown:startPi 成功但已关停,该 Pi 关闭且 token 吊销", async () => {
+    const reg = createSessionTokenRegistry();
+    const client = mockClient();
+    let brain;
+    let shutdownPromise;
+    let tokAtSpawn;
+    const startPi = vi.fn(({ env }) => {
+      tokAtSpawn = env.MSTD_INTERNAL_TOKEN;
+      shutdownPromise = brain.shutdown();   // spawn 中同步重入关停
+      return client;
+    });
+    brain = createBrain({ startPi, store, tokens: reg, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    const outcome = brain._ensure("k1").then(
+      (value) => ({ status: "fulfilled", value }),
+      (error) => ({ status: "rejected", error }),
+    );
+    await shutdownPromise;
+    const ensured = await outcome;
+    expect(ensured.status).toBe("rejected");
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(reg.resolve(tokAtSpawn)).toBeNull();   // spawn-after-shutdown 路径也吊销
+  });
+
+  it("shutdown 吊销存活 Pi 的 token", async () => {
+    const reg = createSessionTokenRegistry();
+    let envSeen;
+    const startPi = vi.fn((opts) => { envSeen = opts.env; return mockClient(); });
+    const brain = createBrain({ startPi, store, tokens: reg, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    await brain.turn({ session, sessionKey: "k1", brief: "x" });
+    const tok = envSeen.MSTD_INTERNAL_TOKEN;
+    expect(reg.resolve(tok)).toBe("k1");
+    await brain.shutdown();
+    expect(reg.resolve(tok)).toBeNull();
+  });
 });

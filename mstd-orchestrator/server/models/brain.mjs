@@ -40,6 +40,7 @@ export function createBrain({
   replayLimit = 50,
   log = console.error,
   onEvent = null,
+  tokens = null,
 } = {}) {
   const pool = new Map(); // sessionKey -> entry
   const resources = new Set(); // 已 spawn 且尚未完成 close/release 的 entry
@@ -95,6 +96,8 @@ export function createBrain({
           ? new AggregateError([failure, e], "brain close/release 失败")
           : e;
       } finally {
+        // 回收/降级/关停的统一漏斗：Pi 进程终结即吊销其会话 token
+        tokens?.revoke(entry.internalToken);
         resources.delete(entry);
       }
       if (failure) rejectClose(failure);
@@ -128,6 +131,8 @@ export function createBrain({
       const p = REASON_PROVIDERS[i];
       for (let attempt = 1; attempt <= retries; attempt++) {
         assertOpen();
+        // token 按每次 startPi 尝试签发：失败尝试立即吊销，避免全败时无 entry 可吊销
+        const internalToken = tokens?.issue(sessionKey) ?? null;
         try {
           const client = startPi({
             provider: p.provider,
@@ -135,7 +140,11 @@ export function createBrain({
             thinking: p.thinking,
             extensions,
             cwd: piCwd,
-            env: { ...piEnv, MSTD_SESSION_KEY: sessionKey },
+            env: {
+              ...piEnv,
+              MSTD_SESSION_KEY: sessionKey,
+              ...(internalToken ? { MSTD_INTERNAL_TOKEN: internalToken } : {}),
+            },
           });
           const entry = {
             client,
@@ -145,12 +154,14 @@ export function createBrain({
             providerKey: p.key,
             sessionKey,
             lease,
+            internalToken,
             closePromise: null,
           };
           resources.add(entry);
           provisionalLeases.delete(lease);
           return entry;
         } catch (e) {
+          tokens?.revoke(internalToken);
           errors.push(e);
           await sleepWhileOpen(retryDelayMs);
         }

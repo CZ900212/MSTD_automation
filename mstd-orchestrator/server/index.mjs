@@ -18,7 +18,6 @@ import { backfillMinutes } from "./triggers/backfill.mjs";
 import { startLarkHealth, makeDmAlert } from "./health/lark-profile.mjs";
 import { wireGateway } from "./gateway/wire.mjs";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { createModelCaller } from "./models/caller.mjs";
 import { createBudget } from "./models/budget.mjs";
 import { createModelLog } from "./models/model-log.mjs";
@@ -45,6 +44,7 @@ import { createCronRunner } from "./ticker/cron-runner.mjs";
 import { createHeartbeat } from "./ticker/heartbeat.mjs";
 import { createDreaming } from "./ticker/dreaming.mjs";
 import { createSessionExpiry } from "./ticker/session-expiry.mjs";
+import { createSessionTokenRegistry } from "./http/session-tokens.mjs";
 import { createProactiveLimiter } from "./gateway/rate-limit.mjs";
 import { createObserveReport } from "./gateway/observe-report.mjs";
 
@@ -144,7 +144,8 @@ if (config.enableTrigger && config.larkProfile) {
 let internal = null;
 let adminDeps = null;
 if (config.enableAgent && config.botOpenId) {
-  const internalToken = process.env.MSTD_INTERNAL_TOKEN || randomUUID();
+  // C0.3：内部通道改会话绑定 token(per-spawn 签发,吊销随 Pi 生命周期),废除静态共享 token
+  const sessionTokens = createSessionTokenRegistry();
   const actors = createActorPool();
   const modelLog = createModelLog(db);   // 模型链路可观测：降级/重试/预算命中落库，调试台消费
   const caller = createModelCaller({ env: process.env, onEvent: modelLog.record });
@@ -183,9 +184,9 @@ if (config.enableAgent && config.botOpenId) {
     piCwd: ROOT,
     piEnv: {
       MSTD_INTERNAL_URL: `http://127.0.0.1:${config.port}`,
-      MSTD_INTERNAL_TOKEN: internalToken,
     },
     onEvent: modelLog.record,
+    tokens: sessionTokens,
   });
   const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: modelLog.record });
   const turnHandler = createTurnHandler({
@@ -232,7 +233,8 @@ if (config.enableAgent && config.botOpenId) {
     },
   });
   internal = {
-    token: internalToken,
+    tokens: sessionTokens,
+    modelLog,
     handleReply: turnHandler.handleReply,
     memoryTool,
     searchTool: createSessionSearch(db),
