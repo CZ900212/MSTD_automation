@@ -432,3 +432,62 @@ escalate,ambient 豁免;②SYSTEM_TEMPLATE 全文替换(记号说明/复述必�
 
 - [MSTD-R] 报告信仍待用户放行。
 - 下一任务:阶段一 Task 10(C4/C6 reply 出口提示词+deliverKind 投递感知)。
+
+## 2026-07-12 - 阶段一 Task 10+11:出口场景感知+Markdown 卡片分流(591a441,合并交付)
+
+### 做了什么
+
+Task 10(C4):renderReply 加 deliverKind,SCENE 表注入长度策略(群三句/私聊展开),
+SYSTEM 重写(自然同事腔+飞书渲染约定);turn-handler 由裁决后 deliverKey 解析场景。
+Task 11(C6):hasRichMarkdown 冻结契约(强信号单命中/弱≥2类共现/转义哨兵不计)、
+buildMarkdownMessageCard 固定结构、sendToSession 收敛为唯一出口 deliverText
+(md→消息卡,否则纯 text,四路径统一)。
+
+### 实施偏差(计划两提交→一提交)
+
+§5.1 opus 判 Task 10 单独交付 BLOCKER:"含 Markdown 时系统会自动走卡片渲染"在
+Task 11 分流落地前是假声明——提示词主动诱导出口吐表格,text 消息类型不渲染 md,
+群里会看到字面 "| a | b |"。两任务共改 turn-handler 无法干净拆分,合并为单提交
+消灭假声明窗口。教训:跨任务的提示词声明要与实现同批,spec 拆分粒度没预见这一点。
+
+### 双引擎审核
+
+- **§5.1 opus(T10)**:BLOCKER 如上;其余四项(deliverKind 与出站同源、场景边界、
+  四层提示词一致性、旧措辞退役)无缺陷。SOUL"三句话以内"与 SCENE.group 逐字对齐。
+- **§5.1 opus(T11)**:可合入+1 低危实缺陷——转义剥离删成空串会把 "\## x" 剥成
+  "# x" 造出标题信号(实测证实);修复=U+0000 哨兵占位(非空白,挡行首锚定)+反例。
+  注意坑:第一次修复用空格当哨兵——空格属 \s 会被行首锚吃掉,等于没修;第二次
+  Edit 又写进裸 NUL 字节(4B 同款坑),perl 转成 U+0000 转义序列。deliverTrusted
+  "提醒:"前缀遮首行标题备案(概率极低,降级纯文本无害)。sendCard 契约核实与
+  确认卡同机制同白名单,idempotencyKey 透传,返回形状一致。ReDoS 实测 50-100k
+  病态输入 <2ms。
+- **§5.2 Codex(合并审卷,8 高 8 中全采纳,+31 测试)**:含 1 实现缺陷——表格分隔行
+  正则不要求连字符,"|   |   |" 误判(修正为每列必须含连字符);其余为测试强度:
+  零出站断言只盖 sendMessage(补 sendCard 双通道)、弱信号只有一对共现(补逐类
+  正例+单发反例)、转义预处理整段删除无杀(补转义链接反例)、隐式幂等键删默认值
+  无杀(补非空断言)、唯一出口无结构保护(补源码 outbound.send 计数锁,恰 2 处)、
+  debug 语义只查 deliverKind(补双通道零出站+platform_message_id null)、
+  targetArg guard 不可达(补 cron 自会话 rejects)、恶意卡 keySet 折叠数组(改
+  toStrictEqual)、最近邻非法值矩阵(单行表格/7 井号/无空格引用/两连字符/URL
+  空格/句中围栏/无空格列表)、≥2"类"语义(混用标记同类/同类重复不达阈)、
+  deliverKind 四场景矩阵(杀"部分来源用 sessionKey"杂交变异)、parse 抛错兜底
+  直测、SCENE 完整句+互斥+card_copy 场景不变性+未知场景等价 p2p、卡片
+  message_id 落库+sendCard 失败零落库原子性。
+- **变异复验**:3/3 杀(有序列表正则删除/幂等键默认值删除/分隔行正则回退——
+  三个都是审卷前杀不死的变异,补杀后全红)。
+- **Codex 审卷第一次跑超时被杀**(10min 上限),合并 10+11 重发一次成功;
+  网关拥堵时段审卷要预留更长时限或拆小审核面。
+
+### 验证
+
+- 全量 668→719 passed/5 skipped(strict 只增不减;+51)。
+- 真机直探:buildMarkdownMessageCard 经生产 outbound.sendCard 发测试群成功
+  (om_x100b6a1...),表格+代码块以卡片渲染——飞书接受该 Card JSON 2.0 结构,
+  Task 10 的渲染声明落地为真。
+- e2e-persona 不受影响(纯文本问答);批末统一重跑四套门控。
+
+### 挂起问题
+
+- [MSTD-R] 报告信仍待用户放行。
+- 下一任务:阶段一 Task 12(C5 机器人改名,实机严格顺序)——含浏览器后台操作与
+  daemon PID 所有权规则。
