@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -59,5 +59,49 @@ describe("memory 工具（add/replace/remove/read）", () => {
     expect(tool.run({ action: "add", layer: "user", id: "ou_a", entry: "喜欢表格" }, { sessionKey: "feishu:p2p:ou_a" }).ok).toBe(true);
     expect(tool.run({ action: "add", layer: "org", entry: "公司周五例会" }, { sessionKey: "feishu:p2p:ou_a" }).ok).toBe(true);
     expect(tool.run({ action: "add", layer: "soul", entry: "改人格" }, ctx).ok).toBe(false);
+  });
+
+  it("read 授权矩阵：scoped 只许对应 logical session;跨群/群读 user/私聊读群全拒", () => {
+    files.writeLayer("group", "oc_1", "群记忆内容");
+    files.writeLayer("user", "ou_a", "用户画像内容");
+    // 正例：本群读本群、本人私聊读本人
+    expect(tool.run({ action: "read", layer: "group", id: "oc_1" }, { sessionKey: "feishu:group:oc_1" }).content).toContain("群记忆内容");
+    expect(tool.run({ action: "read", layer: "user", id: "ou_a" }, { sessionKey: "feishu:p2p:ou_a" }).content).toContain("用户画像内容");
+    // 跨群
+    expect(tool.run({ action: "read", layer: "group", id: "oc_1" }, { sessionKey: "feishu:group:oc_2" }).ok).toBe(false);
+    // 群会话读 user 层
+    expect(tool.run({ action: "read", layer: "user", id: "ou_a" }, { sessionKey: "feishu:group:oc_1" }).ok).toBe(false);
+    // 私聊读群层 / 私聊读别人
+    expect(tool.run({ action: "read", layer: "group", id: "oc_1" }, { sessionKey: "feishu:p2p:ou_a" }).ok).toBe(false);
+    expect(tool.run({ action: "read", layer: "user", id: "ou_b" }, { sessionKey: "feishu:p2p:ou_a" }).ok).toBe(false);
+    // 非法会话键
+    expect(tool.run({ action: "read", layer: "group", id: "oc_1" }, { sessionKey: "垃圾键" }).ok).toBe(false);
+  });
+
+  it("cron/debug 不得读 scoped;soul/org 任意会话可读", () => {
+    files.writeLayer("group", "oc_1", "群记忆内容");
+    files.writeLayer("user", "ou_a", "用户画像内容");
+    expect(tool.run({ action: "read", layer: "group", id: "oc_1" }, { sessionKey: "cron:job-1" }).ok).toBe(false);
+    expect(tool.run({ action: "read", layer: "user", id: "ou_a" }, { sessionKey: "cron:job-1" }).ok).toBe(false);
+    expect(tool.run({ action: "read", layer: "group", id: "oc_1" }, { sessionKey: "debug:d1" }).ok).toBe(false);
+    expect(tool.run({ action: "read", layer: "user", id: "ou_a" }, { sessionKey: "debug:d1" }).ok).toBe(false);
+    // soul/org 全局层任何会话可读（含 cron/debug）
+    expect(tool.run({ action: "read", layer: "soul" }, { sessionKey: "cron:job-1" }).ok).toBe(true);
+    expect(tool.run({ action: "read", layer: "org" }, { sessionKey: "debug:d1" }).ok).toBe(true);
+    expect(tool.run({ action: "read", layer: "org" }, { sessionKey: "feishu:group:oc_1" }).ok).toBe(true);
+  });
+
+  it("read journal 走 files.readJournal(),不经 readLayer", () => {
+    const spyFiles = {
+      readLayer: vi.fn(() => ({ content: "", snapshotHash: "h" })),
+      writeLayer: vi.fn(),
+      readJournal: vi.fn(() => "今日日志内容"),
+      appendJournal: vi.fn(),
+    };
+    const t = createMemoryTool({ files: spyFiles });
+    const r = t.run({ action: "read", layer: "journal" }, { sessionKey: "cron:job-1" });
+    expect(r).toMatchObject({ ok: true, content: "今日日志内容" });
+    expect(spyFiles.readJournal).toHaveBeenCalledTimes(1);
+    expect(spyFiles.readLayer).not.toHaveBeenCalled();
   });
 });

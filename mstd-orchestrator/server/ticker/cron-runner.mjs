@@ -3,7 +3,7 @@
 // prompt 组装后过注入扫描，污染即拦截并 disabled。
 import { scanForInjection } from "../memory/scan.mjs";
 
-export function createCronRunner({ brain, agentStore, cronStore, snapshotFn = null, log = console.error }) {
+export function createCronRunner({ brain, agentStore, cronStore, grants = null, snapshotFn = null, log = console.error }) {
   function buildBrief(job) {
     return [
       `【定时任务】${job.prompt}`,
@@ -24,11 +24,14 @@ export function createCronRunner({ brain, agentStore, cronStore, snapshotFn = nu
     const sessionKey = `cron:${job.id}-${nowTs}`;      // 每次执行新鲜会话
     const session = agentStore.getOrCreate(sessionKey, { kind: "cron", title: `[cron] ${job.id}` });
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
+    // C0.4：cron 会话对本任务 deliver_to 的临时投递授权,回合结束（含抛错）必回收
+    grants?.grant(sessionKey, job.deliver_to);
     try {
       await brain.turn({ session, sessionKey, brief: buildBrief(job), snapshot });
     } catch (e) {
       log(`[cron] 任务 ${job.id} 回合失败: ${e?.message ?? e}`);
     } finally {
+      grants?.revoke(sessionKey);
       cronStore.markDone(job.id, nowTs);
     }
   }

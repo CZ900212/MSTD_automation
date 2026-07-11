@@ -117,8 +117,9 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
       proposeActions: async (a) => { calls.propose.push(a); return { ok: true, jobId: 1, messageId: "m" }; },
       spawnBackground: (a) => { calls.background.push(a); return 7; },
       heartbeat: {
-        addItem: (a) => { calls.heartbeat.push(a); return { ok: true }; },
-        removeItem: () => ({ ok: true }),
+        addOwned: (a) => { calls.heartbeat.push(a); return { ok: true, itemId: "hb-1" }; },
+        listOwned: () => [],
+        removeOwned: () => ({ ok: true }),
       },
       searchTool: { run: (params, ctx) => { calls.search.push({ params, ctx }); return { ok: true } ; } },
     });
@@ -150,7 +151,7 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
     expect(calls.memory[0].ctx).toMatchObject({ sessionKey: "feishu:p2p:ou_me" });
     expect(calls.propose[0]).toMatchObject({ sessionKey: "feishu:p2p:ou_me" });
     expect(calls.background[0]).toMatchObject({ sessionKey: "feishu:p2p:ou_me" });
-    expect(calls.heartbeat[0]).toMatchObject({ deliverTo: "feishu:p2p:ou_me" });
+    expect(calls.heartbeat[0]).toMatchObject({ ownerSessionKey: "feishu:p2p:ou_me" });
     expect(calls.search[0].ctx).toMatchObject({ sessionKey: "feishu:p2p:ou_me" });
     // guard 对未启用依赖的路由也先行:无 token 时绝不返回 501
     const appBare = makeApp({ tokens: createSessionTokenRegistry(), handleReply: async () => ({ ok: true }) });
@@ -176,13 +177,14 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
     expect(r2.status).toBe(501);
   });
 
-  it("数组/标量 body 400;heartbeat add 缺参 400 且 deliverTo 默认绑定会话", async () => {
+  it("数组/标量 body 400;heartbeat add 缺参 400 且 owner 恒为绑定会话", async () => {
     const reg = createSessionTokenRegistry();
     const tok = reg.issue("feishu:p2p:ou_me");
     const added = [];
     const heartbeat = {
-      addItem: vi.fn((x) => { added.push(x); return { ok: true }; }),
-      removeItem: vi.fn(() => ({ ok: true })),
+      addOwned: vi.fn((x) => { added.push(x); return { ok: true, itemId: "hb-1" }; }),
+      listOwned: vi.fn(() => []),
+      removeOwned: vi.fn(() => ({ ok: true })),
     };
     const app = makeApp({ tokens: reg, handleReply: async () => ({ ok: true }), heartbeat });
 
@@ -207,7 +209,66 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
       .set("Authorization", `Bearer ${tok}`)
       .send({ action: "add", due_iso: "2026-07-12T00:00:00+08:00", text: "提醒" });
     expect(rAdd.status).toBe(200);
-    expect(added[0]).toMatchObject({ deliverTo: "feishu:p2p:ou_me" });
+    expect(added[0]).toMatchObject({ ownerSessionKey: "feishu:p2p:ou_me" });
+  });
+
+  it("C0.4 heartbeat 绑定会话：deliver_to 越权 403 提示 propose_actions;add 回 item_id;list 只列 owner;remove 走 id+owner", async () => {
+    const reg = createSessionTokenRegistry();
+    const tok = reg.issue("feishu:p2p:ou_a");
+    const calls = { add: [], list: [], remove: [] };
+    const heartbeat = {
+      addOwned: (a) => { calls.add.push(a); return { ok: true, itemId: "hb-1" }; },
+      listOwned: (owner) => { calls.list.push(owner); return [{ id: "hb-1", due_at: 1, text: "喝水", status: "pending" }]; },
+      removeOwned: (a) => { calls.remove.push(a); return a.itemId === "hb-1" ? { ok: true } : { ok: false, error: "未命中" }; },
+    };
+    const app = makeApp({ tokens: reg, handleReply: async () => ({ ok: true }), heartbeat });
+    const post = (body) => request(app).post("/internal/heartbeat").set("Authorization", `Bearer ${tok}`).send(body);
+
+    // 跨会话 deliver_to → 403 且提示走 propose_actions,零 store 调用
+    const r1 = await post({ action: "add", due_iso: "2026-07-12T00:00:00+08:00", text: "t", deliver_to: "feishu:p2p:ou_b" });
+    expect(r1.status).toBe(403);
+    expect(r1.body.error).toContain("propose_actions");
+    expect(calls.add).toHaveLength(0);
+
+    // deliver_to === 绑定会话:等价省略,放行
+    const r2 = await post({ action: "add", due_iso: "2026-07-12T00:00:00+08:00", text: "t", deliver_to: "feishu:p2p:ou_a" });
+    expect(r2.status).toBe(200);
+
+    // 省略 deliver_to → 成功并返回 item_id,owner 是服务端绑定值
+    const r3 = await post({ action: "add", due_iso: "2026-07-12T00:00:00+08:00", text: "喝水" });
+    expect(r3.status).toBe(200);
+    expect(r3.body).toMatchObject({ ok: true, item_id: "hb-1" });
+    expect(calls.add.at(-1)).toMatchObject({ ownerSessionKey: "feishu:p2p:ou_a", text: "喝水" });
+
+    // list 只带绑定 owner（不泄露他人）
+    const r4 = await post({ action: "list" });
+    expect(r4.status).toBe(200);
+    expect(r4.body.items).toHaveLength(1);
+    expect(calls.list).toEqual(["feishu:p2p:ou_a"]);
+
+    // remove 只收 item_id;老的 match 子串协议不再接受
+    const r5 = await post({ action: "remove", match: "喝水" });
+    expect(r5.status).toBe(400);
+    expect(calls.remove).toHaveLength(0);
+    const r6 = await post({ action: "remove", item_id: "hb-1" });
+    expect(r6.status).toBe(200);
+    expect(r6.body.ok).toBe(true);
+    expect(calls.remove[0]).toMatchObject({ ownerSessionKey: "feishu:p2p:ou_a", itemId: "hb-1" });
+    // 他 owner 的 id → store 层未命中,不成功
+    const r7 = await post({ action: "remove", item_id: "hb-of-owner-b" });
+    expect(r7.body.ok).toBe(false);
+
+    // store 校验失败（如坏 ISO）→ 400 透传错误
+    const app2 = makeApp({
+      tokens: reg,
+      handleReply: async () => ({ ok: true }),
+      heartbeat: { addOwned: () => ({ ok: false, error: "due_iso 非法" }), listOwned: () => [], removeOwned: () => ({ ok: true }) },
+    });
+    const tok2 = reg.issue("feishu:p2p:ou_a");
+    const rBad = await request(app2).post("/internal/heartbeat").set("Authorization", `Bearer ${tok2}`)
+      .send({ action: "add", due_iso: "明天", text: "x" });
+    expect(rBad.status).toBe(400);
+    expect(rBad.body.error).toContain("due_iso");
   });
 
   it("未配置 tokens 注册表时内部通道整体 403(fail-closed)", async () => {

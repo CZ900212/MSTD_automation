@@ -3,6 +3,7 @@ import { openDb, migrate } from "../server/db/index.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
 import { createCronStore } from "../server/ticker/cron-jobs.mjs";
 import { createCronRunner } from "../server/ticker/cron-runner.mjs";
+import { createDeliverGrants } from "../server/sessions/deliver-grants.mjs";
 
 const T0 = Date.UTC(2026, 6, 9, 10, 0, 0);
 
@@ -43,6 +44,31 @@ describe("cron 执行器（新鲜会话 + 写必发卡 + prompt 扫描）", () =
     await runner.runDue(T0);
     expect(brain.turn).not.toHaveBeenCalled();
     expect(db.prepare("SELECT enabled FROM cron_jobs WHERE id='evil'").get().enabled).toBe(0);
+  });
+
+  it("执行前 grant(source=cron 会话, target=deliver_to);成功后 finally revoke", async () => {
+    const grants = createDeliverGrants();
+    cronStore.add({ id: "g1", schedule: "30m", prompt: "汇总播报", deliverTo: "feishu:group:oc_1" });
+    let allowedDuring = null;
+    brain.turn.mockImplementation(async ({ sessionKey }) => {
+      allowedDuring = grants.allowed(sessionKey, "feishu:group:oc_1");
+      return { finalText: "", events: [] };
+    });
+    runner = createCronRunner({ brain, agentStore, cronStore, grants, snapshotFn: () => null });
+    await runner.runDue(T0);
+    expect(allowedDuring).toBe(true);                                       // brain.turn 期间 grant 已在
+    const key = brain.turn.mock.calls[0][0].sessionKey;
+    expect(grants.allowed(key, "feishu:group:oc_1")).toBe(false);           // 回合后收回
+  });
+
+  it("brain 回合抛错也 finally revoke", async () => {
+    const grants = createDeliverGrants();
+    cronStore.add({ id: "boom", schedule: "30m", prompt: "会炸", deliverTo: "feishu:p2p:ou_x" });
+    brain.turn.mockImplementation(async () => { throw new Error("炸"); });
+    runner = createCronRunner({ brain, agentStore, cronStore, grants, snapshotFn: () => null });
+    await runner.runDue(T0);
+    const key = brain.turn.mock.calls[0][0].sessionKey;
+    expect(grants.allowed(key, "feishu:p2p:ou_x")).toBe(false);
   });
 
   it("brain 回合抛错不影响其他到期任务", async () => {

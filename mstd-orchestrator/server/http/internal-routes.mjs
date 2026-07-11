@@ -75,19 +75,29 @@ export function mountInternalRoutes(app, { tokens = null, modelLog = null, handl
     }
   });
 
+  // C0.4：heartbeat 绑定 token 会话——owner 恒为服务端绑定值,跨会话 deliver_to 一律 403;
+  // remove 只认 item_id（配合 store 的 id+owner+status=pending 限定,废除任意子串删除）。
   app.post("/internal/heartbeat", (req, res) => {
     const auth = guard(req, res);
     if (!auth) return;
     if (!heartbeat) return res.status(501).json({ ok: false, error: "heartbeat 未启用" });
     const { sessionKey, body } = auth;
-    const { action, due_iso: dueIso, text, deliver_to: deliverTo, match } = body;
+    const { action, due_iso: dueIso, text, deliver_to: deliverTo, item_id: itemId } = body;
     if (action === "add") {
+      if (deliverTo !== undefined && deliverTo !== sessionKey) {
+        modelLog?.record({ type: "internal_auth_reject", sessionKey, detail: `heartbeat deliver_to=${deliverTo}` });
+        return res.status(403).json({ ok: false, error: "deliver_to 越权：heartbeat 只能给当前会话加提醒,跨会话提醒请用 propose_actions 的 schedule_reminder（需用户确认）" });
+      }
       if (!dueIso || !text) return res.status(400).json({ ok: false, error: "add 需要 due_iso + text" });
-      return res.json(heartbeat.addItem({ dueIso, text, deliverTo: deliverTo || sessionKey }));
+      const r = heartbeat.addOwned({ ownerSessionKey: sessionKey, dueIso, text });
+      return r.ok ? res.json({ ok: true, item_id: r.itemId }) : res.status(400).json(r);
+    }
+    if (action === "list") {
+      return res.json({ ok: true, items: heartbeat.listOwned(sessionKey) });
     }
     if (action === "remove") {
-      if (!match) return res.status(400).json({ ok: false, error: "remove 需要 match" });
-      return res.json(heartbeat.removeItem(match));
+      if (!itemId) return res.status(400).json({ ok: false, error: "remove 需要 item_id（match 子串协议已废除,先 list 拿 id）" });
+      return res.json(heartbeat.removeOwned({ ownerSessionKey: sessionKey, itemId }));
     }
     res.status(400).json({ ok: false, error: `未知 action: ${action}` });
   });

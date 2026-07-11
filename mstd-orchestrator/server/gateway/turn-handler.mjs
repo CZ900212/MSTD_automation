@@ -20,6 +20,7 @@ export function createTurnHandler({
   journal = null,             // C7 接缝：公司总日志（fire-and-forget）
   limiter = null,             // F2 接缝：群主动发言限额器（ambient 专用）
   db = null,                  // F5 接缝：观察期 observe_log 落库
+  grants = null,              // C0.4 接缝：reply.target 投递授权表（缺省 fail-closed：只许本会话）
   caller = null,              // 供 renderReply 使用（renderReply 已柯里化时可为 null）
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
@@ -42,9 +43,8 @@ export function createTurnHandler({
     return items.map((it) => `[${it.senderName ?? it.senderOpenId ?? "用户"}]: ${it.content}`).join("\n");
   }
 
-  async function sendToSession(sessionKey, text) {
+  async function sendToSession(sessionKey, text, idempotencyKey = randomUUID()) {
     const parsed = parseSessionKey(sessionKey);
-    const idempotencyKey = randomUUID();
     if (parsed.kind === "p2p") return outbound.sendMessage({ openId: parsed.openId, text, idempotencyKey });
     if (parsed.kind === "group") return outbound.sendMessage({ chatId: parsed.chatId, text, idempotencyKey });
     // debug 会话（web 调试台）：不真发 lark，落库即"出站"（前端轮询 transcript 显示）
@@ -144,6 +144,12 @@ export function createTurnHandler({
   // 5.5 reply 工具经内部 HTTP 到这里：渲染（Opus respond 链）→ 出站/回卡片文案 → 落库 → 记账
   async function handleReply({ sessionKey, kind = "message", brief, tone, target }) {
     if (!brief?.trim()) return { ok: false, error: "brief 必填" };
+    // C0.4：render 之前先裁决投递目标——未 grant 的跨会话 target 一律拒绝,零渲染零出站
+    const deliverKey = target ?? sessionKey;
+    if (deliverKey !== sessionKey && !grants?.allowed(sessionKey, deliverKey)) {
+      onEvent({ type: "reply_target_rejected", sessionKey, target: deliverKey });
+      return { ok: false, error: `reply.target 越权：本会话未被授权向 ${deliverKey} 投递（跨会话请走 propose_actions 确认流）` };
+    }
     const session = store.getOrCreate(sessionKey);
     const recent = store.transcript(session.id, { limit: 20 })
       .map((m) => `[${m.role === "assistant" ? "我" : m.sender_name ?? m.sender_open_id ?? "用户"}]: ${m.content}`)
@@ -155,12 +161,27 @@ export function createTurnHandler({
     if (rendered.usage) budget.record(sessionKey, rendered.usage);
     if (kind === "card_copy") return { ok: true, text: rendered.text };
 
-    const deliverKey = target ?? sessionKey;
     const { messageId } = await sendToSession(deliverKey, rendered.text);
     store.append(session.id, { role: "assistant", content: rendered.text, platformMessageId: messageId, ts: Date.now() });
     onEvent({ type: "reply_sent", sessionKey, messageId });
     return { ok: true, text: rendered.text, message_id: messageId };
   }
 
-  return { handleTurn, handleReply };
+  // daemon-only 受信直投（heartbeat 等确定性提醒）：不经 LLM 渲染,文案固定 `提醒：${text}`,
+  // 出站后回写目标会话 transcript。只在进程内被 daemon 调用,绝不挂到内部 HTTP 通道。
+  async function deliverTrusted({ deliverKey, text, idempotencyKey }) {
+    if (!text?.trim()) return { ok: false, error: "text 必填" };
+    const parsed = parseSessionKey(deliverKey);
+    if (parsed.kind !== "p2p" && parsed.kind !== "group" && parsed.kind !== "debug") {
+      return { ok: false, error: `不可投递的会话: ${deliverKey}` };
+    }
+    const message = `提醒：${text}`;
+    const session = store.getOrCreate(deliverKey, { kind: parsed.kind, chatId: parsed.chatId ?? null });
+    const { messageId } = await sendToSession(deliverKey, message, idempotencyKey);
+    store.append(session.id, { role: "assistant", content: message, platformMessageId: messageId, ts: Date.now() });
+    onEvent({ type: "trusted_delivered", sessionKey: deliverKey, messageId });
+    return { ok: true, message_id: messageId };
+  }
+
+  return { handleTurn, handleReply, deliverTrusted };
 }

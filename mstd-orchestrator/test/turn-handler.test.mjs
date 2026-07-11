@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
 import { createTurnHandler } from "../server/gateway/turn-handler.mjs";
+import { createDeliverGrants } from "../server/sessions/deliver-grants.mjs";
 
 const items = [{ content: "帮我查下周三的会", senderOpenId: "ou_a", senderName: "张三", ts: 1000 }];
 
@@ -20,6 +21,7 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
       store,
       budget: { allow: vi.fn(() => ({ ok: true })), record: vi.fn() },
       soul: "SOUL",
+      grants: createDeliverGrants(),
     };
     handler = createTurnHandler(deps);
   });
@@ -79,5 +81,57 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
     const out = await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "card_copy", brief: "确认建任务文案" });
     expect(out).toMatchObject({ ok: true, text: "渲染稿" });
     expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("handleReply：未 grant 的跨会话 target → 越权错误,render 前拦截,零出站", async () => {
+    const out = await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "偷发", target: "feishu:p2p:ou_victim" });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain("越权");
+    expect(deps.renderReply).not.toHaveBeenCalled();      // render 前就拦
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+    expect(store.transcript(session.id)).toHaveLength(0); // 也不落库
+  });
+
+  it("handleReply：grant 后放行指定 target;target=本会话等价省略恒放行", async () => {
+    deps.grants.grant("feishu:p2p:ou_a", "feishu:group:oc_t");
+    const out = await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "播报", target: "feishu:group:oc_t" });
+    expect(out).toMatchObject({ ok: true, text: "渲染稿" });
+    expect(deps.outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ chatId: "oc_t", text: "渲染稿" }));
+
+    deps.outbound.sendMessage.mockClear();
+    const self = await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "自会话", target: "feishu:p2p:ou_a" });
+    expect(self.ok).toBe(true);
+    expect(deps.outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ openId: "ou_a" }));
+  });
+
+  it("未注入 grants 时跨会话 target fail-closed", async () => {
+    const bare = createTurnHandler({ ...deps, grants: undefined });
+    const out = await bare.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "x", target: "feishu:p2p:ou_b" });
+    expect(out.ok).toBe(false);
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("deliverTrusted：daemon 直投确定性提醒,带幂等键,回写目标 transcript 且 chat_id 正确", async () => {
+    const r = await handler.deliverTrusted({ deliverKey: "feishu:group:oc_x", text: "开会", idempotencyKey: "heartbeat:item-1" });
+    expect(r.ok).toBe(true);
+    expect(deps.outbound.sendMessage).toHaveBeenCalledTimes(1);
+    expect(deps.outbound.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "oc_x", text: "提醒：开会", idempotencyKey: "heartbeat:item-1" })
+    );
+    expect(deps.renderReply).not.toHaveBeenCalled();      // 确定性文案不走渲染链
+    const target = store.getOrCreate("feishu:group:oc_x");
+    expect(target.chat_id).toBe("oc_x");                  // 目标 session 的 chat_id 回填
+    const t = store.transcript(target.id);
+    expect(t.at(-1)).toMatchObject({ role: "assistant", content: "提醒：开会", platform_message_id: "om_9" });
+  });
+
+  it("deliverTrusted：p2p 目标走 openId 出站并落对方 transcript", async () => {
+    const r = await handler.deliverTrusted({ deliverKey: "feishu:p2p:ou_b", text: "喝水", idempotencyKey: "heartbeat:item-2" });
+    expect(r).toMatchObject({ ok: true, message_id: "om_9" });
+    expect(deps.outbound.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ openId: "ou_b", text: "提醒：喝水", idempotencyKey: "heartbeat:item-2" })
+    );
+    const target = store.getOrCreate("feishu:p2p:ou_b");
+    expect(store.transcript(target.id).at(-1).content).toBe("提醒：喝水");
   });
 });

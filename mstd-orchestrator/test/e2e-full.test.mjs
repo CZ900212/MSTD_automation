@@ -15,6 +15,7 @@ import { createModelCaller } from "../server/models/caller.mjs";
 import { createMemoryFiles } from "../server/memory/files.mjs";
 import { createDreaming } from "../server/ticker/dreaming.mjs";
 import { createCronStore } from "../server/ticker/cron-jobs.mjs";
+import { createHeartbeatStore } from "../server/ticker/heartbeat-store.mjs";
 
 const RUN = String(process.env.MSTD_E2E ?? "") === "1" && String(process.env.MSTD_ENABLE_WRITE ?? "") === "1";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -74,7 +75,6 @@ describe.skipIf(!RUN)("H3 全链路 E2E 回归剧本", () => {
         ...process.env,
         MSTD_ENABLE_AGENT: "1", PORT: String(PORT), MSTD_DB_PATH: DB_PATH, MSTD_MEMORY_DIR: MEMORY_DIR,
         MSTD_TICKER_INTERVAL_MS: "15000", MSTD_HEARTBEAT_EVERY_TICKS: "1",
-        MSTD_HEARTBEAT_ACTIVE_START: "0", MSTD_HEARTBEAT_ACTIVE_END: "24",
         // 剧本会先后攒下 p2p/群/cron 最多三个闲置 Pi（闲置也占并发位，默认 10min 才回收，
         // 且 maxPi 上限钳到 3）——heartbeat 的下一个 Pi 会被饿死。E2E 调小闲置回收窗即可。
         MSTD_MAX_CONCURRENT_PI: "3", MSTD_PI_IDLE_MS: "40000",
@@ -164,24 +164,26 @@ describe.skipIf(!RUN)("H3 全链路 E2E 回归剧本", () => {
     const r5 = await waitBotReply(P2P_CHAT, t5 - 1000, 240_000);
     expect(r5.length, `cron 未投递。日志：${logs.join("").slice(-3000)}`).toBeGreaterThan(0);
 
-    // ---------- ⑥ HEARTBEAT 到期提醒 ----------
+    // ---------- ⑥ HEARTBEAT 到期提醒（C0.4 owner-bound 结构化队列,不再写 HEARTBEAT.md） ----------
     const t6 = Date.now();
-    appendFileSync(
-      join(MEMORY_DIR, "HEARTBEAT.md"),
-      `- [ ] ${new Date(t6 - 60_000).toISOString()} 提醒用户：H3 heartbeat 验证成功 -> feishu:p2p:${INITIATOR}\n`,
-      "utf8"
-    );
+    const hbStore = createHeartbeatStore(wdb);
+    const hbAdd = hbStore.addOwned({
+      ownerSessionKey: `feishu:p2p:${INITIATOR}`,
+      dueIso: new Date(t6 - 60_000).toISOString(),
+      text: "H3 heartbeat 验证成功",
+    });
+    expect(hbAdd.ok, JSON.stringify(hbAdd)).toBe(true);
     const r6 = await waitBotReply(P2P_CHAT, t6 - 1000, 300_000);
     expect(r6.length, `heartbeat 未提醒。日志：${logs.join("").slice(-3000)}`).toBeGreaterThan(0);
-    // 执行完应勾选为 [x]
+    // 结构化 row 应最终 delivered（受信直投 + 幂等键 heartbeat:<itemId>）
     const hbDeadline = Date.now() + 30_000;
-    let hbText = "";
+    let hbStatus = "";
     while (Date.now() < hbDeadline) {
-      hbText = readFileSync(join(MEMORY_DIR, "HEARTBEAT.md"), "utf8");
-      if (hbText.includes("- [x]")) break;
+      hbStatus = wdb.prepare("SELECT status FROM heartbeat_items WHERE id = ?").get(hbAdd.itemId).status;
+      if (hbStatus === "delivered") break;
       await sleep(3000);
     }
-    expect(hbText).toContain("- [x]");
+    expect(hbStatus).toBe("delivered");
 
     // ---------- ⑦ dreaming 影子报告（进程内，同库同记忆目录；shadow 不改层文件） ----------
     const files = createMemoryFiles({ rootDir: MEMORY_DIR });

@@ -23,6 +23,24 @@ export function createMemoryTool({ files, now = Date.now, log = console.error })
     return { ok: false, error: `未知层: ${layer}` };
   }
 
+  // C0.4 读授权：全局层（soul/org/journal）任意会话可读;scoped 层只许对应 logical session,
+  // cron/debug 会话（即使持合法内部 token）不得读任何 scoped memory。
+  function authorizeRead({ sessionKey }, layer, id) {
+    if (layer === "soul" || layer === "org" || layer === "journal") return { ok: true };
+    let parsed;
+    try { parsed = parseSessionKey(sessionKey); } catch { return { ok: false, error: `非法会话: ${sessionKey}` }; }
+    if (parsed.kind !== "group" && parsed.kind !== "p2p") return { ok: false, error: "cron/debug 会话不得读 scoped 记忆" };
+    if (layer === "group") {
+      if (parsed.kind !== "group" || parsed.chatId !== id) return { ok: false, error: "只能读本群记忆" };
+      return { ok: true };
+    }
+    if (layer === "user") {
+      if (parsed.kind !== "p2p" || parsed.openId !== id) return { ok: false, error: "只能在私聊读本人记忆" };
+      return { ok: true };
+    }
+    return { ok: false, error: `未知层: ${layer}` };
+  }
+
   function splitEntries(content) {
     return content ? content.split(SEP).filter((s) => s.trim()) : [];
   }
@@ -31,6 +49,9 @@ export function createMemoryTool({ files, now = Date.now, log = console.error })
     const { action, layer, id, entry, old_text: oldText } = params ?? {};
     try {
       if (action === "read") {
+        const auth = authorizeRead(ctx, layer, id);
+        if (!auth.ok) return auth;
+        if (layer === "journal") return { ok: true, content: files.readJournal() };   // journal 无 readLayer 路径
         const { content } = files.readLayer(layer, id);
         return { ok: true, content };
       }

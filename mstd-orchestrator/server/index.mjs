@@ -42,6 +42,8 @@ import { createTicker } from "./ticker/ticker.mjs";
 import { createCronStore } from "./ticker/cron-jobs.mjs";
 import { createCronRunner } from "./ticker/cron-runner.mjs";
 import { createHeartbeat } from "./ticker/heartbeat.mjs";
+import { createHeartbeatStore } from "./ticker/heartbeat-store.mjs";
+import { createDeliverGrants } from "./sessions/deliver-grants.mjs";
 import { createDreaming } from "./ticker/dreaming.mjs";
 import { createSessionExpiry } from "./ticker/session-expiry.mjs";
 import { createSessionTokenRegistry } from "./http/session-tokens.mjs";
@@ -180,6 +182,7 @@ if (config.enableAgent && config.botOpenId) {
       join(ROOT, "pi-ext", "propose-actions.ts"),
       join(ROOT, "pi-ext", "background-job.ts"),
       join(ROOT, "pi-ext", "lark-read.ts"),
+      join(ROOT, "pi-ext", "heartbeat.ts"),
     ],
     piCwd: ROOT,
     piEnv: {
@@ -189,6 +192,8 @@ if (config.enableAgent && config.botOpenId) {
     tokens: sessionTokens,
   });
   const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: modelLog.record });
+  // C0.4：reply.target 投递授权表（默认只许本会话;cron 执行窗口临时 grant）
+  const deliverGrants = createDeliverGrants();
   const turnHandler = createTurnHandler({
     triage,
     brain,
@@ -197,6 +202,7 @@ if (config.enableAgent && config.botOpenId) {
     outbound,
     store: agentStore,
     budget,
+    grants: deliverGrants,
     snapshotFn,
     compactor: createCompactor({ caller, store: agentStore }),
     journal: createJournal({ caller, files: memoryFiles }),
@@ -267,15 +273,23 @@ if (config.enableAgent && config.botOpenId) {
   // E2E 提速旋钮（默认即生产值）：tick 间隔 / 心跳频率与活跃时段
   const ticker = createTicker({ intervalMs: Number(process.env.MSTD_TICKER_INTERVAL_MS ?? 60_000) });
   const cronStore = createCronStore(db);
-  const cronRunner = createCronRunner({ brain, agentStore, cronStore, snapshotFn });
+  const cronRunner = createCronRunner({ brain, agentStore, cronStore, grants: deliverGrants, snapshotFn });
   ticker.register("cron", 1, () => cronRunner.runDue());
+  // C0.4：heartbeat 改 owner-bound 结构化队列——DB due picker 逐项受信直投,
+  // 遗留 HEARTBEAT.md 启动即整文件隔离,不再作为活跃数据源。
+  const heartbeatStore = createHeartbeatStore(db);
+  heartbeatStore.releaseStale();   // 进程崩溃遗留的超时 delivering claim 放回 pending
   const heartbeat = createHeartbeat({
-    rootDir: memoryDir, caller, brain, agentStore, snapshotFn,
-    activeStartHour: Number(process.env.MSTD_HEARTBEAT_ACTIVE_START ?? 9),
-    activeEndHour: Number(process.env.MSTD_HEARTBEAT_ACTIVE_END ?? 21),
+    store: heartbeatStore,
+    deliverReminder: async ({ deliverTo, text, idempotencyKey }) => {
+      const r = await turnHandler.deliverTrusted({ deliverKey: deliverTo, text, idempotencyKey });
+      if (!r.ok) throw new Error(r.error);      // 软失败也进退避重试,不误标 delivered
+      return r;
+    },
+    legacyPath: join(memoryDir, "HEARTBEAT.md"),
   });
-  ticker.register("heartbeat", Number(process.env.MSTD_HEARTBEAT_EVERY_TICKS ?? 5), () => heartbeat.tick()); // 默认 5 分钟一扫（activeHours 内）
-  internal.heartbeat = heartbeat;
+  ticker.register("heartbeat", Number(process.env.MSTD_HEARTBEAT_EVERY_TICKS ?? 5), () => heartbeat.tick()); // 默认 5 分钟一扫
+  internal.heartbeat = heartbeatStore;
   const dreaming = createDreaming({ db, files: memoryFiles, caller });
   let lastDreamDay = null;
   ticker.register("dreaming", 1, () => {
