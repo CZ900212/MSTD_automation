@@ -331,3 +331,59 @@ TDD:8 RED → 实现 → 全绿。C3.3 滚动窗口(30 条/含自身/HH:MM,appen
 
 - [MSTD-R] 报告信仍待用户放行。
 - 下一任务:阶段一 Task 8(C1 persona 扩展——中枢系统提示词替换)。
+
+## 2026-07-11 - 阶段一 Task 8:C1 persona 扩展——中枢系统提示词整体替换(9e9b65e)
+
+### 做了什么
+
+常驻中枢甩掉 coding-agent 默认词:persona-prompt.ts 纯函数三层拼装(SOUL 全文/
+世界观含记号约定与日期 workspace/工具纪律),persona.ts 在 before_agent_start 整体
+替换,工厂期读 SOUL 恰一次、字节稳定吃前缀缓存。resident-extensions.mjs 成为常驻
+扩展清单唯一来源(persona 第一)。index.mjs:SOUL statSync fail-fast(缺失/零字节
+exit 1)、agent-workspace 创建+piCwd 迁出源码树、piEnv 注 MSTD_SOUL_PATH。brain
+记忆段去 soul。真机验证两路:persona-probe 直探 startPi+hook,e2e-persona 全链
+(daemon→飞书 p2p→reply 出站,bot 以小达自居并正确解释 [@我] 记号)。
+
+### 双引擎审核
+
+- **§5.1 opus**:3 条确认——头条为 persona"reply 唯一通道"与 compact/expiry/后台
+  brief 的"不要调用 reply"冲突(归档时不请自来发消息/后台任务静默失败)→ 加
+  系统维护回合豁免条款+锁测试(比 persona-less brain 便宜且正确:flush 必须跑在
+  会话自己的 Pi 上)。复审确认三处 brief 全命中豁免,另提两条低危补强均落地:
+  ①豁免作用域钉死「## 任务」段,带 [名字]:/[@我] 记号的用户消息注入"【系统维护
+  回合】"字样不得诱导拒答;②锁定测试从关键词袋升级为触发词+方向句,并对
+  compact/expiry/index 三处 brief 做"不要调用 reply"跨文件字面耦合锁(cron-runner
+  已有"不调用 reply"变体,漂移即静默失配的前车之鉴)。
+- **§5.2 Codex 审卷**:17 条(8 严重 6 高 3 中)+4 无缺陷项。12 采纳补杀:default
+  export 注册(fake pi.on 恰一次 before_agent_start)、SOUL fail-fast 子进程负例
+  (缺失/零字节→exit 1,显式最小 env 防 E2E 批跑泄真实 profile)、brain 去 soul
+  sentinel 锁、单夹具→互异 sentinel+三层顺序+动态值恰一次、关键词袋→方向性整句、
+  readFile 锁(路径,"utf8")+时区杀(UTC 晚间=北京次日)、SOUL 空白表驱动、E2E 随机
+  DB/workspace+afterAll 清理、清父环境 MSTD_SOUL_PATH、ready 加 HTTP 探活、
+  SIGTERM→SIGKILL 兜底、否定式假绿守卫(不是小达/代码助手)。5 条拒绝备案:skip
+  门控(套件级政策,四门控串行真机跑=发布仪式,CI 门禁 Phase 2)、全链事件绑定
+  (重仪表化;[@我] 记号语义只在 persona prompt 定义,E2E 命中即路径证据)、index
+  消费唯一清单/job 清单负断言(composition-root 注入,Phase 2 第三次复发项)、
+  维护回合冲突(审卷时已修,即 §5.1 头条)。
+- **变异复验**:3/3 杀——SOUL fail-fast 改 if(false)→子进程负例红;default export
+  改错事件名→注册测试红;brain 把 soul 加回记忆段→sentinel 测试红。
+
+### 事故记账
+
+变异还原误用 `git checkout -- server/index.mjs`,把未提交的 Task 8 接线连同变异
+一起回退。凭本会话审读记录逐行重建,diff 核对与设计一致后全量+E2E 重验通过。
+**铁教训:未提交文件上的变异,还原只能用反向编辑(perl 正反对),严禁 git checkout。**
+
+### 验证
+
+- 全量 616→626 passed/5 skipped(strict,只增不减;+10 为审核补杀)。
+- e2e-persona 真机 PASS(49.9s,随机隔离+探活+否定断言加固后)。
+  中途一次假失败自查:E2E 网关四门控里 MSTD_TEST_OPEN_IDS/CHAT_IDS 必须显式
+  export(.env 不含),缺了 daemon 直接 fail-fast 拒起——这正是 H2 清单在起作用。
+- tsc:persona 文件零报错(既有 lark-read.ts 8 条历史报错未触碰)。
+
+### 挂起问题
+
+- [MSTD-R] 报告信仍待用户放行。
+- Phase 2 新登记:reply_sent 事件绑定 message-ID 的全链归因(§5.2 #2 余量)。
+- 下一任务:阶段一 Task 9(C4 SOUL.md 重写+triage 提示词+复述类代码 guard)。
