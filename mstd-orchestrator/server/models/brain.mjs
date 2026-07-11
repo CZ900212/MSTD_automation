@@ -1,12 +1,27 @@
 // 中枢：每活跃会话一个常驻 Pi(5.5) 进程；空闲回收；steer 注入；spawn 失败沿 reason 链降级 provider。
 
+import { setMaxListeners } from "node:events";
+
 export const REASON_PROVIDERS = [
   { key: "gpt-5.5", provider: "cz-gpt", model: "gpt-5.5", thinking: "medium" },
   { key: "opus-4.8", provider: "cz-claude", model: "claude-opus-4-8", thinking: "medium" },
   { key: "v4-pro", provider: "deepseek", model: "deepseek-reasoner" },
 ];
 
-const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export const defaultSleep = (ms, signal) => new Promise((resolve) => {
+  let timer;
+  const finish = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    signal?.removeEventListener("abort", finish);
+    resolve();
+  };
+  if (signal?.aborted) {
+    resolve();
+    return;
+  }
+  timer = setTimeout(finish, ms);
+  signal?.addEventListener("abort", finish, { once: true });
+});
 
 export function createBrain({
   startPi,
@@ -33,6 +48,12 @@ export function createBrain({
   const turnTails = new Map(); // sessionKey -> guarded turn promise
   let closed = false;
   let shutdownPromise = null;
+  const closedController = new AbortController();
+  // 等 semaphore 名额的会话数没有上限，同一 signal 上会挂任意多个并发 sleep 监听器。
+  // Node 22 的 AbortSignal 默认无监听器上限；此行是对旧运行时（默认上限 10）的跨版本防御。
+  setMaxListeners(0, closedController.signal);
+  let signalClosed;
+  const closedPromise = new Promise((resolve) => { signalClosed = resolve; });
   const closedError = () => new Error("brain 已关闭");
   const assertOpen = () => { if (closed) throw closedError(); };
   // 可观测上报 fail-safe：观察者出错绝不反噬回合执行
@@ -92,6 +113,15 @@ export function createBrain({
     }
   }
 
+  async function sleepWhileOpen(ms) {
+    assertOpen();
+    await Promise.race([
+      sleepFn(ms, closedController.signal),
+      closedPromise,
+    ]);
+    assertOpen();
+  }
+
   async function spawnWithFallback(sessionKey, startIdx = 0, lease = null) {
     const errors = [];
     for (let i = startIdx; i < REASON_PROVIDERS.length; i++) {
@@ -122,8 +152,7 @@ export function createBrain({
           return entry;
         } catch (e) {
           errors.push(e);
-          await sleepFn(retryDelayMs);
-          assertOpen();
+          await sleepWhileOpen(retryDelayMs);
         }
       }
       if (i < REASON_PROVIDERS.length - 1) {
@@ -150,8 +179,7 @@ export function createBrain({
         if (semaphore) {
           // 等到有空位再拉新 Pi（现有信号量上限 maxConcurrentPi）
           while (!semaphore.tryAcquire()) {
-            await sleepFn(500);
-            assertOpen();
+            await sleepWhileOpen(500);
           }
           lease = createLease();
         }
@@ -275,13 +303,15 @@ export function createBrain({
 
   function shutdown() {
     if (shutdownPromise) return shutdownPromise;
-    closed = true;
     let resolveShutdown;
     let rejectShutdown;
     shutdownPromise = new Promise((resolve, reject) => {
       resolveShutdown = resolve;
       rejectShutdown = reject;
     });
+    closed = true;
+    closedController.abort();
+    signalClosed();
     const shutdownResources = new Set(resources);
     for (const [key, entry] of pool) {
       if (entry.idleTimer) clearTimeoutFn(entry.idleTimer);
@@ -291,6 +321,7 @@ export function createBrain({
       // 不等待 turnTails：close 是主动取消边界，不响应 close 的 runJob 由底层 timeout 收口。
       // 给已通过 assertOpen、正在同步 startPi 的调用一个微任务完成资源登记。
       await Promise.resolve();
+      const shutdownSpawning = [...spawning.values()];
       for (const entry of resources) shutdownResources.add(entry);
       const leaseErrors = [];
       for (const lease of [...provisionalLeases]) {
@@ -300,8 +331,12 @@ export function createBrain({
           leaseErrors.push(e);
         }
       }
-      const results = await Promise.allSettled([...shutdownResources].map((entry) => closeEntry(entry)));
-      const errors = leaseErrors.concat(results
+      const closeResultsPromise = Promise.allSettled(
+        [...shutdownResources].map((entry) => closeEntry(entry)),
+      );
+      await Promise.allSettled(shutdownSpawning);
+      const closeResults = await closeResultsPromise;
+      const errors = leaseErrors.concat(closeResults
         .filter((result) => result.status === "rejected")
         .map((result) => result.reason));
       if (errors.length > 0) {
