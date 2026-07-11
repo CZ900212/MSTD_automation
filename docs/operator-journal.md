@@ -387,3 +387,48 @@ exit 1)、agent-workspace 创建+piCwd 迁出源码树、piEnv 注 MSTD_SOUL_PAT
 - [MSTD-R] 报告信仍待用户放行。
 - Phase 2 新登记:reply_sent 事件绑定 message-ID 的全链归因(§5.2 #2 余量)。
 - 下一任务:阶段一 Task 9(C4 SOUL.md 重写+triage 提示词+复述类代码 guard)。
+
+## 2026-07-11 - 阶段一 Task 9:C4 SOUL 干练同事风+分诊记号化+复述 guard(6cbc555)
+
+### 做了什么
+
+TDD:9 RED → 实现 → 全绿。①RECAP_INTENT 导出+enforce(verdict,items,mode)——
+非 ambient 下 items 命中复述/总结类,quick_reply(答不全)与 no_reply(静默)都强制
+escalate,ambient 豁免;②SYSTEM_TEMPLATE 全文替换(记号说明/复述必升级/反客服腔/
+口吻约束);③SOUL rev3 在 agent-memory 独立 git 仓两段式提交(基线→rev3→框定修),
+主仓 soul-content.test.mjs 防客服风回退。
+
+### 双引擎审核
+
+- **§5.1 opus**:总体"可合入无高危"。1 中采纳——WRITE_INTENT×RECAP 碰撞("提醒我
+  明天写总结")brief 误标复述误导中枢 → 写意图命中改中性 brief+测试锁;1 低采纳——
+  ✗ 客服腔反例进弱模型有模仿风险 → SOUL 示例段标题显式框定"错误示范"。3 低备案:
+  busy 补充消息升级(spec 明选绝不静默,turnTails 串行无并发危害)、裸词误伤宽
+  (保守方向,真机成本痛再收)、triage 空 SOUL fail-open(分诊 fail-closed 会放大
+  快照缺失为全线拒诊,Phase 2 composition-root 统一告警)。关键确认:Task 8/9 接缝
+  完好——inject.mjs 仍产 snapshot.soul,triage/reply 各注入一次,brain 走 persona
+  无双重注入;recap escalate 恰好落进群窗口 gating,复述类拿到所需上下文。
+  复审:五项处置全过。
+- **§5.2 Codex 审卷**:10 高 3 中(全是测试强度缺口,实现被其只读探针逐项确认
+  "无实现缺陷")。11 采纳补杀 33 测试:SYSTEM_TEMPLATE 关键词袋→方向句+soul 前缀
+  恰一次、recap 关键词重叠假绿→正则直测互不重叠正例、addressed 正例全带 [@我]→
+  无记号 p2p 正例(杀 guard 偷看 marker)、动作集合防扩大→escalate/steer sentinel
+  原样保留、parse→enforce 顺序、多 item 精确 brief(toEqual+slice)、ambient 豁免
+  盖 quick_reply+observe_only 升级、text 不扫描、200/201 边界、WRITE_INTENT 16
+  分支逐词、时间窗 12/13/跨行。2 部分拒绝:提示词优先级重排(ambient 沉默倾向与
+  复述必升级不矛盾,模型主动升级本就允许,保留锁已加)、"在吗"真机风格场景入自动化
+  (LLM 风格断言脆,归真机人眼剧本)。
+- **变异复验**:3/3 杀(时间分支删除/动作集扩大/mode 条件收窄)。
+
+### 验证
+
+- 全量 626→668 passed/5 skipped(strict 只增不减;+42=Task 9 主体 9+§5.1 1+§5.2 33
+  减重构归并)。
+- e2e-persona 真机 PASS(63s,新 SOUL 生效:小达自居+懂记号+客服腔零出现;
+  MSTD_MEMORY_DIR 钉死读真实 agent-memory)。
+- agent-memory 独立仓:030ba3f init → 42567bb rev3 → 2785f6d 框定修。
+
+### 挂起问题
+
+- [MSTD-R] 报告信仍待用户放行。
+- 下一任务:阶段一 Task 10(C4/C6 reply 出口提示词+deliverKind 投递感知)。
