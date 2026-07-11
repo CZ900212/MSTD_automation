@@ -1,6 +1,6 @@
 # 常驻助手提示词工程与人格运行时(设计,rev2)
 
-日期:2026-07-10 · 分支:feat/resident-agent · 状态:rev2(按用户评审修订:安全承诺对齐、双名检测、双 actor 硬化、契约补严),待转实施计划
+日期:2026-07-10 · 分支:feat/resident-agent · 状态:**已实施**(2026-07-12,Task 1-13 全部落地;实施偏差记录见 plans/2026-07-10-agent-persona-runtime.md 与 docs/operator-journal.md——T10/T11 因假声明 BLOCKER 合并交付、persona 增系统维护回合豁免、md 表格分隔行须含连字符等)
 
 ## 1. 背景与病灶
 
