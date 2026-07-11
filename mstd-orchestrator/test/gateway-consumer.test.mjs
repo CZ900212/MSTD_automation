@@ -6,6 +6,7 @@ import { wireGateway } from "../server/gateway/wire.mjs";
 import { createActorPool } from "../server/sessions/actor.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
 import { createSessionExpiry } from "../server/ticker/session-expiry.mjs";
+import { loadServerConfig } from "../server/config.mjs";
 
 function fakeChild() {
   const c = new EventEmitter();
@@ -216,6 +217,47 @@ describe("wireGateway 管道装配", () => {
       expect(db.prepare("SELECT COUNT(*) AS count FROM agent_sessions").get().count).toBe(0);
       expect(handleTurn).not.toHaveBeenCalled();
       expect(log).not.toHaveBeenCalled();
+    } finally {
+      wired.consumer.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  // ---- Task 5 C2: 生产装配链（env aliases → loadServerConfig → wireGateway → 扁平事件）----
+  it("C2 装配链：旧名 @ 经 config/wire 转发在群里 addressed 且 content 规范化；@小达人 只 observe", async () => {
+    vi.useFakeTimers();
+    const db = openDb();
+    migrate(db);
+    const config = loadServerConfig({
+      MSTD_BOT_OPEN_ID: "ou_bot", MSTD_BOT_NAME: "小达", MSTD_BOT_ALIASES: "旧名字",
+      MSTD_SESSION_SECRET: "test-secret",
+    });
+    expect(config.botNames).toEqual(["旧名字", "小达"]);
+    const children = [];
+    const spawnFn = vi.fn(() => { const c = fakeChild(); children.push(c); return c; });
+    const turns = [];
+    const wired = wireGateway({
+      db, config: { ...config, larkCliPath: "/fake/lark-cli" }, spawnFn,
+      handleTurn: (t) => { turns.push(t); },
+      actors: { enqueue: vi.fn((_, cb) => cb()) },
+      log: vi.fn(),
+    });
+    try {
+      const flat = (eventId, content) => JSON.stringify({
+        type: "im.message.receive_v1", event_id: eventId, chat_id: "oc_1", chat_type: "group",
+        message_type: "text", sender_id: "ou_a", content, create_time: "1000",
+      }) + "\n";
+      children[0].stdout.emit("data", Buffer.from(flat("cfg1", "@旧名字 hi")));
+      children[0].stdout.emit("data", Buffer.from(flat("cfg2", "@小达人 是谁")));
+      await vi.advanceTimersByTimeAsync(4000);
+      // 旧名 addressed 且内容已规范化——config.botNames→wire→inbox 任何一环断线即红
+      expect(turns).toHaveLength(1);
+      expect(turns[0].mode).toBe("addressed");
+      expect(turns[0].items[0].content).toBe("[@我] hi");
+      // @小达人 不 addressed：admit 只信 inbox 的同源 mentionsBot——admit 回加 substring 判定即红
+      const v2 = JSON.parse(db.prepare("SELECT verdict FROM inbox_events WHERE event_id = 'cfg2'").get().verdict);
+      expect(v2.ok).toBe(false);
+      expect(v2.reason).toBe("bot_not_mentioned_observe");
     } finally {
       wired.consumer.stop();
       vi.useRealTimers();

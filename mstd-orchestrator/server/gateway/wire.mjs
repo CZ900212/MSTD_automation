@@ -9,7 +9,7 @@ import { buildSessionKey } from "../sessions/session-key.mjs";
 // handleTurn 占位到 Phase B1 换成真回合执行器（接缝）
 export function wireGateway({ db, config, spawnFn, handleTurn, actors, log = console.error }) {
   if (typeof actors?.enqueue !== "function") throw new Error("wireGateway: actors 必填");
-  const inbox = createInbox(db, { botOpenId: config.botOpenId, botName: config.botName });
+  const inbox = createInbox(db, { botOpenId: config.botOpenId, botName: config.botName, botNames: config.botNames });
   const admitter = createAdmit(db, { botOpenId: config.botOpenId });
   const debouncer = createDebouncer({});
   const store = createSessionStore(db);

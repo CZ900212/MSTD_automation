@@ -560,6 +560,14 @@ Expected: FAIL(模块不存在;当前 includes 会误判 `@小达人`,且会全�
 
 已知局限写进 README:扁平事件缺 metadata 时,与 bot **完全同名**的真人 @ 无法区分;通过唯一 bot 名与边界降低风险,不能声称彻底消除。
 
+**实施偏差(2026-07-11,§5.1 对抗审核仲裁)**:①边界正则比本计划原文更严——纯文本名右边界为
+`(?![\p{L}\p{N}_])`(补下划线,`@小达_人` 是别的用户名),左边界 `(?<![A-Za-z0-9_])` 只排 ASCII
+词字符(封 `foo@小达.com` 邮箱、`abc@小达` 英文粘连;中文粘连"问@小达"是飞书选人无空格的真实
+形态,必须放行);结构化 key 有 metadata 背书不加左边界;②normalizer 内 bot 判定阶梯与 inbox 的
+structuredBot 完全同源(含裸字符串 `id` 兜底),防"检测说点名、文本没替换"分脑;③md5 去重指纹
+改用 `rawContent`(不同原文规范化塌缩成同一 content 不得互判重复);④官方信封路径的纯文本
+@名 同样视为点名(两路径同一 matcher 的自然结果,判为 P1 双名语义的产品意图,README 已记局限)。
+
 - [ ] **Step 4: 跑测试确认通过 + 全量回归**
 
 Run: `npx vitest run test/normalize.test.mjs test/inbox.test.mjs && npx vitest run`

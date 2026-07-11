@@ -1,6 +1,7 @@
 import { resolveFeishuConfig } from "./auth/feishu-oauth.mjs";
 import { sessionSecret, sessionTtlSeconds } from "./http/session.mjs";
 import { maxConcurrentPi } from "./jobs/semaphore.mjs";
+import { buildBotNames } from "./gateway/normalize.mjs";
 
 export function loadServerConfig(env = process.env) {
   return {
@@ -22,6 +23,7 @@ export function loadServerConfig(env = process.env) {
     enableAgent: String(env.MSTD_ENABLE_AGENT ?? "") === "1",
     botOpenId: String(env.MSTD_BOT_OPEN_ID ?? "").trim(),
     botName: String(env.MSTD_BOT_NAME ?? "").trim(),
+    botNames: buildBotNames(env),                 // 主名+MSTD_BOT_ALIASES，去重最长优先（C2/改名过渡期双名）
     adminOpenIds: new Set(String(env.MSTD_ADMIN_OPEN_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean)),
     dailyTokenBudget: Number(env.MSTD_DAILY_TOKEN_BUDGET ?? 2_000_000),
     sessionTokenBudget: Number(env.MSTD_SESSION_TOKEN_BUDGET ?? 300_000),
