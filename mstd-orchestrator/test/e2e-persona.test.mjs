@@ -49,6 +49,8 @@ describe.skipIf(!E2E)("C1 E2E · persona 真机生效（人格/记号契约）",
       MSTD_AGENT_WORKSPACE: WORKSPACE,
     };
     delete env.MSTD_SOUL_PATH;
+    // §5.2 Task 9 审卷:钉死读仓内 agent-memory 的真实 SOUL,防父环境指向别处
+    delete env.MSTD_MEMORY_DIR;
     daemon = spawn("node", [join(ROOT, "server", "index.mjs")], {
       cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"],
     });
@@ -120,5 +122,6 @@ describe.skipIf(!E2E)("C1 E2E · persona 真机生效（人格/记号契约）",
     expect(text).not.toMatch(/不是小达/);                       // §5.2:排除否定式假绿
     expect(text).toMatch(/对我|@.{0,4}我|叫我|喊我/);           // 懂 [@我] = 对自己说话
     expect(text).not.toMatch(/编码助手|代码助手|编程助手|coding/i); // coding 人设零残留(§5.2 扩负向)
+    expect(text).not.toMatch(/请问有什么可以帮您|好的呢/);      // Task 9 干练同事风:客服腔零出现
   }, 240_000);
 });
