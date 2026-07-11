@@ -199,3 +199,51 @@ write-phase/card-callback/card-execute 五文件 RED(42 failed 起步),TDD 实�
   在 Claude Code 设置加对应 Bash 允许规则,或会话中明示确认后我重试。
   在此之前报告以本日志与会话答复代为送达。
 - 下一任务:阶段一 Task 5(C2 入站 @ 单趟规范化 + 同源 mentionsBot + migration 013)。
+
+## 2026-07-11 - 阶段一 Task 5:C2 入站 @ 单趟规范化(27d4fff)
+
+TDD:normalize/inbox RED(模块不存在+includes 误判)→ 实现 → 全绿。核心:
+gateway/normalize.mjs 把结构化 @_user_N 与纯文本 bot 名编进同一 alternation 单趟
+replace,检测与替换同源;raw_content 落库(migration 013);md5 指纹用原文;
+无边界 substring 判定退役。
+
+### 双引擎审核
+
+- **§5.1 opus 对抗审核**:6 缺陷。采纳 4——①(高中)裸 string id 造成检测/替换
+  分脑(normalizer 阶梯与 inbox structuredBot 同源化);②(中低)边界洞(右边界补 _、
+  左边界只排 ASCII——中场自查把初版 \p{L} 左边界改成 ASCII-only,否则"问@小达"
+  中文粘连真 mention 会被误拦,结构化 key 免左边界;复审确认这是关键正确决策);
+  ③(低)dup-key Map 覆盖(保首个);④(低)md5 基于规范化文本(改 rawContent)。
+  部分驳回 1(官方路径纯文本 @名 扩大 addressed——判 P1 双名语义产品意图,README
+  扩展局限备注+冻结测试);驳回 1(缺 name 保留 key,可审计)。复审全确认,两条
+  低危残留备案(全角字母粘连、畸形 dup-key bot 被丢时 inbox 级技术性偏离,均 fail-safe)。
+- **§5.2 Codex 审卷**:16 条(6 高 6 中 3 低)全采纳,补 24 测试——生产装配链集成
+  (env→loadServerConfig→wireGateway→扁平事件 addressed+content 规范化;这是 4B 轮
+  Codex 同类发现的复发,composition 断线变异已可击杀)、admit 假覆盖(回加 substring
+  即红)、混合来源同 alternation、单趟不级联(他人恰名"小达"不得二次替换)、013 升级
+  路径(012 时代旧表直接执行 013)、异常回退四种 metadata 形状、恰一次调用计数、
+  md5 精确指纹+等长负例、边界字符类(左数字/下划线、右数字、合法标点后继)、
+  escapeRe 全元字符、(?!\d) 与最长优先隔离杀手、buildBotNames 三序冲突数据。
+- **变异复验**:wire 丢 botNames 转发 → 装配链测试红,击杀。
+
+### 验证
+
+- orchestrator 571 passed/4 gated skip(strict;545→571),UI 51 不受影响。
+- E2E(改动触及入站链路,按 §6.2 真机重验):p2p PASS;group 首跑在 ambient 段失败
+  (triage 判 no_reply 未接话,同一运行内 respond 链 opus-4.6 出现 HTTP 503 降级
+  ——@必答段 mode=addressed 且 content 已规范化,Task 5 直接改动面工作正常),
+  判网关抖动期模型判断波动;重跑 PASS(四段剧本全过)。若后续 ambient 接话率
+  持续走低,再评估 [@我] 记法先于 triage 提示词(Task 9)落库的行为漂移假设。
+- 教训一条:全量回归必须在 mstd-orchestrator 目录下跑——仓库根 npx vitest run 会
+  把 mstd-ui/bid-browse 一起扫出 50 个假失败。
+
+### 评分卡
+
+真机人眼剧本未跑,不打分。指代理解维度新增代码棘轮:mention 同源规范化 50+ 专项
+用例(级联替换事故矩阵全冻结)。
+
+### 挂起问题
+
+- [MSTD-R] 报告信仍待用户放行(权限分类器拦外发邮件;已给出用户自行执行的
+  `!` 命令与允许规则两条路径)。
+- 下一任务:阶段一 Task 6(C3.1/3.2 store.recent + replaySet + 统一历史行语义)。
