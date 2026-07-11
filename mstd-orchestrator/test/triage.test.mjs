@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createTriage, RECAP_INTENT } from "../server/models/triage.mjs";
+import { createTriage, RECAP_INTENT, ADVICE_INTENT } from "../server/models/triage.mjs";
 
 const mkCaller = (text) => ({ call: vi.fn(async () => ({ text, model: "v4-flash", usage: null })) });
 const store = { recent: () => [] };
@@ -212,5 +212,42 @@ describe("C4 RECAP_INTENT 正则契约(§5.2 审卷补杀)", () => {
 
   it("普通消息不命中", () => {
     expect(RECAP_INTENT.test("今天天气不错,下午开会别迟到")).toBe(false);
+  });
+});
+
+// 判断+解释类(ADVICE_INTENT)强制切慢机:quick_reply 结构上只能发一条,
+// SOUL"观点/理由分两条发"的规矩只有中枢(reply 可多次调用)能执行
+describe("判断+解释类强制切慢机(ADVICE_INTENT)", () => {
+  const mk = (text) => ({ call: vi.fn(async () => ({ text })) });
+  it.each(["怎么选", "选哪", "哪个好", "哪种合适", "你怎么看", "怎么看待", "你觉得", "倾向", "建议", "优劣", "利弊", "对比", "该不该", "要不要", "值不值"])(
+    "ADVICE_INTENT 分支独立触发:%s", async (w) => {
+      const adviceItems = [{ senderName: "李四", content: `pino 和 winston ${w}` }];
+      const v = await createTriage({ caller: mk('{"action":"quick_reply","text":"用pino"}'), store })
+        .triage({ session, items: adviceItems, mode: "addressed" });
+      expect(v.action).toBe("escalate");
+      expect(v.brief).toContain("判断/建议");
+    }
+  );
+
+  it("只拦 quick_reply:no_reply 原样保留(旁听不强插);ambient 的 quick_reply 同样改道", async () => {
+    const adviceItems = [{ senderName: "李四", content: "咱们该用哪个好?" }];
+    const v1 = await createTriage({ caller: mk('{"action":"no_reply"}'), store })
+      .triage({ session, items: adviceItems, mode: "ambient" });
+    expect(v1.action).toBe("no_reply");
+    const v2 = await createTriage({ caller: mk('{"action":"quick_reply","text":"pino"}'), store })
+      .triage({ session, items: adviceItems, mode: "ambient" });
+    expect(v2.action).toBe("escalate");
+  });
+
+  it("模型自主 escalate 带建议词:sentinel 原样保留,不被改写", async () => {
+    const v = await createTriage({ caller: mk('{"action":"escalate","brief":"选型问题"}'), store })
+      .triage({ session, items: [{ senderName: "李四", content: "哪个好" }], mode: "addressed" });
+    expect(v.brief).toBe("选型问题");
+  });
+
+  it("普通消息不误伤", () => {
+    expect(ADVICE_INTENT.test("好的,收到")).toBe(false);
+    expect(ADVICE_INTENT.test("会议改到下午三点")).toBe(false);
+    expect(ADVICE_INTENT.test("帮我把文档发给张三")).toBe(false);
   });
 });

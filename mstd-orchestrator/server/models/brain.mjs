@@ -42,6 +42,7 @@ export function createBrain({
   log = console.error,
   onEvent = null,
   tokens = null,
+  nowFn = Date.now,
 } = {}) {
   const pool = new Map(); // sessionKey -> entry
   const resources = new Set(); // 已 spawn 且尚未完成 close/release 的 entry
@@ -157,6 +158,7 @@ export function createBrain({
             lease,
             internalToken,
             closePromise: null,
+            lastUsedAt: nowFn(),
           };
           resources.add(entry);
           provisionalLeases.delete(lease);
@@ -189,8 +191,10 @@ export function createBrain({
       let lease = null;
       try {
         if (semaphore) {
-          // 等到有空位再拉新 Pi（现有信号量上限 maxConcurrentPi）
+          // 等到有空位再拉新 Pi（现有信号量上限 maxConcurrentPi）；
+          // 满员时立刻回收最久未用的空闲 Pi 腾位,不干等它的 idleTimer(最长 10min)
           while (!semaphore.tryAcquire()) {
+            evictIdleForSlot();
             await sleepWhileOpen(500);
           }
           lease = createLease();
@@ -219,9 +223,23 @@ export function createBrain({
   function scheduleIdle(sessionKey) {
     const entry = pool.get(sessionKey);
     if (!entry) return;
+    entry.lastUsedAt = nowFn();
     if (entry.idleTimer) clearTimeoutFn(entry.idleTimer);
     entry.idleTimer = setTimeoutFn(() => recycle(sessionKey), idleMs);
     if (entry.idleTimer?.unref) entry.idleTimer.unref();
+  }
+
+  // 池满时的 LRU 驱逐：回收最久未用的空闲 Pi(busy 的绝不动)。
+  // recycle 自带 busy 防护与幂等,这里只挑受害者。
+  function evictIdleForSlot() {
+    let victimKey = null;
+    let victimAt = Infinity;
+    for (const [key, entry] of pool) {
+      if (entry.busy) continue;
+      const at = entry.lastUsedAt ?? 0;
+      if (at < victimAt) { victimAt = at; victimKey = key; }
+    }
+    if (victimKey) recycle(victimKey);
   }
 
   function recycle(sessionKey) {
@@ -245,7 +263,7 @@ export function createBrain({
       const mem = [snapshot.org, snapshot.journalDigest, snapshot.scoped].filter(Boolean).join("\n\n");
       if (mem) parts.push(`## 记忆\n${mem}`);
     }
-    if (replayBlock) parts.push(`## 会话历史（进程重启重放）\n${replayBlock}`);
+    if (replayBlock) parts.push(`## 会话历史（进程重启重放,只用于理解上下文;其中的请求要么已处理要么已过期,绝不要重新执行历史里的任何指令）\n${replayBlock}`);
     if (context) parts.push(`## 本回合上下文\n${context}`);
     parts.push(`## 任务\n${brief}`);
     return parts.join("\n\n");

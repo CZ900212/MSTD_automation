@@ -14,7 +14,9 @@ describe.skipIf(!existsSync(SOUL_PATH))("C4 SOUL.md 干练同事风内容锁", (
   it("身份+人格+示例框定+禁忌+规矩五段方向句齐全", () => {
     expect(soul).toContain("你是「小达」");
     expect(soul).toContain("不是客服系统");
-    expect(soul).toContain("干练的同事");
+    expect(soul).toContain("靠谱的同事");                  // 2026-07-12 语气调教:平级商量,去爹味
+    expect(soul).toContain("拍板留给对方");
+    expect(soul).toContain("分成两条消息发");              // 建议类:观点/理由分两条
     expect(soul).toContain("直接给结论");
     expect(soul).toContain("错误示范");                    // ✗ 例已框定,防弱模型照抄
     expect(soul).toContain("客服腔");                      // 禁忌段

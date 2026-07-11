@@ -3,9 +3,10 @@ import { createSemaphore, maxConcurrentPi } from "../server/jobs/semaphore.mjs";
 
 describe("maxConcurrentPi", () => {
   it("defaults to 2", () => expect(maxConcurrentPi({})).toBe(2));
-  it("clamps to [1,3]", () => {
+  it("clamps to [1,32]（生产 20 并发要求,上限防手滑）", () => {
     expect(maxConcurrentPi({ MSTD_MAX_CONCURRENT_PI: "3" })).toBe(3);
-    expect(maxConcurrentPi({ MSTD_MAX_CONCURRENT_PI: "9" })).toBe(3);
+    expect(maxConcurrentPi({ MSTD_MAX_CONCURRENT_PI: "20" })).toBe(20);
+    expect(maxConcurrentPi({ MSTD_MAX_CONCURRENT_PI: "99" })).toBe(32);
     expect(maxConcurrentPi({ MSTD_MAX_CONCURRENT_PI: "0" })).toBe(1);
     expect(maxConcurrentPi({ MSTD_MAX_CONCURRENT_PI: "x" })).toBe(2);
   });

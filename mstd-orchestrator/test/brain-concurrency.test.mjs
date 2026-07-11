@@ -427,3 +427,69 @@ describe("brain 并发与 spawn 合并", () => {
   });
 
 });
+
+// 20 并发目标配套:池满时 LRU 驱逐空闲 Pi 腾位,绝不动 busy 的
+describe("池满 LRU 驱逐(evictIdleForSlot)", () => {
+  const mkBrain = (semaphore, clients) => {
+    let i = 0;
+    const startPi = vi.fn(() => clients[i++] ?? mockClient());
+    return {
+      startPi,
+      brain: createBrain({
+        startPi,
+        store,
+        semaphore,
+        // 必须让出宏任务:纯微任务 sleep 会让等位 while 循环饿死事件循环(测试 OOM)
+        sleepFn: () => new Promise((r) => setImmediate(r)),
+        setTimeoutFn: () => 0,
+        clearTimeoutFn: () => {},
+      }),
+    };
+  };
+
+  it("池满且有空闲 Pi:新会话立刻驱逐最久未用者,不等 idleTimer", async () => {
+    const { createSemaphore } = await import("../server/jobs/semaphore.mjs");
+    const semaphore = createSemaphore(1);
+    const cA = mockClient();
+    const cB = mockClient();
+    const { brain, startPi } = mkBrain(semaphore, [cA, cB]);
+    try {
+      await brain.turn({ session, sessionKey: "sess-A", brief: "回合A" }); // A 完成后空闲,占着唯一 slot
+      expect(startPi).toHaveBeenCalledTimes(1);
+      const done = await brain.turn({ session, sessionKey: "sess-B", brief: "回合B" });
+      expect(done.finalText).toBe("done");
+      expect(cA.close).toHaveBeenCalled();          // A 被驱逐回收
+      expect(startPi).toHaveBeenCalledTimes(2);     // B 拿到腾出的 slot
+    } finally {
+      await brain.shutdown();
+    }
+  });
+
+  it("busy 的 Pi 绝不被驱逐:等它回合结束才腾位", async () => {
+    const { createSemaphore } = await import("../server/jobs/semaphore.mjs");
+    const semaphore = createSemaphore(1);
+    const gate = deferred();
+    const cA = mockClient();
+    cA.runJob = vi.fn(async () => { await gate.promise; return { finalText: "A-done" }; });
+    const cB = mockClient();
+    const { brain, startPi } = mkBrain(semaphore, [cA, cB]);
+    let pA; let pB;
+    try {
+      pA = brain.turn({ session, sessionKey: "sess-A", brief: "长回合A" });
+      await vi.waitFor(() => expect(cA.runJob).toHaveBeenCalledTimes(1));
+      pB = brain.turn({ session, sessionKey: "sess-B", brief: "回合B" });
+      await nextImmediate();
+      await nextImmediate();
+      expect(cA.close).not.toHaveBeenCalled();      // A 正忙,不许动
+      expect(startPi).toHaveBeenCalledTimes(1);     // B 还在等位
+      gate.resolve();
+      await pA;
+      expect((await pB).finalText).toBe("done");    // A 空闲后被驱逐,B 上位
+      expect(cA.close).toHaveBeenCalled();
+    } finally {
+      gate.resolve();
+      await Promise.allSettled([pA, pB].filter(Boolean));
+      await brain.shutdown();
+    }
+  });
+});
