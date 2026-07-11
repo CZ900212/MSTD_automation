@@ -82,6 +82,8 @@ cd ../mstd-ui && npx vitest run     # UI 测试
 - 观察期：群策略 `observe_only` 判定照跑只落 `observe_log` 不出站，周一 09:00 DM 管理员信噪报告。
 - 模型链路可观测：降级/重试/全链耗尽/预算命中/出站重试落 `model_log` 表（caller/brain/outbound 的 onEvent + budget onExceed，落库 fail-safe 不反噬主链路）；调试台看板「模型链路事件」或 `GET /api/admin/model-log?kind=` 查询。
 - lark-cli 真机硬约束（单事件/stdin 保活/扁平 NDJSON/mentions 缺失靠 botName 文本匹配）：见 spec §Phase A。
+- SQLite 方言例外（Postgres 迁移时需替换）：FTS5 全文检索；`store.recent` 同 ts 用 rowid 定序
+  （uuid 主键排序随机，Postgres 换自增主键）。
 - 入站 @ 识别已知局限（C2）：扁平事件缺 mentions metadata 时，纯文本 @ 只能按 bot 名（主名+别名）
   做**有边界**匹配（`server/gateway/normalize.mjs`，左右双边界：前后是字母/数字/下划线都不算）——
   与 bot 完全同名的真人被 @ 时无法区分，会被当成点名机器人。该纯文本匹配对官方信封路径同样生效

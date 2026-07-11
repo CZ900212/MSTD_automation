@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseSessionKey } from "../sessions/session-key.mjs";
+import { formatHistoryLine } from "../sessions/history-format.mjs";
 import { shouldNudge, NUDGE_NOTE } from "../memory/compact.mjs";
 
 // 回合执行器：triage 四选一 → quick_reply 直出 / no_reply 落 observed / steer 注入 / escalate 走 brain。
@@ -151,9 +152,10 @@ export function createTurnHandler({
       return { ok: false, error: `reply.target 越权：本会话未被授权向 ${deliverKey} 投递（跨会话请走 propose_actions 确认流）` };
     }
     const session = store.getOrCreate(sessionKey);
-    const recent = store.transcript(session.id, { limit: 20 })
-      .map((m) => `[${m.role === "assistant" ? "我" : m.sender_name ?? m.sender_open_id ?? "用户"}]: ${m.content}`)
-      .join("\n");
+    // C3.2:近期语义用 store.recent(transcript 取最早 n 条),历史行走统一 helper;
+    // 排除 system——压缩摘要不得以 [用户] 身份泄入 reply 上下文
+    const recent = store.recent(session.id, { limit: 20, roles: ["user", "assistant", "tool"] })
+      .map(formatHistoryLine).join("\n");
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
     const rendered = await renderReply({
       caller, soul: snapshot?.soul ?? soul, context: recent, brief, kind, tone,

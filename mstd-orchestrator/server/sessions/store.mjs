@@ -42,6 +42,29 @@ export function createSessionStore(db) {
     ).all(sessionId, limit);
   }
 
+  // 最近 n 条(时序返回)。transcript 是 ORDER BY ts 取最早,勿用于"近期"语义。
+  // 同 ts 用 rowid 定序(uuid 主键排序随机)——SQLite 方言例外,Postgres 迁移换自增主键,同 FTS5 先例(README)。
+  // 注:当查询走 (session_id, ts) 索引时,索引项内 rowid 天然有序,显式 rowid DESC 与隐式序等价;
+  // 该子句是对查询计划变更(索引重建/删除)的防御,黑盒测试不可判别,勿删。
+  function recent(sessionId, { limit = 50, roles = null } = {}) {
+    if (Array.isArray(roles) && roles.length === 0) return [];        // 空角色集=空结果,不等于"全角色"
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 50;      // SQLite LIMIT 负数=无上限,钳掉
+    const roleClause = roles?.length ? ` AND role IN (${roles.map(() => "?").join(",")})` : "";
+    const rows = db.prepare(
+      `SELECT * FROM agent_messages WHERE session_id = ? AND active = 1${roleClause} ORDER BY ts DESC, rowid DESC LIMIT ?`
+    ).all(...[sessionId, ...(roles ?? []), n]);
+    return rows.reverse();
+  }
+
+  // 重放集:全部压缩摘要(时序)+ 近况原文——多轮压缩后早期历史仍在,不许只取最新一份摘要
+  function replaySet(sessionId, { limit = 50 } = {}) {
+    const sums = db.prepare(
+      "SELECT content FROM agent_messages WHERE session_id = ? AND active = 1 AND role = 'system' ORDER BY ts, rowid"
+    ).all(sessionId).filter((r) => r.content?.startsWith("〔压缩摘要〕"));
+    const summary = sums.length ? sums.map((r) => r.content).join("\n") : null;
+    return { summary, messages: recent(sessionId, { limit, roles: ["user", "assistant", "tool"] }) };
+  }
+
   function softDelete(messageId) {
     db.prepare("UPDATE agent_messages SET active = 0 WHERE id = ?").run(messageId);
   }
@@ -71,5 +94,5 @@ export function createSessionStore(db) {
     touchSession.run(now, now, sessionId);
   }
 
-  return { getOrCreate, append, transcript, softDelete, bumpVersion, touch, recentObserved, markObservedConsumed };
+  return { getOrCreate, append, transcript, recent, replaySet, softDelete, bumpVersion, touch, recentObserved, markObservedConsumed };
 }

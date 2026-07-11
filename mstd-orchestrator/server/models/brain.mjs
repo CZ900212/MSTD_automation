@@ -1,6 +1,7 @@
 // 中枢：每活跃会话一个常驻 Pi(5.5) 进程；空闲回收；steer 注入；spawn 失败沿 reason 链降级 provider。
 
 import { setMaxListeners } from "node:events";
+import { formatHistoryLine } from "../sessions/history-format.mjs";
 
 export const REASON_PROVIDERS = [
   { key: "gpt-5.5", provider: "cz-gpt", model: "gpt-5.5", thinking: "medium" },
@@ -230,17 +231,20 @@ export function createBrain({
     void closeEntryQuietly(entry, "idle-recycle");
   }
 
-  function buildPrompt({ session, brief, context, snapshot, replay }) {
+  // C3.1:重放 = 全部压缩摘要(时序在前)+ 最近原文;transcript 取最早 n 条,勿再用
+  function buildReplayBlock(session) {
+    const { summary, messages } = store.replaySet(session.id, { limit: replayLimit });
+    const lines = messages.map(formatHistoryLine);
+    return [summary, ...lines].filter(Boolean).join("\n");
+  }
+
+  function buildPrompt({ brief, context, snapshot, replayBlock = null }) {
     const parts = [];
     if (snapshot) {
       const mem = [snapshot.soul, snapshot.org, snapshot.journalDigest, snapshot.scoped].filter(Boolean).join("\n\n");
       if (mem) parts.push(`## 记忆\n${mem}`);
     }
-    if (replay) {
-      const lines = store.transcript(session.id, { limit: replayLimit })
-        .map((m) => `[${m.role === "assistant" ? "我" : m.sender_name ?? m.sender_open_id ?? "用户"}]: ${m.content}`);
-      if (lines.length) parts.push(`## 会话历史（进程重启重放）\n${lines.join("\n")}`);
-    }
+    if (replayBlock) parts.push(`## 会话历史（进程重启重放）\n${replayBlock}`);
     if (context) parts.push(`## 本回合上下文\n${context}`);
     parts.push(`## 任务\n${brief}`);
     return parts.join("\n\n");
@@ -250,13 +254,17 @@ export function createBrain({
     const events = [];
     let startIdx = 0;
     let lastErr = null;
+    // 重放快照按回合冻结：降级换 provider 不重读 store——失败尝试期间落库的行
+    // 不得让第二个 provider 看到与第一个不同的历史(§5.2 审卷确认的漂移面)
+    let frozenReplay;
+    const replayBlock = () => (frozenReplay ??= buildReplayBlock(session));
     // 回合级降级：runJob 失败/超时（如 provider 503）→ 回收 Pi → 换下一个 provider 重拉重放 → 同一回合重跑
     while (startIdx < REASON_PROVIDERS.length) {
       const entry = await ensure(sessionKey, startIdx);
       assertOpen();
       entry.busy = true;
       try {
-        const prompt = buildPrompt({ session, brief, context, snapshot, replay: !entry.replayed });
+        const prompt = buildPrompt({ brief, context, snapshot, replayBlock: entry.replayed ? null : replayBlock() });
         entry.replayed = true;
         const { finalText } = await entry.client.runJob(prompt, {
           id: `${sessionKey}:${Date.now()}`,

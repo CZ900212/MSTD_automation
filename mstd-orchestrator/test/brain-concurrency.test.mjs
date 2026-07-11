@@ -12,6 +12,7 @@ function mockClient() {
 
 const store = {
   transcript: () => [{ role: "user", sender_name: "张三", content: "早", ts: 1 }],
+  replaySet: () => ({ summary: null, messages: [{ role: "user", sender_name: "张三", content: "早", ts: 1 }] }),
 };
 const session = { id: "s1", version: 0 };
 

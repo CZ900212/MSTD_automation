@@ -13,6 +13,7 @@ function mockClient() {
 
 const store = {
   transcript: () => [{ role: "user", sender_name: "张三", content: "早", ts: 1 }],
+  replaySet: () => ({ summary: null, messages: [{ role: "user", sender_name: "张三", content: "早", ts: 1 }] }),
 };
 const session = { id: "s1", version: 0 };
 
@@ -46,9 +47,11 @@ describe("brain（5.5 Pi 会话进程管理）", () => {
     expect(idle.ms).toBe(1000);
     idle.fn();
     expect(clients[0].close).toHaveBeenCalled();
-    // 回收后再来回合 → 重新拉起
+    // 回收后再来回合 → 重新拉起,且新 Pi 首回合重新带重放历史(恰一次)
     await brain.turn({ session, sessionKey: "k1", brief: "问题三" });
     expect(startPi).toHaveBeenCalledTimes(2);
+    const p3 = clients[1].runJob.mock.calls[0][0];
+    expect(p3.split("张三").length - 1).toBe(1);
   });
 
   it("首回合重放 transcript，后续回合不重放", async () => {
@@ -58,6 +61,58 @@ describe("brain（5.5 Pi 会话进程管理）", () => {
     expect(c.runJob.mock.calls[0][0]).toContain("张三");
     await brain.turn({ session, sessionKey: "k1", brief: "第二问" });
     expect(c.runJob.mock.calls[1][0]).not.toContain("张三");
+  });
+
+  // Task 6：重放改走 store.replaySet——全部压缩摘要在前 + 近况,tool 行标 [内部记录]
+  it("重放走 replaySet：多轮摘要全量在前,tool 行不冒充用户", async () => {
+    const c = mockClient();
+    const store6 = {
+      replaySet: vi.fn(() => ({
+        summary: "〔压缩摘要〕早期结论A\n〔压缩摘要〕后期结论B",
+        messages: [
+          { role: "tool", content: "内部X" },
+          { role: "user", sender_name: "张三", content: "近况" },
+        ],
+      })),
+    };
+    const brain = createBrain({ startPi: () => c, store: store6, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    await brain.turn({ session, sessionKey: "k6", brief: "问" });
+    const prompt = c.runJob.mock.calls[0][0];
+    expect(store6.replaySet).toHaveBeenCalledWith(session.id, expect.objectContaining({ limit: expect.any(Number) }));
+    // 完整块全序：标题 < 摘要A < 摘要B < tool 行 < user 行,任何一环乱序/丢失都红
+    const idx = (t) => { const i = prompt.indexOf(t); expect(i, t).toBeGreaterThanOrEqual(0); return i; };
+    const iH = idx("## 会话历史（进程重启重放）");
+    const iA = idx("〔压缩摘要〕早期结论A");
+    const iB = idx("〔压缩摘要〕后期结论B");
+    const iT = idx("[内部记录]: 内部X");
+    const iU = idx("[张三]: 近况");
+    expect(iH).toBeLessThan(iA);
+    expect(iA).toBeLessThan(iB);
+    expect(iB).toBeLessThan(iT);
+    expect(iT).toBeLessThan(iU);
+    expect(prompt).not.toContain("[用户]: 内部X");
+  });
+
+  // §5.2 审卷补杀：重放快照按回合冻结——降级换 provider 不得重读 store 看到漂移历史
+  it("降级重放快照冻结：两个 provider 的历史块一致,replaySet 只读一次", async () => {
+    let n = 0;
+    const store6 = {
+      replaySet: vi.fn(() => ({ summary: null, messages: [{ role: "user", sender_name: "张三", content: `快照${++n}`, ts: 1 }] })),
+    };
+    const clients = [];
+    const startPi = vi.fn(() => {
+      const c = mockClient();
+      if (clients.length === 0) c.runJob.mockRejectedValueOnce(new Error("503"));
+      clients.push(c);
+      return c;
+    });
+    const brain = createBrain({ startPi, store: store6, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    const out = await brain.turn({ session, sessionKey: "kf", brief: "问" });
+    expect(out.finalText).toBe("done");
+    expect(store6.replaySet).toHaveBeenCalledTimes(1);
+    expect(clients[0].runJob.mock.calls[0][0]).toContain("快照1");
+    expect(clients[1].runJob.mock.calls[0][0]).toContain("快照1");
+    expect(clients[1].runJob.mock.calls[0][0]).not.toContain("快照2");
   });
 
   it("steer 在回合中注入 send", async () => {

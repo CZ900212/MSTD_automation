@@ -1,5 +1,6 @@
 // 前台分诊：V4 Flash 四选一（quick_reply / no_reply / escalate / steer）。
 // 提示词只是软约束；quick_reply 的边界由代码兜底（不信提示词）。
+import { formatHistoryLine } from "../sessions/history-format.mjs";
 
 const QUICK_REPLY_MAX = 200;
 // 写意图关键词：命中即不允许 V4 直回（正式/写操作必须走 5.5→Opus）
@@ -22,9 +23,10 @@ function renderItems(items) {
 
 export function createTriage({ caller, store, soul = "" }) {
   async function triage({ session, items, mode, snapshot = null, brainBusy = false }) {
-    const recent = store.transcript(session.id, { limit: 20 })
-      .map((m) => `[${m.role === "assistant" ? "我" : m.sender_name ?? m.sender_open_id ?? "用户"}]: ${m.content}`)
-      .join("\n");
+    // C3.2:近期语义用 store.recent(transcript 取的是最早 n 条),历史行走统一 helper;
+    // 排除 system——压缩摘要不得以 [用户] 身份泄入分诊上下文
+    const recent = store.recent(session.id, { limit: 20, roles: ["user", "assistant", "tool"] })
+      .map(formatHistoryLine).join("\n");
     const memoryBlock = snapshot
       ? `\n## 记忆快照\n${[snapshot.org, snapshot.journalDigest, snapshot.scoped].filter(Boolean).join("\n")}`
       : "";

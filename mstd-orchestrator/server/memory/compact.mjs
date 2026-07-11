@@ -1,5 +1,6 @@
 // 上下文压缩：token 超阈值 → 先 memory flush 回合 → 早期回合摘要化（reason 链）保留近 N 条原文。
 // nudge：每 10 用户轮提醒模型整理记忆（计数从 transcript 重算，进程重启不丢）。
+import { formatHistoryLine } from "../sessions/history-format.mjs";
 
 export const estimateTokens = (transcript) =>
   Math.ceil(transcript.reduce((n, m) => n + (m.content?.length ?? 0), 0) / 2);
@@ -32,11 +33,9 @@ export function createCompactor({ caller, store, thresholdTokens = 60_000, keepR
       log(`[compact] flush 回合失败（继续压缩）: ${e?.message ?? e}`);
     }
 
-    // ② 早期回合摘要化（reason 链），保留近 keepRecent 条原文
+    // ② 早期回合摘要化（reason 链），保留近 keepRecent 条原文;历史行走统一 helper(tool 不冒充用户)
     const early = compactable.slice(0, compactable.length - keepRecent);
-    const earlyText = early
-      .map((m) => `[${m.role === "assistant" ? "我" : m.sender_name ?? m.sender_open_id ?? "用户"}]: ${m.content}`)
-      .join("\n");
+    const earlyText = early.map(formatHistoryLine).join("\n");
     const out = await caller.call("reason", {
       system: "你是会话压缩器。把下面的对话历史压缩成要点摘要（保留人名、时间、决定、未决事项），200 字以内，直接输出摘要。",
       messages: [{ role: "user", content: earlyText }],

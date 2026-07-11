@@ -44,6 +44,25 @@ describe("上下文压缩 + flush + nudge", () => {
     });
   });
 
+  // Task 6：earlyText 统一历史行——tool 行标 [内部记录] 不冒充用户
+  it("earlyText 的 tool 行标 [内部记录]", async () => {
+    const db = openDb(); migrate(db);
+    const store = createSessionStore(db);
+    const session = store.getOrCreate("feishu:p2p:ou_t6", { kind: "p2p" });
+    store.append(session.id, { role: "tool", content: "内部X", ts: 1 });          // 最早,必落 early 段
+    for (let i = 0; i < 25; i++) store.append(session.id, { role: "user", senderName: "张三", content: `第${i}条`, ts: 10 + i });
+    const call = vi.fn(async () => ({ text: "摘要", usage: null }));
+    const compactor = createCompactor({ caller: { call }, store, thresholdTokens: 10, keepRecent: 20 });
+    const r = await compactor.maybeCompact({
+      session, sessionKey: "feishu:p2p:ou_t6",
+      brain: { turn: vi.fn(async () => ({ finalText: "", events: [] })), isBusy: () => false },
+    });
+    expect(r.compacted).toBe(true);
+    const earlyText = call.mock.calls[0][1].messages[0].content;
+    expect(earlyText).toContain("[内部记录]: 内部X");
+    expect(earlyText).not.toContain("[用户]: 内部X");
+  });
+
   it("nudge 每 10 用户轮触发一次，从 transcript 重算（重启安全）", () => {
     const db = openDb();
     migrate(db);
