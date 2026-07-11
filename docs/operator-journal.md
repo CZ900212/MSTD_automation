@@ -120,3 +120,82 @@ subagent 做变异测试审卷(13 个变异注入,10 击杀 + 1 近等价)。缺
 但问题信信道本身被 wrangler 部署权限阻塞(见首条日志),无法发出。改在此备案,
 并列为最高优先级待用户处理项:恢复 Codex(网关)或授权邮件信道部署二选一,
 否则测试审卷将长期单靠 fable 独立 subagent(异族互审结构性要求打折)。
+
+## 2026-07-11 - 阶段一 Task 4B:schedule_reminder 四道锁(0bf28df)+ 两大阻塞项解除
+
+用户会话中授予全部权限并指示"继续迭代直到完成所有任务"。本轮三线并进。
+
+### 阻塞项解除
+
+- **Codex 恢复**:网关 `/responses` 上游恢复,`codex exec` 自检在线。本任务 §5.2
+  测试审卷回归 Codex(GPT-5.6),异族互审重新成立;连三降级备案关闭。
+- **邮件信道上线**(用户授权后我亲手执行三步):operator_qa 线上建表(幂等 DDL,
+  d1 execute --remote 成功)→ OPERATOR_TOKEN secret 设置(token 生成后直入
+  worker secret 与 .env 的 MSTD_OPERATOR_TOKEN,零回显零日志,临时文件即删)→
+  `wrangler deploy`(版本 47e717d2)。验证:worker 166 测试绿、伪 token POST
+  /operator/send 401、远程轮询 SELECT 通。问题信/报告信信道自此可用。
+
+### Task 4B 本体
+
+接手前任中止的工作树(3 个 RED 测试文件),补齐 write-target/execute-action/
+write-phase/card-callback/card-execute 五文件 RED(42 failed 起步),TDD 实现:
+- DSL 闭合 schedule_reminder(canonical round-trip deliver_to/严格 ISO 归一 UTC/
+  text 边界/未知字段拒),canonicalDeliverableKey 上收 session-key.mjs 与 heartbeat 同源。
+- 确认回调重构为单事务 approveTx:token 消费(tokenId 回传)→form 重算→immutable
+  decision→card/job 翻 executing,任一步失败整体回滚(含 used_at)。
+- executor 只认最新 decision 批准 hash(ts DESC,rowid DESC),缺失 not_approved;
+  schedule_reminder 走 heartbeat.addApproved adapter(source_action_id 幂等,
+  canonical 重建 dry validation 取代 lark --dry-run,绝不构造 argv)。
+
+### 双引擎审核
+
+- **§5.1 opus 对抗审核**:3 缺陷全采纳当场修——①(中)approveTx 翻 executing 但
+  hasActiveJob 不含该状态→执行窗口会话可能被过期归档(我引入的回归;提取
+  ACTIVE_JOB_STATUSES 共享常量并纳入 executing);②(低中)reconcile 对本地 DB 写
+  误用 lark task 指纹→按 heartbeat_items.source_action_id 对账;③(低)owner 未
+  canonical 校验→cron/debug 发起 fail-closed(与 addOwned 同标准)。复审确认
+  三修复有效、无新缺陷。驳回 1 条文案 nit(heartbeat_update 工具名属实存在)。
+- **§5.2 Codex 测试审卷**(恢复后首单):16 缺陷(6 高 7 中 3 低),14 条采纳补杀
+  13 个测试——事务原子性用 SQLite trigger ABORT 证明全回滚、两 action 半程回滚、
+  只改 JSON 保留 hash 的 tamper 杀 dry validation、decision 缺项 not_approved、
+  ts DESC 保护、幂等键不过宽(同 payload 双 action 双行)、reconcile 指纹按 action
+  区分、group owner≠发起人、testTargetFromEnv 交叉映射、五表零断言、ISO ±14:00
+  极限、topic group 正向、schema const 精确集合、orchestrator wrapper 透传。
+  2 条部分采纳记录理由:①index.mjs 生产装配无单测(composition root 不可单测,
+  缺口交真机剧本第 6 条设提醒场景覆盖,登记);②负向异步 sleep 无法证伪
+  "不发生",正向链路改 onExecuted 事件等待,负向保留有界 sleep(注释说明)。
+- **变异复验**:删 dry validation→tamper 测试红;按 Codex 原版变异 diff 拆分
+  确认事务→trigger 测试红。两头号变异击杀,源码还原后全绿。
+
+### 验证
+
+- orchestrator 521 passed/4 gated skip(strict;基线 452→521),UI 51。
+- E2E 真机四套全 PASS:write/p2p(前轮)+group/full(本轮网关恢复后重跑)。
+  group 首跑瞬时失败(lark 发消息一步,判网关恢复期抖动),重跑 143s 全过;
+  full 首跑因缺 MSTD_ENABLE_WRITE=1 整套 skip(假绿判 FAIL),补第四门控后
+  355s 全过。**E2E 正确姿势更正:四个门控 = MSTD_E2E + MSTD_ENABLE_WRITE +
+  MSTD_TEST_OPEN_IDS + MSTD_TEST_CHAT_IDS,e2e-full 缺 ENABLE_WRITE 会静默 skip。**
+
+### 登记的后续项(阶段二评估)
+
+- 崩溃窗口:approveTx 提交后、executeConfirmed 收尾前进程崩溃→job 永久停
+  'executing',reconcileOnBoot 不收口该状态(且修复①后该 job 会让 owner 会话
+  永久豁免过期归档);处理时须连带 enableWrite=false 时本地指纹对账被 runLark
+  gating 跳过的小缝。
+- cron 发起 schedule_reminder 的 UX 缝:现为确认卡批准后才 no_owner_session
+  失败;更优是发卡前拒绝(安全语义已正确,属体验优化)。
+- index.mjs 生产装配(heartbeat 注入 confirmFlow)以真机剧本第 6 条为验收面。
+
+### 评分卡
+
+真机人眼剧本(§5.3 Codex computer-use)本轮未跑,按惯例不打分。安全维度新增
+代码棘轮:跨会话提醒四道锁 60+ 专项用例,含事务原子性与 tamper 双层防线。
+
+### 挂起问题
+
+- [MSTD-R] 报告信(接管状态+Task 4B+信道上线合并汇报)已撰写并尝试经
+  POST /operator/send 发出,被本会话权限分类器拦截(外发邮件含内部细节判高危)。
+  信道本身已验证可用(伪 token 401/轮询通),仅"发信"这一步需用户放行:
+  在 Claude Code 设置加对应 Bash 允许规则,或会话中明示确认后我重试。
+  在此之前报告以本日志与会话答复代为送达。
+- 下一任务:阶段一 Task 5(C2 入站 @ 单趟规范化 + 同源 mentionsBot + migration 013)。
