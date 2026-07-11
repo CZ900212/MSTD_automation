@@ -58,8 +58,8 @@ describe("model caller", () => {
     const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {} });
     await caller.call("respond", { system: "你是出口", messages: [{ role: "user", content: "x" }] });
     expect(captured.body.messages[0]).toEqual({ role: "system", content: "你是出口" });
-    expect(captured.url).toContain("api.cz900212.com");           // respond 首选 opus-4.6
-    expect(captured.headers.Authorization).toBe("Bearer ck");
+    expect(captured.url).toContain("api.deepseek.com");           // respond 首选 v4-pro(2026-07-11 用户改令)
+    expect(captured.headers.Authorization).toBe("Bearer dk");
   });
 
   it("onEvent 结构化上报：每次失败尝试 model_retry，降级 model_fallback", async () => {
@@ -91,9 +91,9 @@ describe("model caller", () => {
     expect(events.filter((e) => e.type === "pipeline_error")).toEqual([expect.objectContaining({ chain: "fast" })]);
   });
 
-  it("三条链定义与用户定案一致", () => {
+  it("三条链定义与用户定案一致(respond 2026-07-11 改令:v4-pro 主选,不用 opus)", () => {
     expect(CHAINS.fast).toEqual(["v4-flash", "opus-4.6", "gpt-5.5"]);
     expect(CHAINS.reason).toEqual(["gpt-5.5", "opus-4.8", "v4-pro"]);
-    expect(CHAINS.respond).toEqual(["opus-4.6", "v4-pro", "gpt-5.5"]);
+    expect(CHAINS.respond).toEqual(["v4-pro", "gpt-5.5"]);
   });
 });

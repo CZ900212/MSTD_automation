@@ -36,11 +36,12 @@ function modelRegistry(env) {
   };
 }
 
-// 三条降级链（用户定案）。fast 全链强制 non-thinking。
+// 三条降级链（用户定案;2026-07-11 用户改令:respond 主选 v4-pro、不用 opus——
+// opus-4.6 网关持续 503,回复出口换 DeepSeek）。fast 全链强制 non-thinking。
 export const CHAINS = {
   fast: ["v4-flash", "opus-4.6", "gpt-5.5"],
   reason: ["gpt-5.5", "opus-4.8", "v4-pro"],
-  respond: ["opus-4.6", "v4-pro", "gpt-5.5"],
+  respond: ["v4-pro", "gpt-5.5"],
 };
 
 export class PipelineError extends Error {
