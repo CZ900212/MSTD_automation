@@ -158,23 +158,28 @@ describe("C4 recap guard 行为边界(§5.2 审卷补杀)", () => {
     expect((await run('{"action":"no_reply"}', [{ content: "总结一下刚才内容" }])).action).toBe("escalate");
   });
 
-  it("模型自主 escalate/steer 带 recap 词:sentinel 对象原样保留,不被改写", async () => {
+  it("模型自主 escalate/steer 带 recap 词:brief/note 原样保留;escalate 补默认 ack(快机先应答)", async () => {
     expect(await run('{"action":"escalate","brief":"SENTINEL_BRIEF"}', recapItems))
-      .toEqual({ action: "escalate", brief: "SENTINEL_BRIEF" });
+      .toEqual({ action: "escalate", brief: "SENTINEL_BRIEF", ack: "收到,我看看哈" });
     expect(await run('{"action":"steer","note":"SENTINEL_NOTE"}', recapItems))
       .toEqual({ action: "steer", note: "SENTINEL_NOTE" });
   });
 
+  it("模型自带 ack 原样保留,不被默认值覆盖", async () => {
+    expect(await run('{"action":"escalate","brief":"B","ack":"这个我捋一下哈"}', recapItems))
+      .toEqual({ action: "escalate", brief: "B", ack: "这个我捋一下哈" });
+  });
+
   it("非法 JSON+recap items:parse 兜底 brief 原样,recap 不得先于 parse 短路", async () => {
     expect(await run("我觉得该回复", recapItems))
-      .toEqual({ action: "escalate", brief: "分诊输出不可解析，升级处理" });
+      .toEqual({ action: "escalate", brief: "分诊输出不可解析，升级处理", ack: "收到,我看看哈" });
   });
 
   it("多 item 仅中间命中:整批按序拼文进 brief(前缀+slice 精确)", async () => {
     const items3 = [{ content: "早" }, { content: "帮忙总结一下" }, { content: "谢谢" }];
     const joined = "早\n帮忙总结一下\n谢谢";
     expect(await run('{"action":"no_reply"}', items3))
-      .toEqual({ action: "escalate", brief: `复述/总结类请求(需完整上下文):${joined.slice(0, 100)}` });
+      .toEqual({ action: "escalate", brief: `复述/总结类请求(需完整上下文):${joined.slice(0, 100)}`, ack: "收到,我看看哈" });
   });
 
   it("ambient 豁免同样盖住 quick_reply;recap 只扫 items 不扫 verdict.text", async () => {
@@ -190,7 +195,7 @@ describe("C4 recap guard 行为边界(§5.2 审卷补杀)", () => {
 
   it("ambient 下模型自主 escalate 保留:不强插≠不许插", async () => {
     expect(await run('{"action":"escalate","brief":"值得升级"}', [{ content: "谁来复述下会议?" }], "ambient"))
-      .toEqual({ action: "escalate", brief: "值得升级" });
+      .toEqual({ action: "escalate", brief: "值得升级", ack: "收到,我看看哈" });
   });
 });
 

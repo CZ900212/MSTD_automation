@@ -440,3 +440,70 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
     expect(deps.brain.turn.mock.calls[2][0].brief).not.toContain("系统提醒");  // 成功后已消费
   });
 });
+
+// 2026-07-12 用户定案两条:①消息里绝不带空行(空行即拆分成多条);②快机永远先应答(escalate 带 ack)
+describe("空行拆分与快机先应答", () => {
+  let db, store, session, deps, handler;
+  beforeEach(() => {
+    db = openDb();
+    migrate(db);
+    store = createSessionStore(db);
+    session = store.getOrCreate("feishu:p2p:ou_a", { kind: "p2p" });
+    deps = {
+      triage: { triage: vi.fn() },
+      brain: { turn: vi.fn(async () => ({ finalText: "内部结论", events: [] })), steer: vi.fn(), isBusy: () => false },
+      renderReply: vi.fn(async () => ({ text: "渲染稿", usage: null })),
+      outbound: { sendMessage: vi.fn(async () => ({ messageId: "om_9" })), sendCard: vi.fn(async () => ({ messageId: "om_card_9" })), editMessage: vi.fn() },
+      store,
+      budget: { allow: vi.fn(() => ({ ok: true })), record: vi.fn() },
+      soul: "SOUL",
+      grants: createDeliverGrants(),
+    };
+    handler = createTurnHandler(deps);
+  });
+
+  it("纯文本含空行:按空段拆成多条顺序出站,幂等 key 按段派生且互不相同", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "quick_reply", text: "第一段\n还是第一段\n\n第二段\n\n\n第三段" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    const calls = deps.outbound.sendMessage.mock.calls.map((c) => c[0]);
+    expect(calls.map((c) => c.text)).toEqual(["第一段\n还是第一段", "第二段", "第三段"]);
+    const keys = calls.map((c) => c.idempotencyKey);
+    expect(new Set(keys).size).toBe(3);
+    expect(calls.every((c) => !/\n\s*\n/.test(c.text))).toBe(true);   // 任何一条都无空行
+  });
+
+  it("无空行的纯文本仍单条出站;富 markdown 走卡片不拆分", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "quick_reply", text: "就一条" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.outbound.sendMessage).toHaveBeenCalledTimes(1);
+    deps.outbound.sendMessage.mockClear();
+    deps.triage.triage.mockResolvedValue({ action: "quick_reply", text: "| a | b |\n|---|---|\n| 1 | 2 |\n\n表格说明" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.outbound.sendCard).toHaveBeenCalledTimes(1);
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("escalate 带 ack:先出站 ack 并落库,再进 brain;ack 出站失败不阻断慢机", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "选型", ack: "收到,我看看哈" });
+    const order = [];
+    deps.outbound.sendMessage.mockImplementation(async ({ text }) => { order.push(`send:${text}`); return { messageId: "om_a" }; });
+    deps.brain.turn.mockImplementation(async () => { order.push("brain"); return { finalText: "结论", events: [] }; });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(order).toEqual(["send:收到,我看看哈", "brain"]);
+    const rows = store.transcript(session.id).map((m) => `${m.role}:${m.content}`);
+    expect(rows.some((r) => r.startsWith("assistant:收到,我看看哈"))).toBe(true);
+
+    // ack 失败不阻断
+    deps.outbound.sendMessage.mockRejectedValue(new Error("boom"));
+    deps.brain.turn.mockClear();
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.brain.turn).toHaveBeenCalledTimes(1);
+  });
+
+  it("escalate 无 ack(steer 转 escalate 等):不发 ack,直接进 brain", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "选型" });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+    expect(deps.brain.turn).toHaveBeenCalledTimes(1);
+  });
+});

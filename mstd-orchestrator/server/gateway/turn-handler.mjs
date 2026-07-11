@@ -61,7 +61,20 @@ export function createTurnHandler({
     if (hasRichMarkdown(text)) {
       return outbound.sendCard({ ...targetArg, cardJson: buildMarkdownMessageCard({ md: text }), idempotencyKey });
     }
-    return outbound.sendMessage({ ...targetArg, text, idempotencyKey });
+    // 空行即拆分(用户定案 2026-07-12):纯文本消息里绝不带空行——按空段切成多条顺序发。
+    // 卡片豁免(上面已 return):markdown 的空行是结构必需。幂等 key 按段派生,重试安全。
+    // 注意:全空白文本原样交给 outbound 判错(text 必填),不在这里吞。
+    const segs = String(text).split(/\n[ \t]*\n+/).map((s) => s.trim()).filter(Boolean);
+    const parts = segs.length ? segs : [text];
+    let last = null;
+    for (let i = 0; i < parts.length; i++) {
+      last = await outbound.sendMessage({
+        ...targetArg,
+        text: parts[i],
+        idempotencyKey: parts.length === 1 ? idempotencyKey : `${idempotencyKey}-p${i}`,
+      });
+    }
+    return last;
   }
 
   async function handleTurn(turn) {
@@ -139,6 +152,16 @@ export function createTurnHandler({
     }
 
     // escalate（或 steer 但中枢已空闲 → 当 escalate 跑）
+    // 快机先应答(用户定案 2026-07-12):慢机跟进前,快机先发一句接话,用户不用干等 20s
+    if (verdict.ack?.trim()) {
+      try {
+        const ackText = verdict.ack.trim();
+        const { messageId } = await deliverText(sessionKey, ackText);
+        store.append(session.id, { role: "assistant", content: ackText, platformMessageId: messageId, ts: Date.now() });
+      } catch (e) {
+        log(`[turn] ack 出站失败 session=${sessionKey}: ${e?.message ?? e}`); // ack 失败不阻断慢机
+      }
+    }
     let brief = verdict.brief ?? verdict.note ?? renderContext(items);
     let context = renderContext(items);
     if (windowBlock) context = `[群内最近消息-截至本批之前]\n${windowBlock}\n[/群内最近消息]\n\n${context}`;
