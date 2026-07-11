@@ -40,7 +40,8 @@ export default function (pi: ExtensionAPI) {
         });
         const data = await resp.json();
         if (!resp.ok || !data.ok) {
-          return { content: [{ type: "text", text: `reply 失败: ${data.error ?? resp.status}` }], details: data };
+          const errText = typeof data.error === "string" ? data.error : JSON.stringify(data.error ?? resp.status);
+          return { content: [{ type: "text", text: `reply 失败: ${errText}` }], details: data };
         }
         return {
           content: [{ type: "text", text: `已${params.kind === "card_copy" ? "生成卡片文案" : "发送"}：${String(data.text ?? "").slice(0, 500)}` }],

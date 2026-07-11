@@ -31,7 +31,10 @@ export function mountInternalRoutes(app, { tokens = null, modelLog = null, handl
     const { sessionKey, body } = auth;
     const { kind, brief, tone, target } = body;
     try {
-      res.json(await handleReply({ sessionKey, kind, brief, tone, target }));
+      const result = await handleReply({ sessionKey, kind, brief, tone, target });
+      // ok:false 也要留痕：否则失败只存在于 Pi transcript,daemon 侧零可观测
+      if (!result?.ok) log(`[internal/reply] ok=false session=${sessionKey}: ${JSON.stringify(result?.error ?? null)?.slice(0, 300)}`);
+      res.json(result);
     } catch (e) {
       log(`[internal/reply] ${e?.message ?? e}`);
       res.status(500).json({ ok: false, error: String(e?.message ?? e) });
