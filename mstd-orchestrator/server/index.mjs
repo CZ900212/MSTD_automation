@@ -17,6 +17,7 @@ import { reconcileOnBoot } from "./execute/reconcile-startup.mjs";
 import { createJobLauncher } from "./jobs/launcher.mjs";
 import { startMinutesConsumer } from "./triggers/minutes-consumer.mjs";
 import { resolveMinutesInitiator, makeFetchMinutesOwner, createMinutesBroadcast } from "./triggers/minutes-agent.mjs";
+import { createTokenWatch } from "./ticker/token-watch.mjs";
 import { backfillMinutes } from "./triggers/backfill.mjs";
 import { startLarkHealth, makeDmAlert } from "./health/lark-profile.mjs";
 import { wireGateway } from "./gateway/wire.mjs";
@@ -322,6 +323,12 @@ if (config.enableAgent && config.botOpenId) {
   });
   ticker.register("session-expiry", 10, () => expiry.sweep());
   if (larkHealth) ticker.register("lark-health", 10, () => larkHealth.checkOnce().catch(() => {}));
+  // T1.3 token 续期哨兵：6h 一查（本地读零网络）,refresh 剩 <48h 私聊 owner
+  if (bootLark) {
+    const tokenWatch = createTokenWatch({ runLark: bootLark, alert });
+    ticker.register("token-watch", 360, () => tokenWatch.checkOnce());
+    tokenWatch.checkOnce().catch(() => {});
+  }
   // 观察期周报：每周一北京 09:00 DM 管理员
   const observeReport = createObserveReport({ db, outbound, adminOpenId: config.alertOpenId });
   let lastObsWeek = null;
