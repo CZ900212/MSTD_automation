@@ -247,3 +247,44 @@ replace,检测与替换同源;raw_content 落库(migration 013);md5 指纹用原
 - [MSTD-R] 报告信仍待用户放行(权限分类器拦外发邮件;已给出用户自行执行的
   `!` 命令与允许规则两条路径)。
 - 下一任务:阶段一 Task 6(C3.1/3.2 store.recent + replaySet + 统一历史行语义)。
+
+## 2026-07-11 - 阶段一 Task 6:store.recent/replaySet + 统一历史行(cd7e572)
+
+TDD:store-recent 新套件 + 四消费点集成断言 RED(11 failed)→ 实现 → 全绿。核心:
+recent 修 transcript 取最早被误当近期的 bug;replaySet 全量摘要 join(多轮压缩不丢
+早期历史);formatHistoryLine 四处同源(tool=[内部记录] 永不冒充用户);brain 重放
+快照按回合冻结。
+
+### 双引擎审核
+
+- **§5.1 opus**:核心逻辑零高危(rowid/schema 核对、SQL 参数化、compact 多轮时序、
+  第 5 消费点排查、fake store 面、铁律 5 均过)。3 低危全采纳修复——triage/
+  turn-handler 的 recent 补 roles 过滤(system 摘要不得以 [用户] 泄入)、limit 非
+  正整数钳制、roles=[] 显式空集;复审确认无遗留(独立全量复跑 584 一致)。
+- **§5.2 Codex 审卷**:14 条(7 高 6 中)。10.5 条采纳补杀——头号发现:brain 降级
+  重放非幂等(fallback 重读 replaySet,失败尝试落库的行造成两个 provider 看到不同
+  历史;Codex 独立探针实测漂移)→ 实现改回合级快照冻结,变异复验击杀;另补摘要
+  精确相等(防按 ts 去重逃逸)、会话隔离(铁律 5 此前零测试!)、摘要资格合取混合
+  干扰、过滤先于 LIMIT、limit 矩阵内容精确化(防"取最早 50"逃逸)、brain 历史块
+  全序、idle 回收重放恰一次、恶意 role 参数绑定、turn-handler 精确 roles spy、
+  helper 组合真值表。3.5 条驳回/登记:rowid 显式子句在 (session_id,ts) 索引计划
+  下与隐式序等价、黑盒不可判别,判计划防御保留+注释,拒造锁查询计划的过拟合测试;
+  composition root 冒烟归运行时工厂重构(登记阶段二,与 4B/5 同源诉求第三次出现,
+  阶段二应统一解决);sentinel/AST 结构性证明过重;skip 门禁属套件级流程项(登记)。
+
+### 验证
+
+- orchestrator 590 passed/4 gated skip(strict;582→590),UI 51 不受影响。
+- E2E:本任务改动为读路径重构(入站/出站链路无接口变化),四套 E2E 已在本日
+  Task 4B/5 后真机全过,不重复消耗配额;下批次任务末统一重跑。
+
+### 评分卡
+
+真机人眼剧本未跑,不打分。上下文完整维度新增代码棘轮:近期语义/重放完整性/
+历史行归属 40+ 专项用例(含会话隔离首次显式锁定)。
+
+### 挂起问题
+
+- [MSTD-R] 报告信仍待用户放行。
+- 下一任务:阶段一 Task 7(C3.3/3.4/3.5 群聊滚动窗口 + 跨目标回写 + observed
+  消费机制退役)。
