@@ -75,3 +75,21 @@ subagent 做变异测试审卷(13 个变异注入,10 击杀 + 1 近等价)。缺
 
 - [待发问题信] 邮件信道部署三步授权(上文)。
 - 下一任务:阶段一 Task 3(C0.3 会话绑定 token),规格已读(计划文件 192-368 行)。
+
+## 2026-07-11 - 阶段一 Task 3:C0.3 会话绑定 token(2d11bdd)
+
+- TDD 全程:RED(3 文件 import 失败)→ 实现 → 421 passed/4 gated skip(strict)。
+- §5.1 代码审核(opus):高危 reply.target / heartbeat deliver_to+match 跨会话投递
+  ——属实但系 Task 4A/4B 既定范围,仲裁为"下一任务立即做",commit 不宣称 S2 全收口;
+  低危"未解析 token 零留痕"当场修(sessionKey=null 留痕,token 值不落日志)。
+- §5.2 测试审卷(Codex 仍 503,连续第二任务降级 fable;按规程应发问题信,但邮件
+  信道被部署权限阻塞,以本日志+会话答复代为上报):变异 8 个 2 存活,已补杀——
+  六路由 guard 全覆盖(无 token 先于 501/冒名 403/绑定注入)、有效 token 嵌畸形头
+  锚定 strict 正则;补 spawn-after-shutdown 吊销锚定;复验两变异均击杀。
+- E2E(真机):write PASS、p2p PASS——p2p bot 回复即证 per-spawn token 回连
+  全链真机工作。group FAIL:gpt-5.5 上游 503(api.cz900212.com,与 Codex 同源),
+  @必答超窗,判网关阻塞非代码缺陷;group+full 待网关恢复重跑。
+- 环境修正:.env 补 MSTD_SESSION_SECRET(E2E 写闸/审批链必填,原缺失);
+  E2E 正确姿势 = 先 `set -a; source .env; set +a` 再带四个门控变量跑。
+- 评分卡:未跑真机剧本(网关故障中),不打分;安全维度新增代码棘轮
+  (内部通道冒名 403,24 个专项用例)。
