@@ -100,6 +100,7 @@ export async function runWritePhase(opts) {
     spawnPi: opts.spawnPi,
     runLark: opts.runLark,
     testTarget: opts.testTarget,
+    heartbeat: opts.heartbeat,
     timeoutMs: opts.timeoutMs,
   });
 }

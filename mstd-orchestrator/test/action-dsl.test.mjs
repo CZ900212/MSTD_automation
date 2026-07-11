@@ -143,3 +143,105 @@ describe("buildAgentAction（D1 扩类）", () => {
     expect(() => buildAgentAction({ jobId: "j", kind: "drop_table", payload: {} })).toThrow(/未知|unknown/);
   });
 });
+
+// ---- Task 4B: schedule_reminder（跨会话提醒进入四道锁确认写路径）----
+describe("buildAgentAction schedule_reminder（Task 4B）", () => {
+  const base = { deliver_to: "feishu:p2p:ou_target", due_iso: "2026-07-12T09:00:00+08:00", text: "交周报" };
+  const build = (payload, ordinal = 0) =>
+    buildAgentAction({ jobId: "j1", kind: "schedule_reminder", payload, ordinal });
+
+  it("合法 p2p/group 规范化稳定；due 统一成 UTC toISOString", () => {
+    const a = build(base);
+    expect(a.payload).toEqual({
+      deliver_to: "feishu:p2p:ou_target",
+      due_iso: "2026-07-12T01:00:00.000Z",
+      text: "交周报",
+    });
+    expect(a.requires_open_id).toBe(false);
+    expect(a.payload_hash).toMatch(/^[0-9a-f]{64}$/);
+    const g = build({ ...base, deliver_to: "feishu:group:oc_room" });
+    expect(g.payload.deliver_to).toBe("feishu:group:oc_room");
+    // 带 topic 的四段 group 是合法 canonical（round-trip 成立），不得被收窄成仅三段
+    const t = build({ ...base, deliver_to: "feishu:group:oc_room:omt_9" });
+    expect(t.payload.deliver_to).toBe("feishu:group:oc_room:omt_9");
+    expect(t.payload_hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("等价 offset 时间统一到同一 UTC，同意图同 hash", () => {
+    const a = build(base);
+    const b = build({ ...base, due_iso: "2026-07-12T02:00:00+01:00" });
+    const c = build({ ...base, due_iso: "2026-07-12T01:00:00Z" });
+    expect(b.payload.due_iso).toBe(a.payload.due_iso);
+    expect(b.payload_hash).toBe(a.payload_hash);
+    expect(c.payload_hash).toBe(a.payload_hash);
+  });
+
+  it("改任一字段 hash 即变化", () => {
+    const a = build(base);
+    expect(build({ ...base, text: "交月报" }).payload_hash).not.toBe(a.payload_hash);
+    expect(build({ ...base, due_iso: "2026-07-12T09:00:01+08:00" }).payload_hash).not.toBe(a.payload_hash);
+    expect(build({ ...base, deliver_to: "feishu:p2p:ou_other" }).payload_hash).not.toBe(a.payload_hash);
+  });
+
+  it.each([
+    ["cron 会话", "cron:job-1"],
+    ["debug 会话", "debug:d1"],
+    ["raw open_id", "ou_target"],
+    ["raw chat_id", "oc_room"],
+    ["缺 id", "feishu:p2p:"],
+    ["group 缺 id", "feishu:group:"],
+    ["p2p 多余段", "feishu:p2p:ou_x:extra"],
+    ["group 多余段", "feishu:group:oc_x:topic:extra"],
+    ["空串", ""],
+    ["非字符串", 42],
+  ])("deliver_to 拒绝 %s", (_label, deliverTo) => {
+    expect(() => build({ ...base, deliver_to: deliverTo })).toThrow(/deliver_to/);
+  });
+
+  it.each([
+    ["缺时区", "2026-07-12T09:00:00"],
+    ["真实不存在日期", "2026-02-30T09:00:00Z"],
+    ["非 ISO", "明天九点"],
+    ["纯日期", "2026-07-12"],
+    ["非字符串", 1234567890],
+    ["offset 超限 +14:01", "2026-07-12T09:00:00+14:01"],
+    ["offset 超限 -14:01", "2026-07-12T09:00:00-14:01"],
+  ])("due_iso 拒绝 %s（不许 Date.parse 宽松归一化）", (_label, due) => {
+    expect(() => build({ ...base, due_iso: due })).toThrow(/due_iso/);
+  });
+
+  it("offset 极限 +14:00 合法（LINT 时区），不得随上限校验一起被删", () => {
+    const a = build({ ...base, due_iso: "2026-07-12T14:00:00+14:00" });
+    expect(a.payload.due_iso).toBe("2026-07-12T00:00:00.000Z");
+  });
+
+  it("空文案 / 纯空白 / NUL / 超长文案拒绝", () => {
+    expect(() => build({ ...base, text: "" })).toThrow(/text/);
+    expect(() => build({ ...base, text: "   " })).toThrow(/text/);
+    expect(() => build({ ...base, text: "a\u0000b" })).toThrow(/text/);
+    expect(() => build({ ...base, text: "长".repeat(4001) })).toThrow(/text/);
+    expect(build({ ...base, text: "长".repeat(4000) }).payload.text).toBe("长".repeat(4000));   // 恰 4000 接受
+  });
+
+  it("未知字段拒绝（payload 闭合）", () => {
+    expect(() => build({ ...base, cron: "* * * * *" })).toThrow(/未知字段/);
+    expect(() => build({ ...base, owner_session_key: "feishu:p2p:ou_evil" })).toThrow(/未知字段/);
+  });
+});
+
+describe("propose_actions schema（TypeBox union 含 schedule_reminder）", () => {
+  it("union 含 schedule_reminder，描述明确 {due_iso,text,deliver_to} 形状", async () => {
+    const mod = await import("../pi-ext/propose-actions.ts");
+    const tools = [];
+    mod.default({ registerTool: (t) => tools.push(t) });
+    const spec = tools.find((t) => t.name === "propose_actions");
+    expect(spec).toBeTruthy();
+    const s = JSON.stringify(spec.parameters);
+    expect(s).toContain('"schedule_reminder"');
+    expect(s).toMatch(/schedule_reminder:\{due_iso[^}]*text[^}]*deliver_to/);
+    // kind union 的 const 集合必须精确闭合（防用宽松 Type.String 冒充 literal）
+    const kindSchema = spec.parameters.properties.intents.items.properties.kind;
+    const consts = (kindSchema.anyOf ?? []).map((x) => x.const).sort();
+    expect(consts).toEqual(["create_event", "create_task", "schedule_reminder", "send_dm", "send_group_msg"]);
+  });
+});

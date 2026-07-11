@@ -4,23 +4,12 @@
 // 跨会话条目只能由已确认写路径调 addApproved（以 source_action_id 为幂等键）。
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync } from "node:fs";
-import { parseSessionKey, buildSessionKey } from "../sessions/session-key.mjs";
+import { canonicalDeliverableKey } from "../sessions/session-key.mjs";
 import { parseStrictIsoWithTimezone } from "../time/strict-iso.mjs";
 
 const TEXT_MAX = 4000;
 const BACKOFF_BASE_MS = 60_000;
 const BACKOFF_CAP_MS = 3_600_000;
-
-// canonical round-trip：parse 后必须能原样重建（拒缺 id/多余段）,且 kind 仅 p2p/group
-function canonicalDeliverableKey(key) {
-  if (typeof key !== "string" || !key) return null;
-  let parsed;
-  try { parsed = parseSessionKey(key); } catch { return null; }
-  if (parsed.kind !== "p2p" && parsed.kind !== "group") return null;
-  let rebuilt;
-  try { rebuilt = buildSessionKey(parsed); } catch { return null; }
-  return rebuilt === key ? key : null;
-}
 
 function validateDueAndText({ dueIso, text }) {
   const dueAt = parseStrictIsoWithTimezone(dueIso);

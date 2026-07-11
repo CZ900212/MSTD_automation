@@ -17,6 +17,18 @@ export function buildSessionKey({ kind, openId, chatId, topicId, jobId, debugId 
   }
 }
 
+// canonical round-trip：parse 后必须能原样重建（拒缺 id/多余段），且 kind 仅 p2p/group。
+// 非法输入一律返回 null（fail-closed，不抛错）。heartbeat 队列与 schedule_reminder DSL 共用。
+export function canonicalDeliverableKey(key) {
+  if (typeof key !== "string" || !key) return null;
+  let parsed;
+  try { parsed = parseSessionKey(key); } catch { return null; }
+  if (parsed.kind !== "p2p" && parsed.kind !== "group") return null;
+  let rebuilt;
+  try { rebuilt = buildSessionKey(parsed); } catch { return null; }
+  return rebuilt === key ? key : null;
+}
+
 export function parseSessionKey(key) {
   const parts = key.split(":");
   if (parts[0] === "cron") return { kind: "cron", jobId: parts[1] };

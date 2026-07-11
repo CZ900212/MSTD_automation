@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { assertTestTarget } from "../server/execute/write-target.mjs";
+import { assertTestTarget, testTargetFromEnv } from "../server/execute/write-target.mjs";
 
 const allow = { allowOpenIds: new Set(["ou_test1", "ou_test2"]), allowTasklist: "tl_test" };
 
@@ -24,5 +24,38 @@ describe("assertTestTarget 新 kind", () => {
     expect(() => assertTestTarget({ kind: "create_event", payload: { attendee_open_ids: ["ou_a"] } }, tt)).not.toThrow();
     expect(() => assertTestTarget({ kind: "create_event", payload: { attendee_open_ids: ["ou_a", "ou_prod"] } }, tt)).toThrow(/非测试参会人/);
     expect(() => assertTestTarget({ kind: "create_event", payload: { attendee_open_ids: [] } }, {})).toThrow();  // 未配置 fail-closed
+  });
+});
+
+// ---- Task 4B: schedule_reminder 目标白名单 ----
+describe("assertTestTarget schedule_reminder（Task 4B）", () => {
+  const tt = { allowOpenIds: new Set(["ou_test"]), allowChatIds: new Set(["oc_test"]) };
+  it("p2p 目标查 open_id 白名单，group 目标查 chat_id 白名单", () => {
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: "feishu:p2p:ou_test" } }, tt)).not.toThrow();
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: "feishu:group:oc_test" } }, tt)).not.toThrow();
+  });
+  it.each([
+    ["生产 open_id", "feishu:p2p:ou_prod"],
+    ["生产群", "feishu:group:oc_prod"],
+    ["cron 会话", "cron:job-1"],
+    ["debug 会话", "debug:d1"],
+    ["raw open_id", "ou_test"],
+    ["raw chat_id", "oc_test"],
+    ["空串", ""],
+  ])("fail-closed 拒绝 %s", (_label, deliverTo) => {
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: deliverTo } }, tt)).toThrow();
+  });
+  it("白名单未配置一律拒绝", () => {
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: "feishu:p2p:ou_test" } }, {})).toThrow();
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: "feishu:group:oc_test" } }, {})).toThrow();
+  });
+
+  it("环境变量映射：p2p 查 MSTD_TEST_OPEN_IDS、group 查 MSTD_TEST_CHAT_IDS，不得交换", () => {
+    const tt = testTargetFromEnv({ MSTD_TEST_OPEN_IDS: "ou_env1, ou_env2", MSTD_TEST_CHAT_IDS: "oc_env1" });
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: "feishu:p2p:ou_env2" } }, tt)).not.toThrow();
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: "feishu:group:oc_env1" } }, tt)).not.toThrow();
+    // 交叉：open_id 出现在 chat 名单里 / chat_id 出现在 open 名单里都必须拒绝
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: "feishu:p2p:oc_env1" } }, tt)).toThrow();
+    expect(() => assertTestTarget({ kind: "schedule_reminder", payload: { deliver_to: "feishu:group:ou_env1" } }, tt)).toThrow();
   });
 });

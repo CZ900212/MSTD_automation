@@ -1,6 +1,28 @@
+import { parseSessionKey } from "../sessions/session-key.mjs";
+
 // v1 fail-closed：只允许写到配置的测试 open_id / 测试群 / 测试清单。
 export function assertTestTarget(action, { allowOpenIds, allowChatIds, allowTasklist } = {}) {
   const kind = action.kind;
+  if (kind === "schedule_reminder") {
+    const deliverTo = action.payload?.deliver_to;
+    let parsed;
+    try { parsed = parseSessionKey(String(deliverTo ?? "")); } catch {
+      throw new Error(`非法提醒目标，拒绝真写: ${JSON.stringify(deliverTo)}`);
+    }
+    if (parsed.kind === "p2p") {
+      if (!allowOpenIds || !allowOpenIds.has(parsed.openId)) {
+        throw new Error(`非测试目标，v1 拒绝真写: ${JSON.stringify(deliverTo)}（仅允许测试 open_id）`);
+      }
+      return;
+    }
+    if (parsed.kind === "group") {
+      if (!allowChatIds || !allowChatIds.has(parsed.chatId)) {
+        throw new Error(`非测试群，v1 拒绝真写: ${JSON.stringify(deliverTo)}（仅允许 MSTD_TEST_CHAT_IDS）`);
+      }
+      return;
+    }
+    throw new Error(`非法提醒目标（cron/debug 不可作为提醒目标）: ${JSON.stringify(deliverTo)}`);
+  }
   if (kind === "send_group_msg") {
     const chat = action.payload?.chat_id;
     if (!allowChatIds || !allowChatIds.has(chat)) {

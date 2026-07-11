@@ -16,18 +16,18 @@ export async function reconcileStale(db, jobId, runLark) {
   return stale.length;
 }
 
-async function directExecute(db, jobId, { runLark, testTarget }) {
+async function directExecute(db, jobId, { runLark, testTarget, heartbeat }) {
   const approved = loadApprovedHashes(db, jobId);
   const results = [];
   for (const action of actionsToExecute(db, jobId)) {
-    const approvedHash = approved.get(action.action_key) ?? null;
-    const r = await executeApprovedAction(db, { actionId: action.id, approvedHash, runLark, testTarget });
+    const approvedHash = approved.get(action.action_key) ?? null;   // 缺失 → executor fail-closed(not_approved)
+    const r = await executeApprovedAction(db, { actionId: action.id, approvedHash, runLark, testTarget, heartbeat });
     results.push({ action_key: action.action_key, ...r });
   }
   return results;
 }
 
-export async function runWritePhase(db, jobId, { spawnPi, runLark, testTarget, timeoutMs = 240000 }) {
+export async function runWritePhase(db, jobId, { spawnPi, runLark, testTarget, heartbeat = null, timeoutMs = 240000 }) {
   await reconcileStale(db, jobId, runLark);
   try {
     await Promise.race([
@@ -36,12 +36,12 @@ export async function runWritePhase(db, jobId, { spawnPi, runLark, testTarget, t
     ]);
     const remaining = actionsToExecute(db, jobId);
     if (remaining.length > 0) {
-      const results = await directExecute(db, jobId, { runLark, testTarget });
+      const results = await directExecute(db, jobId, { runLark, testTarget, heartbeat });
       return { mode: "pi", results };
     }
     return { mode: "pi", results: [] };
   } catch {
-    const results = await directExecute(db, jobId, { runLark, testTarget });
+    const results = await directExecute(db, jobId, { runLark, testTarget, heartbeat });
     return { mode: "fallback", results };
   }
 }

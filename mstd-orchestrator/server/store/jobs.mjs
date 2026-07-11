@@ -1,5 +1,16 @@
 import { randomUUID } from "node:crypto";
 
+// 会话过期归档豁免的"活跃 job"状态集。'executing'：Task 4B 确认事务提交→异步执行窗口，
+// 该窗口内 owner 会话不得被 session-expiry 归档。
+export const ACTIVE_JOB_STATUSES = ["running", "queued", "running_readonly", "awaiting_confirm", "executing"];
+
+export function hasActiveJobForSession(db, sessionKey) {
+  const placeholders = ACTIVE_JOB_STATUSES.map(() => "?").join(",");
+  return !!db.prepare(
+    `SELECT 1 FROM orch_jobs WHERE status IN (${placeholders}) AND params_json LIKE ? LIMIT 1`
+  ).get(...ACTIVE_JOB_STATUSES, `%${sessionKey}%`);
+}
+
 export function createJob(db, { templateId, title = null, paramsJson = null, status, createdBy = null }, now = Date.now()) {
   const id = randomUUID();
   db.prepare(

@@ -46,6 +46,7 @@ import { createHeartbeatStore } from "./ticker/heartbeat-store.mjs";
 import { createDeliverGrants } from "./sessions/deliver-grants.mjs";
 import { createDreaming } from "./ticker/dreaming.mjs";
 import { createSessionExpiry } from "./ticker/session-expiry.mjs";
+import { hasActiveJobForSession } from "./store/jobs.mjs";
 import { createSessionTokenRegistry } from "./http/session-tokens.mjs";
 import { createProactiveLimiter } from "./gateway/rate-limit.mjs";
 import { createObserveReport } from "./gateway/observe-report.mjs";
@@ -228,12 +229,18 @@ if (config.enableAgent && config.botOpenId) {
     },
     onComplete: (x) => reinjector.onJobComplete(x),
   });
+  // C0.4：heartbeat 改 owner-bound 结构化队列——DB due picker 逐项受信直投,
+  // 遗留 HEARTBEAT.md 启动即整文件隔离,不再作为活跃数据源。
+  // Task 4B：同一 store 也是 confirmFlow 的 schedule_reminder 已确认写 adapter。
+  const heartbeatStore = createHeartbeatStore(db);
+  heartbeatStore.releaseStale();   // 进程崩溃遗留的超时 delivering claim 放回 pending
   const confirmFlow = createConfirmFlow({
     db,
     outbound,
     renderCardCopy: ({ brief }) => renderReply({ caller, soul: "", context: "", brief, kind: "card_copy" }).then((r) => r.text),
     runLark: config.enableWrite ? makeRunLark({ profile: config.larkProfile }) : async () => ({ exitCode: 1, stdout: "", stderr: "MSTD_ENABLE_WRITE 未开" }),
     testTarget: testTargetFromEnv(process.env),
+    heartbeat: heartbeatStore,
     onExecuted: ({ jobId, sessionKey, resultsMd, ok }) => {
       reinjector.onJobComplete({ jobId, sessionKey, sessionVersion: 0, ok, result: `写操作执行结果：\n${resultsMd}` });
     },
@@ -275,10 +282,6 @@ if (config.enableAgent && config.botOpenId) {
   const cronStore = createCronStore(db);
   const cronRunner = createCronRunner({ brain, agentStore, cronStore, grants: deliverGrants, snapshotFn });
   ticker.register("cron", 1, () => cronRunner.runDue());
-  // C0.4：heartbeat 改 owner-bound 结构化队列——DB due picker 逐项受信直投,
-  // 遗留 HEARTBEAT.md 启动即整文件隔离,不再作为活跃数据源。
-  const heartbeatStore = createHeartbeatStore(db);
-  heartbeatStore.releaseStale();   // 进程崩溃遗留的超时 delivering claim 放回 pending
   const heartbeat = createHeartbeat({
     store: heartbeatStore,
     deliverReminder: async ({ deliverTo, text, idempotencyKey }) => {
@@ -302,9 +305,7 @@ if (config.enableAgent && config.botOpenId) {
   });
   const expiry = createSessionExpiry({
     db, agentStore, actors, brain, snapshotFn,
-    hasActiveJob: (key) => !!db.prepare(
-      "SELECT 1 FROM orch_jobs WHERE status IN ('running','queued','running_readonly','awaiting_confirm') AND params_json LIKE ? LIMIT 1"
-    ).get(`%${key}%`),
+    hasActiveJob: (key) => hasActiveJobForSession(db, key),
   });
   ticker.register("session-expiry", 10, () => expiry.sweep());
   if (larkHealth) ticker.register("lark-health", 10, () => larkHealth.checkOnce().catch(() => {}));

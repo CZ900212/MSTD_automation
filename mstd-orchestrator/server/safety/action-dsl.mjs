@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { parseStrictIsoWithTimezone } from "../time/strict-iso.mjs";
+import { canonicalDeliverableKey } from "../sessions/session-key.mjs";
 
 export function isValidOpenId(v) {
   return typeof v === "string" && /^ou_/.test(v);
@@ -89,7 +91,33 @@ const AGENT_PAYLOADS = {
     if (typeof p.card_ref !== "string" || !p.card_ref) throw new Error("send_group_msg 缺 card_ref");
     return { payload: { chat_id: p.chat_id, card_ref: p.card_ref }, targetOpenId: null, requiresOpenId: false };
   },
+  // Task 4B：跨会话提醒。payload 闭合 {deliver_to, due_iso, text}；due 统一规范成 UTC toISOString,
+  // 等价 offset 同意图同 hash。owner 不在 payload 里——执行时取 confirm flow 的 authoritative sessionKey。
+  schedule_reminder(p) {
+    const allowed = new Set(["deliver_to", "due_iso", "text"]);
+    for (const k of Object.keys(p)) {
+      if (!allowed.has(k)) throw new Error(`schedule_reminder 未知字段: ${k}（payload 闭合）`);
+    }
+    const deliverTo = canonicalDeliverableKey(p.deliver_to);
+    if (!deliverTo) {
+      throw new Error(`schedule_reminder 非法 deliver_to: ${JSON.stringify(p.deliver_to)}（仅 canonical feishu:p2p:*/feishu:group:*）`);
+    }
+    const epochMs = parseStrictIsoWithTimezone(p.due_iso);
+    if (epochMs === null) {
+      throw new Error(`schedule_reminder 非法 due_iso: ${JSON.stringify(p.due_iso)}（需带时区的严格 ISO 8601）`);
+    }
+    if (typeof p.text !== "string" || !p.text.trim()) throw new Error("schedule_reminder text 必填（非空字符串）");
+    if (p.text.includes("\u0000")) throw new Error("schedule_reminder text 含非法控制字符");
+    if (p.text.length > REMINDER_TEXT_MAX) throw new Error(`schedule_reminder text 超长（上限 ${REMINDER_TEXT_MAX} 字符）`);
+    return {
+      payload: { deliver_to: deliverTo, due_iso: new Date(epochMs).toISOString(), text: p.text },
+      targetOpenId: null,
+      requiresOpenId: false,
+    };
+  },
 };
+
+const REMINDER_TEXT_MAX = 4000;   // 与 heartbeat 队列 TEXT_MAX 对齐
 
 export function buildAgentAction({ jobId, kind, payload, ordinal = 0 }) {
   const normalizer = AGENT_PAYLOADS[kind];

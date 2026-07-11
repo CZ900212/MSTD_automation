@@ -22,5 +22,6 @@ export function consumeApprovalToken(db, { token, jobId, operatorOpenId, now = D
   }
   const info = db.prepare(`UPDATE approval_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL`).run(now, row.id);
   if (info.changes !== 1) return { ok: false, reason: "already used (race)" };
-  return { ok: true, issuedToOpenId: row.issued_to_open_id };
+  // tokenId：供确认事务把 decision 关联到消费的 token 行（决策可追溯）
+  return { ok: true, issuedToOpenId: row.issued_to_open_id, tokenId: row.id };
 }
