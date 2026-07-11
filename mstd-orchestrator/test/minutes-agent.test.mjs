@@ -140,6 +140,22 @@ describe("createMinutesBroadcast：执行后群播报", () => {
   });
 });
 
+describe("minutes-consumer：stdin 保活", () => {
+  it("spawn 必须开 stdin pipe——event consume 把 stdin EOF 当退出信号", () => {
+    const db = freshDb();
+    const spawnOpts = [];
+    const c = startMinutesConsumer({
+      db,
+      launcher: { submit: () => ({ id: "j" }) },
+      larkCli: "lark-cli",
+      spawnFn: (_cmd, _args, opts) => { spawnOpts.push(opts); return fakeSpawn(); },
+      log: () => {},
+    });
+    expect(spawnOpts[0].stdio[0]).toBe("pipe");
+    c.stop();
+  });
+});
+
 describe("minutes-consumer：事件里的 owner 透传为 host_open_id", () => {
   it("evt.owner_id 存在时进 params，缺席时不加字段", () => {
     const db = freshDb();

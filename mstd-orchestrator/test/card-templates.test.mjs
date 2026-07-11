@@ -29,7 +29,7 @@ describe("确认卡固定模板", () => {
     expect(card.schema).toBe("2.0");
     expect(card.config.update_multi).toBe(true);
     const json = JSON.stringify(card);
-    expect(json).toContain("person_select");
+    expect(json).toContain("select_person");
     expect(json).toContain("Person_assignee_ak1");            // 人员选择器命名规范
     expect(json).toContain('"tok_1"');
     // 按钮 value 只含 action/token_ref，不含 payload
@@ -50,7 +50,7 @@ describe("确认卡固定模板", () => {
 
   it("无需补选人时不渲染表单人员项", () => {
     const card = buildConfirmCard({ ...base, formFields: [] });
-    expect(JSON.stringify(card)).not.toContain("person_select");
+    expect(JSON.stringify(card)).not.toContain("select_person");
   });
 });
 

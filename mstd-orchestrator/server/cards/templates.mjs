@@ -14,7 +14,7 @@ export function buildConfirmCard({ title, previewMd, actions = [], formFields = 
   const formElements = [];
   for (const f of formFields) {
     formElements.push({
-      tag: "person_select",
+      tag: "select_person",   // 卡片 JSON 2.0 的人员单选组件（写成 person_select 会被 200621 拒收）
       name: `Person_assignee_${f.actionKey}`,
       required: true,
       placeholder: text(f.label ?? "选择负责人"),

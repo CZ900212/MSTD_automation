@@ -61,7 +61,8 @@ export function startMinutesConsumer({
     const args = [];
     if (profile) args.push("--profile", profile);
     args.push("event", "consume", MINUTES_EVENT_KEY, "--as", "user", "--quiet");
-    child = spawnFn(larkCli, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // stdin 必须保活：event consume 把 stdin EOF 当退出信号（同 gateway consumer 的坑）
+    child = spawnFn(larkCli, args, { stdio: ["pipe", "pipe", "pipe"] });
     let buf = "";
     child.stdout?.on?.("data", (d) => {
       buf += d.toString("utf8");
