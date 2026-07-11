@@ -132,10 +132,20 @@ export function createConfirmFlow({
   // lark-cli 扁平/官方信封两种形状都归一化
   function parseCardEvent(raw) {
     const e = raw?.event ?? raw ?? {};
-    const operatorOpenId = e.operator?.open_id ?? e.operator_open_id ?? e.open_id ?? null;
+    // lark-cli 扁平形状的操作人是 operator_id（字符串或 {open_id}），官方信封是 operator.open_id
+    const opId = e.operator_id;
+    const operatorOpenId = e.operator?.open_id
+      ?? (typeof opId === "string" ? opId : opId?.open_id)
+      ?? e.operator_open_id ?? e.open_id ?? null;
     const messageId = e.context?.open_message_id ?? e.open_message_id ?? e.message_id ?? null;
-    const value = e.action?.value ?? e.value ?? {};
-    const formValue = e.action?.form_value ?? e.form_value ?? {};
+    // 扁平形状里 action_value/form_value 是 JSON 字符串，官方信封是对象——都归一成对象
+    const asObj = (v) => {
+      if (v == null) return {};
+      if (typeof v !== "string") return v;
+      try { return JSON.parse(v); } catch { return {}; }
+    };
+    const value = asObj(e.action?.value ?? e.value ?? e.action_value);
+    const formValue = asObj(e.action?.form_value ?? e.form_value);
     return { operatorOpenId, messageId, value, formValue };
   }
 

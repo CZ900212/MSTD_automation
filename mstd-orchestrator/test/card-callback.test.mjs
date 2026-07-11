@@ -37,6 +37,22 @@ describe("卡片回调消费（operator/token/hash 三重校验）", () => {
     },
   });
 
+  it("lark-cli 扁平事件形状：operator_id 字符串 + action_value/form_value JSON 串照样确认成功", async () => {
+    const ak = db.prepare("SELECT action_key FROM job_actions WHERE job_id = ?").get(jobId).action_key;
+    const out = await flow.handleCardAction({
+      type: "card.action.trigger",
+      operator_id: "ou_init",
+      message_id: messageId,
+      action_tag: "button",
+      action_value: JSON.stringify({ action: "confirm", token_ref: tokenRef }),
+      action_name: "confirm_btn",
+      form_value: JSON.stringify({ [`Person_assignee_${ak}`]: "ou_pick" }),
+    });
+    expect(JSON.stringify(out.card)).toContain("执行中");
+    await sleep(20);
+    expect(db.prepare("SELECT status FROM confirm_cards WHERE job_id = ?").get(jobId).status).toBe("done");
+  });
+
   it("正常确认：form 补齐重算 hash → 返回执行中卡（无按钮）→ 异步执行 → 终态 done", async () => {
     const ak = db.prepare("SELECT action_key FROM job_actions WHERE job_id = ?").get(jobId).action_key;
     const before = db.prepare("SELECT payload_hash FROM job_actions WHERE job_id = ?").get(jobId).payload_hash;

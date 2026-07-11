@@ -280,6 +280,7 @@ if (config.enableAgent && config.botOpenId) {
     handleTurn: (turn) => {
       console.error(`[agent] turn kind=${turn.kind} session=${turn.sessionKey ?? "-"} mode=${turn.mode ?? "-"} items=${turn.items?.length ?? 0}`);
       if (turn.kind === "card_action") {
+        console.error(`[agent] card_action evt: ${JSON.stringify(turn.evt.raw ?? turn.evt).slice(0, 600)}`);
         return confirmFlow.handleCardAction(turn.evt.raw ?? turn.evt)
           .then((r) => console.error(`[agent] card_action 处理完成: ${JSON.stringify(r).slice(0, 120)}`))
           .catch((e) => console.error(`[agent] card_action 失败: ${e?.message ?? e}`));
