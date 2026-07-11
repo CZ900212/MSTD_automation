@@ -60,6 +60,17 @@
 切换：`MSTD_DREAMING_MODE=apply` 重启。切换后第一周每天早上看 dreams 报告 + `git -C agent-memory diff HEAD~1`。
 回滚：`git -C agent-memory revert/reset` 到蒸馏前备份 commit，改回 shadow。
 
+## 4.5 机器人改名 SOP（C5,2026-07-12 已按此完成「小达」切换）
+
+**顺序严格不可倒置**（先双名兼容,再改后台,最后切主名）：
+
+1. **aliases 先行**：`.env` 写 `MSTD_BOT_ALIASES="<旧显示名>"`（值含空格/引号必须整体双引号包裹,`zsh -n` 校验通过再用）。重启 daemon 后真机发 `@旧名 在吗`,确认日志 `mode=addressed`。
+2. **后台改名发版**：open.feishu.cn 开发者后台（应用 cli_aac4855d1a781cd6）→ 凭证与基础信息 → 国际化配置 → 应用名称改「小达」（应用描述为必填项,需一并填写）→ 保存 → 版本管理与发布 → 创建版本（版本号顺延,可用范围沿用上一版）→ 提交发布。本应用为企业自建+可用范围仅所有者,**免审核,提交即生效**;若未来可用范围扩大触发管理员审核,通知用户等待。
+3. **切主名**：发版生效后 `.env` 改 `MSTD_BOT_NAME=小达`（旧名留在 aliases）。按 PID 所有权规则重启 daemon;真机分别 `@新名`、`@旧名` 各发一条,**两条都必须** `mode=addressed` 且入库 content 为 `[@我] …`（2026-07-12 实测通过）。
+4. **回滚预案**：恢复 `.env` 双名配置（`MSTD_BOT_NAME=旧名`,新名进 aliases）→ 重启 → 后台按步骤 2 重新发布旧显示名版本。
+
+**daemon PID 所有权规则**（本 SOP 全程适用）：操作前 `pgrep -af '[n]ode .*server/index.mjs'`;已有 daemon 且不是本次 rollout 记录的 PID → 不得代杀、不得起第二个 consumer（飞书对同应用多长连接负载均衡投递,双 consumer 会抢事件）,暂停等维护窗口。临时验证实例必须记录自己的 PID 并只清理它。
+
 ## 5. 告警响应
 
 | 告警/症状 | 第一反应 | 排查 |
