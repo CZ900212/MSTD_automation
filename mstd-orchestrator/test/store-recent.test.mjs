@@ -131,6 +131,16 @@ describe("C3 store.recent / replaySet", () => {
   });
 });
 
+describe("whoLabel 共享 who 标注（Task 7:群窗口第五消费点同源）", () => {
+  it("tool 恒为内部记录;fallback 可定制;assistant 恒为我", async () => {
+    const { whoLabel } = await import("../server/sessions/history-format.mjs");
+    expect(whoLabel({ role: "tool", sender_name: "张三" })).toBe("内部记录");
+    expect(whoLabel({ role: "user" }, { fallback: "群成员" })).toBe("群成员");
+    expect(whoLabel({ role: "user", sender_name: "李四" }, { fallback: "群成员" })).toBe("李四");
+    expect(whoLabel({ role: "assistant" }, { fallback: "群成员" })).toBe("我");
+  });
+});
+
 describe("formatHistoryLine 统一历史行语义", () => {
   it("user=[名字] / assistant=[我] / tool=[内部记录],tool 永不回退成 [用户]", async () => {
     const { formatHistoryLine } = await import("../server/sessions/history-format.mjs");

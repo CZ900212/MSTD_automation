@@ -833,6 +833,13 @@ const HHMM = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour:
 
 (回写只 append assistant 记录,不触发 ambient limiter——limiter 管的是"群内主动开口"判定,cron 投递的授权已由 grants 承担;在 limiter 相关测试里补一条断言:跨目标回写不消耗限额。)
 
+**实施偏差(2026-07-11,§5.1 对抗审核仲裁)**:①nudge 从"回合前 claim"改为"回合前
+peek(不落水位)+ brain 回合成功后 claim"——原方案在 brain 失败时提醒被消费却未送达,
+该十位点提醒永久丢失;改后失败不消费、下回合重试,崩在成功与 claim 之间最坏重复提醒
+一次(无害)。store 增 peekMemoryNudge。②群窗口的 who 标注上收 history-format.mjs 的
+whoLabel(m,{fallback})与 formatHistoryLine 同源(窗口是第五个消费点,不许独立复刻);
+③窗口计算加 verdict 条件(escalate/steer 才算),quick_reply 不白读 DB。
+
 - [ ] **Step 4: 跑测试确认通过 + 全量回归**
 
 Run: `npx vitest run test/group-mention.test.mjs test/turn-handler.test.mjs test/session-store.test.mjs test/memory-compact.test.mjs && npx vitest run`

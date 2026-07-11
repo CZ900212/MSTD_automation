@@ -74,25 +74,40 @@ export function createSessionStore(db) {
     return db.prepare("SELECT version FROM agent_sessions WHERE id = ?").get(sessionId).version;
   }
 
-  // 未消费的旁听消息（群@ pending 窗口），取最近 limit 条
-  function recentObserved(sessionId, { limit = 50 } = {}) {
-    return db.prepare(
-      `SELECT * FROM (
-         SELECT * FROM agent_messages
-         WHERE session_id = ? AND observed = 1 AND observed_consumed = 0 AND active = 1
-         ORDER BY ts DESC LIMIT ?
-       ) ORDER BY ts`
-    ).all(sessionId, limit);
+  // C3.5 持久 nudge：累计 user/非 observed 行数(不过滤 active——softDelete 不减计数),
+  // 事务内只在跨过新的 every 位点时推进 watermark;进程重启后不重复提醒。
+  // 用法:回合前 peek(不落水位)决定是否注入提醒,回合成功后 claim——brain 失败时不消费,
+  // 提醒下回合重试;崩在成功与 claim 之间最坏重复提醒一次(无害),优于永久丢失。
+  function nudgePoint(sessionId, every) {
+    const total = db.prepare(
+      "SELECT COUNT(*) n FROM agent_messages WHERE session_id = ? AND role = 'user' AND observed = 0"
+    ).get(sessionId).n;
+    return Math.floor(total / every) * every;
   }
 
-  function markObservedConsumed(messageIds) {
-    const stmt = db.prepare("UPDATE agent_messages SET observed_consumed = 1 WHERE id = ?");
-    for (const id of messageIds) stmt.run(id);
+  function peekMemoryNudge(sessionId, { every = 10 } = {}) {
+    const point = nudgePoint(sessionId, every);
+    if (point <= 0) return false;
+    const row = db.prepare("SELECT memory_nudge_watermark w FROM agent_sessions WHERE id = ?").get(sessionId);
+    return (row?.w ?? 0) < point;
+  }
+
+  const claimNudgeTx = db.transaction((sessionId, every) => {
+    const point = nudgePoint(sessionId, every);
+    if (point <= 0) return false;
+    const r = db.prepare(
+      "UPDATE agent_sessions SET memory_nudge_watermark = ? WHERE id = ? AND memory_nudge_watermark < ?"
+    ).run(point, sessionId, point);
+    return r.changes === 1;
+  });
+
+  function claimMemoryNudge(sessionId, { every = 10 } = {}) {
+    return claimNudgeTx(sessionId, every);
   }
 
   function touch(sessionId, now = Date.now()) {
     touchSession.run(now, now, sessionId);
   }
 
-  return { getOrCreate, append, transcript, recent, replaySet, softDelete, bumpVersion, touch, recentObserved, markObservedConsumed };
+  return { getOrCreate, append, transcript, recent, replaySet, softDelete, bumpVersion, touch, peekMemoryNudge, claimMemoryNudge };
 }

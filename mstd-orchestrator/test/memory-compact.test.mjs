@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
-import { createCompactor, shouldCompact, shouldNudge } from "../server/memory/compact.mjs";
+import { createCompactor, shouldCompact } from "../server/memory/compact.mjs";
 
 describe("上下文压缩 + flush + nudge", () => {
   it("shouldCompact 阈值判定", () => {
@@ -63,16 +63,5 @@ describe("上下文压缩 + flush + nudge", () => {
     expect(earlyText).not.toContain("[用户]: 内部X");
   });
 
-  it("nudge 每 10 用户轮触发一次，从 transcript 重算（重启安全）", () => {
-    const db = openDb();
-    migrate(db);
-    const store = createSessionStore(db);
-    const s = store.getOrCreate("feishu:p2p:ou_b", { kind: "p2p" });
-    for (let i = 0; i < 9; i++) store.append(s.id, { role: "user", content: `u${i}`, ts: i });
-    expect(shouldNudge(store.transcript(s.id))).toBe(false);
-    store.append(s.id, { role: "user", content: "u10", ts: 100 });
-    expect(shouldNudge(store.transcript(s.id))).toBe(true);
-    store.append(s.id, { role: "user", content: "u11", ts: 101 });
-    expect(shouldNudge(store.transcript(s.id))).toBe(false);
-  });
+  // Task 7:nudge 判定迁 store.claimMemoryNudge(持久 watermark),状态机测试见 session-store.test.mjs
 });

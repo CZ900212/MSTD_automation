@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { parseSessionKey } from "../sessions/session-key.mjs";
-import { formatHistoryLine } from "../sessions/history-format.mjs";
-import { shouldNudge, NUDGE_NOTE } from "../memory/compact.mjs";
+import { formatHistoryLine, whoLabel } from "../sessions/history-format.mjs";
+import { NUDGE_NOTE } from "../memory/compact.mjs";
+
+// 群窗口时间戳:北京时间 HH:MM
+const HHMM = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
 
 // 回合执行器：triage 四选一 → quick_reply 直出 / no_reply 落 observed / steer 注入 / escalate 走 brain。
 // 结构性强制：brain 的 finalText 永不出站；5.5 只能经 reply 工具（handleReply）表达。
@@ -105,6 +108,19 @@ export function createTurnHandler({
       return;
     }
 
+    // C3.3 滚动窗口：在本批落库之前取"截至本批之前"的最近 30 条(user/assistant,含自身发言),
+    // 一次性 observed 消费机制已退役——复述二连问不再丢上下文。who 标注与 formatHistoryLine 同源。
+    // 只有 escalate/steer(空闲) 用得上窗口;quick_reply 不白算这次 DB 读。
+    let windowBlock = "";
+    if ((verdict.action === "escalate" || verdict.action === "steer")
+      && mode === "addressed" && sessionKey.startsWith("feishu:group:")) {
+      const win = store.recent(session.id, { limit: 30, roles: ["user", "assistant"] });
+      if (win.length) {
+        windowBlock = win.map((m) =>
+          `${HHMM.format(new Date(m.ts))} [${whoLabel(m, { fallback: "群成员" })}]: ${m.content}`
+        ).join("\n");
+      }
+    }
     appendItems(session.id, items);
 
     if (verdict.action === "quick_reply") {
@@ -116,20 +132,15 @@ export function createTurnHandler({
 
     // escalate（或 steer 但中枢已空闲 → 当 escalate 跑）
     let brief = verdict.brief ?? verdict.note ?? renderContext(items);
-    // 群@ pending 窗口：把自上次发言以来的旁听消息注入一次（注入即消费）
     let context = renderContext(items);
-    if (mode === "addressed" && sessionKey.startsWith("feishu:group:")) {
-      const pending = store.recentObserved(session.id);
-      if (pending.length) {
-        const block = pending.map((m) => `[${m.sender_name ?? m.sender_open_id ?? "群成员"}]: ${m.content}`).join("\n");
-        context = `[自你上次发言以来的群消息-仅供上下文]\n${block}\n[/上下文]\n\n${context}`;
-        store.markObservedConsumed(pending.map((m) => m.id));
-      }
-    }
+    if (windowBlock) context = `[群内最近消息-截至本批之前]\n${windowBlock}\n[/群内最近消息]\n\n${context}`;
     try {
       if (compactor) await compactor.maybeCompact({ session, sessionKey, brain, snapshot });
-      if (shouldNudge(store.transcript(session.id, { limit: 1000 }))) brief += `\n\n${NUDGE_NOTE}`;
+      // C3.5:先 peek 注入提醒,回合成功后才 claim——brain 失败不消费水位,提醒下回合重试
+      const wantNudge = store.peekMemoryNudge(session.id);
+      if (wantNudge) brief += `\n\n${NUDGE_NOTE}`;
       const result = await brain.turn({ session, sessionKey, brief, context, snapshot });
+      if (wantNudge) store.claimMemoryNudge(session.id);
       for (const e of result.events ?? []) onEvent({ type: "brain_event", sessionKey, event: e });
       // finalText 只落库为内部记录（role=tool），绝不出站
       if (result.finalText) {
@@ -165,6 +176,15 @@ export function createTurnHandler({
 
     const { messageId } = await sendToSession(deliverKey, rendered.text);
     store.append(session.id, { role: "assistant", content: rendered.text, platformMessageId: messageId, ts: Date.now() });
+    // C3.4 跨目标回写:目标会话自己的窗口里必须有这条投递(带 meta,不许造 chat_id=null 的群 session)。
+    // 只 append assistant 记录,不触发 ambient limiter——跨会话授权已由 grants 承担。
+    if (deliverKey !== sessionKey) {
+      const p = parseSessionKey(deliverKey);
+      if (p.kind === "group" || p.kind === "p2p") {
+        const targetSession = store.getOrCreate(deliverKey, { kind: p.kind, chatId: p.kind === "group" ? p.chatId : null });
+        store.append(targetSession.id, { role: "assistant", content: rendered.text, platformMessageId: messageId, ts: Date.now() });
+      }
+    }
     onEvent({ type: "reply_sent", sessionKey, messageId });
     return { ok: true, text: rendered.text, message_id: messageId };
   }

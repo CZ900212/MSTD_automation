@@ -1,5 +1,5 @@
 // 上下文压缩：token 超阈值 → 先 memory flush 回合 → 早期回合摘要化（reason 链）保留近 N 条原文。
-// nudge：每 10 用户轮提醒模型整理记忆（计数从 transcript 重算，进程重启不丢）。
+// nudge 判定在 store.peekMemoryNudge/claimMemoryNudge（持久 watermark），本文件只出 NUDGE_NOTE 文案。
 import { formatHistoryLine } from "../sessions/history-format.mjs";
 
 export const estimateTokens = (transcript) =>
@@ -7,12 +7,8 @@ export const estimateTokens = (transcript) =>
 
 export const shouldCompact = (transcriptTokens, threshold) => transcriptTokens > threshold;
 
-export const NUDGE_EVERY = 10;
-export function shouldNudge(transcript) {
-  const userTurns = transcript.filter((m) => m.role === "user" && !m.observed).length;
-  return userTurns > 0 && userTurns % NUDGE_EVERY === 0;
-}
-
+// C3.5:nudge 判定已迁 store.claimMemoryNudge(持久 watermark,重启不重复);
+// 本文件只保留提示文案。
 export const NUDGE_NOTE =
   "【系统提醒】已累积较多对话，请检查是否有值得长期记住的事实/偏好/决定，用 memory 工具整理（新增/更新/淘汰）。整理完继续正常回复，不必向用户提及。";
 

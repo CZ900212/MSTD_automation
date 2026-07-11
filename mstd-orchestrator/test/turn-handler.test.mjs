@@ -150,4 +150,126 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
     const target = store.getOrCreate("feishu:p2p:ou_b");
     expect(store.transcript(target.id).at(-1).content).toBe("提醒：喝水");
   });
+
+  // ---- Task 7 C3.3/3.4/3.5 ----
+  const t = (h, m) => Date.UTC(2026, 6, 10, h - 8, m);          // 北京 HH:MM 对应的 epoch
+
+  it("C3.3 群窗口严格最近30条、排除 tool 与当前批,含自身发言,带 HH:MM", async () => {
+    const gs = store.getOrCreate("feishu:group:oc_1", { kind: "group", chatId: "oc_1" });
+    deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "复述" });
+    for (let i = 1; i <= 35; i++) store.append(gs.id, {
+      role: i === 35 ? "assistant" : "user", senderName: `员工${i}`, content: `m${i}`, observed: true, ts: t(20, i),
+    });
+    store.append(gs.id, { role: "tool", content: "内部不该出现", ts: t(21, 0) });
+    store.append(gs.id, { role: "system", content: "〔压缩摘要〕内部摘要不该出现", ts: t(21, 1) });
+    await handler.handleTurn({ kind: "message", session: gs, sessionKey: "feishu:group:oc_1",
+      items: [{ senderName: "李四", content: "[@我] 当前批", ts: t(21, 48) }], mode: "addressed" });
+    const ctx = deps.brain.turn.mock.calls[0][0].context;
+    const block = ctx.match(/\[群内最近消息-截至本批之前\]\n([\s\S]*?)\n\[\/群内最近消息\]/)[1].split("\n");
+    expect(block).toHaveLength(30);
+    expect(block.join("\n")).toContain("m6");
+    expect(block.join("\n")).toContain("[我]: m35");
+    expect(block.some((l) => l.endsWith(": m5"))).toBe(false);   // 第 31 旧的 m5 已滚出窗口
+    expect(block.join("\n")).not.toContain("内部不该出现");
+    expect(block.join("\n")).not.toContain("内部摘要不该出现");   // system 同样排除
+    expect(block.join("\n")).not.toContain("当前批");
+    expect(block.every((l) => /^\d{2}:\d{2} \[/.test(l))).toBe(true);   // 每一行都带 HH:MM
+    expect(block[0]).toMatch(/^20:06 /);                       // 北京时间(注:本机为 UTC+8,时区变异需 CI 异区兜底)
+    expect(ctx).toContain("[/群内最近消息]\n\n");                // 块与本批之间的规定边界
+    expect(ctx.slice(ctx.indexOf("[/群内最近消息]"))).toContain("当前批");
+    expect(ctx.match(/当前批/g)).toHaveLength(1);
+  });
+
+  // §5.2 审卷补杀:窗口只在群 addressed 的 escalate 注入——p2p addressed 与群 ambient 都不得有
+  it("C3.3 窗口作用域负向:p2p addressed 与群 ambient 无窗口定界符", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "问" });
+    store.append(session.id, { role: "user", senderOpenId: "ou_a", content: "早", ts: 1 });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.brain.turn.mock.calls[0][0].context).not.toContain("群内最近消息");
+    const gs = store.getOrCreate("feishu:group:oc_1", { kind: "group", chatId: "oc_1" });
+    store.append(gs.id, { role: "user", senderName: "甲", content: "闲聊", observed: true, ts: 1 });
+    await handler.handleTurn({ kind: "message", session: gs, sessionKey: "feishu:group:oc_1",
+      items: [{ content: "路过", senderOpenId: "ou_x", ts: 2 }], mode: "ambient" });
+    expect(deps.brain.turn.mock.calls[1][0].context).not.toContain("群内最近消息");
+  });
+
+  it("C3.3 复述二连问都有料(不再一次性消费)", async () => {
+    const gs = store.getOrCreate("feishu:group:oc_1", { kind: "group", chatId: "oc_1" });
+    deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "复述" });
+    store.append(gs.id, { role: "user", senderName: "张三", content: "球赛绝了", observed: true, ts: 1000 });
+    await handler.handleTurn({ kind: "message", session: gs, sessionKey: "feishu:group:oc_1",
+      items: [{ senderName: "李四", content: "[@我] 复述", ts: 2000 }], mode: "addressed" });
+    await handler.handleTurn({ kind: "message", session: gs, sessionKey: "feishu:group:oc_1",
+      items: [{ senderName: "李四", content: "[@我] 再复述一次", ts: 3000 }], mode: "addressed" });
+    const ctx2 = deps.brain.turn.mock.calls[1][0].context;
+    expect(ctx2).toContain("球赛绝了");                        // 第二问仍可见
+    // 第二问本体恰一次且在窗口块之后——缓存首轮 context 的等价改写会丢第二问,必须红
+    expect(ctx2.match(/再复述一次/g)).toHaveLength(1);
+    expect(ctx2.indexOf("再复述一次")).toBeGreaterThan(ctx2.indexOf("[/群内最近消息]"));
+    expect(ctx2).not.toContain("自你上次发言以来");            // 旧一次性消费定界符已退役
+  });
+
+  it("C3.4 跨目标投递回写目标 session transcript(带 chat_id meta),源/目标各恰一条完整记录", async () => {
+    deps.grants.grant("cron:job-9", "feishu:group:oc_1");
+    await handler.handleReply({ sessionKey: "cron:job-9", brief: "播报", target: "feishu:group:oc_1" });
+    const target = store.getOrCreate("feishu:group:oc_1");
+    expect(target.chat_id).toBe("oc_1");                       // 评审修正:必须带 meta,不许 chat_id=null
+    const src = store.getOrCreate("cron:job-9");
+    const count = (sid) => db.prepare(
+      "SELECT COUNT(*) n FROM agent_messages WHERE session_id = ? AND role='assistant' AND content='渲染稿' AND platform_message_id='om_9'"
+    ).get(sid).n;
+    expect(count(src.id)).toBe(1);                             // 源恰一条(含 platform_message_id)
+    expect(count(target.id)).toBe(1);                          // 目标恰一条,不重复
+  });
+
+  // §5.2 审卷补杀:出站成功后才回写——send 失败时源/目标零落库
+  it("C3.4 出站失败:源与目标 transcript 都不落库", async () => {
+    deps.grants.grant("cron:job-9", "feishu:group:oc_1");
+    deps.outbound.sendMessage.mockRejectedValueOnce(new Error("lark down"));
+    await expect(handler.handleReply({ sessionKey: "cron:job-9", brief: "播报", target: "feishu:group:oc_1" })).rejects.toThrow();
+    const n = db.prepare("SELECT COUNT(*) n FROM agent_messages").get().n;
+    expect(n).toBe(0);
+  });
+
+  // §5.2 审卷补杀:p2p 跨目标回写正向 + debug 目标不回写
+  it("C3.4 跨目标 p2p 回写;debug 目标出站但不建目标 transcript", async () => {
+    deps.grants.grant("cron:job-9", "feishu:p2p:ou_c");
+    await handler.handleReply({ sessionKey: "cron:job-9", brief: "私聊播报", target: "feishu:p2p:ou_c" });
+    const p2pTarget = store.getOrCreate("feishu:p2p:ou_c");
+    expect(store.recent(p2pTarget.id, { limit: 1 })[0].role).toBe("assistant");
+    deps.grants.grant("cron:job-9", "debug:d1");
+    const r = await handler.handleReply({ sessionKey: "cron:job-9", brief: "调试", target: "debug:d1" });
+    expect(r.ok).toBe(true);
+    expect(db.prepare("SELECT 1 FROM agent_sessions WHERE session_key = 'debug:d1'").get()).toBeUndefined();
+  });
+
+  // §5.2 审卷补杀:deliverKey===sessionKey(无 target/自指 target)不双写
+  it("C3.4 无 target 与显式 self-target 各只落一条", async () => {
+    await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "x" });
+    expect(db.prepare("SELECT COUNT(*) n FROM agent_messages WHERE session_id = ?").get(session.id).n).toBe(1);
+    await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "y", target: "feishu:p2p:ou_a" });
+    expect(db.prepare("SELECT COUNT(*) n FROM agent_messages WHERE session_id = ?").get(session.id).n).toBe(2);
+  });
+
+  it("C3.5 nudge 走持久 watermark:第 10 条 user 后恰提醒一次,重复回合不再提醒", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "问" });
+    for (let i = 1; i <= 9; i++) store.append(session.id, { role: "user", senderOpenId: "ou_a", content: `u${i}`, ts: i });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });  // 第 10 条
+    expect(deps.brain.turn.mock.calls[0][0].brief).toContain("系统提醒");
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items: [{ content: "追问", senderOpenId: "ou_a", ts: 99 }], mode: "addressed" });
+    expect(deps.brain.turn.mock.calls[1][0].brief).not.toContain("系统提醒");
+  });
+
+  // §5.1 审核采纳:brain 失败不消费水位——提醒下回合重试,不许"claim 了却没送达"永久丢失
+  it("C3.5 nudge 回合 brain 失败:水位不消费,下回合重新提醒", async () => {
+    deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "问" });
+    deps.brain.turn.mockRejectedValueOnce(new Error("网关 503"));
+    for (let i = 1; i <= 9; i++) store.append(session.id, { role: "user", senderOpenId: "ou_a", content: `u${i}`, ts: i });
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });  // 第 10 条,brain 挂
+    expect(deps.brain.turn.mock.calls[0][0].brief).toContain("系统提醒");
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items: [{ content: "再来", senderOpenId: "ou_a", ts: 99 }], mode: "addressed" });
+    expect(deps.brain.turn.mock.calls[1][0].brief).toContain("系统提醒");   // 未消费 → 重试
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items: [{ content: "又来", senderOpenId: "ou_a", ts: 100 }], mode: "addressed" });
+    expect(deps.brain.turn.mock.calls[2][0].brief).not.toContain("系统提醒");  // 成功后已消费
+  });
 });

@@ -63,4 +63,17 @@ describe("旁听三层门控接线（规则→V4→5.5）", () => {
     await handler.handleTurn(turn({ mode: "addressed" }));
     expect(deps.outbound.sendMessage).toHaveBeenCalled();
   });
+
+  // Task 7 C3.4：跨目标回写只是落库记录,不是"群内主动开口"——不消耗 ambient 限额
+  it("跨目标投递回写不消耗群限额（limiter 零调用）", async () => {
+    const { createDeliverGrants } = await import("../server/sessions/deliver-grants.mjs");
+    const grants = createDeliverGrants();
+    grants.grant("cron:job-1", "feishu:group:oc_1");
+    const handler2 = createTurnHandler({ ...deps, grants, soul: "" });
+    await handler2.handleReply({ sessionKey: "cron:job-1", brief: "播报", target: "feishu:group:oc_1" });
+    expect(limiter.allow).not.toHaveBeenCalled();
+    expect(limiter.record).not.toHaveBeenCalled();
+    const target = store.getOrCreate("feishu:group:oc_1");
+    expect(store.recent(target.id, { limit: 1 })[0].role).toBe("assistant");
+  });
 });
