@@ -519,3 +519,48 @@ Task 11 分流落地前是假声明——提示词主动诱导出口吐表格,te
 
 - [MSTD-R] 报告信仍待用户放行。
 - 下一任务:阶段一 Task 13(文档同步+全量回归+真机验收剧本)——阶段一最后一项。
+
+## 2026-07-12 - 阶段一 Task 13:文档同步+全量回归+真机验收剧本(920f273)【阶段一收官】
+
+### 做了什么
+
+- README 全面同步:respond 链 v4-pro、pi-ext 增 persona/lark-read、agent-workspace
+  /scripts 目录、SOUL fail-fast+人格生效延迟(Pi 拉起才读 SOUL,改后需回收或重启)+
+  进程所有权、消息记号约定全集、heartbeat 走 DB(旧 HEARTBEAT.md quarantine)、
+  C6 deliverText 唯一出口、SQLite 方言例外、MSTD_BOT_ALIASES/静态 token 废弃、
+  持牌 user 仅 oc_b67c 群的坑。
+- scripts/e2e-serial.sh + e2e-one.sh:五套 E2E 串行 + Vitest JSON 门禁
+  (success && passed>0 && passed==total && 无 failed/pending/todo),独占前置探测
+  daemon/consumer 存在即退出不代杀。固化"skip 假绿判 FAIL"为可执行门禁。
+- spec 状态改「已实施」。
+
+### 验证
+
+- 单测双绿:orchestrator 719 passed/5 skip + ui 51 passed。
+- **五套真机 E2E 全 PASS(JSON 门禁)**:e2e-persona/write/p2p/group/full 逐套
+  bash scripts/e2e-one.sh,每套 success+passed>0+无 pending/todo。
+- **四幕真机剧本**(隔离 daemon,快 ticker+全时段 heartbeat):
+  1. 群聊三话题(火锅外卖/评审会/打印机)→@小达 复述:第一次完整命中三件事、
+     无旧应用名;二连问"再复述一遍"第二次仍完整有料(DB 两条 assistant 均全)。
+  2. @小达 在吗 → "在,说。"零客服腔(对照 SOUL ✓例)。
+  3. 私聊要对比表格 → 出站 msg_type=interactive 卡片(API 核实),表格正常渲染。
+  4. 私聊"1分钟后提醒我喝水" → heartbeat 单条 owner=自会话,准时 delivered;
+     "2分钟后在测试群提醒" → **先出确认卡,确认前 heartbeat 表无跨会话 row**
+     (hb_count 恒为 1 只有喝水那条)。浏览器点确认返回"仅发起人可操作此卡片"
+     ——第二道锁(operator 校验)正确拦非发起人(浏览器登录账号≠lark-cli 服务
+     账号 ou_aca75bd),属额外安全验证;"确认后投目标群"链路由 e2e-write/group
+     程序化覆盖(已 PASS),真机浏览器身份限制无法手点。
+
+### 阶段一收官
+
+Task 1-13 全部完成。总提交链(本会话段):18d40ea..920f273。单测基线 452→719。
+双引擎审核全程:opus 证伪式代码审 + Codex 变异审卷,每任务补杀+变异复验+真机验证。
+实施偏差已在 spec/plan/本日志留痕(T10/T11 合并交付、persona 系统维护回合豁免、
+md 表格分隔行须含连字符、git checkout 还原事故等)。
+
+### 挂起问题
+
+- [MSTD-R] 阶段一收官报告信仍待用户放行(命令见下方交接)。
+- 阶段二登记项(散见前期日志):确认后执行窗口崩溃缺口、cron 发起跨会话提醒发卡前
+  拒绝 UX、index.mjs composition-root 注入统一(三次复发)、reply_sent 全链
+  message-ID 归因、dateStr 冻结>24h、triage 空 SOUL 与 persona fail 策略对齐。
