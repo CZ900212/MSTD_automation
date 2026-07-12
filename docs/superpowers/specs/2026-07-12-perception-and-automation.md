@@ -82,11 +82,11 @@ TDD：safety/lark-read.mjs 每个 op 的 argv 构造 + 拒绝路径单测；pi-e
 
 ## 里程碑顺序
 
-1. T1.1 scope 补齐（含用户一次浏览器授权）
-2. T1.2 白名单扩容 + T1.3 token 稳定性（并行）
-3. T1.4 真机验收 → commit
-4. T2.1-2.3 妙记接管 → 真机全链 → commit
-5. Track 3 清单文档（随时可插队，不依赖代码）
+1. ✅ T1.1 scope 补齐（48 user scope 全量到手，发版 1.0.4，2026-07-12）
+2. ✅ T1.2 白名单扩容（3→27 op，commit 38dfc5c）+ ✅ T1.3 token 哨兵（token-watch，6h 巡检+48h 告警）
+3. ✅ T1.4 真机验收（E2E群2 三题全过：my_tasks 列任务识别噪音 / search_docs+read_doc 搜 11 中 3 并概括 / agenda 一周窗空日历如实报；快机先应答全程正常）
+4. ✅ T2.1-2.3 妙记接管全链真机通（commits 0bd6d2d/04d1d1f/6414e76；修复三个"从未真跑过"断点：select_person tag / consumer stdin 保活 / 扁平回调形状）
+5. ✅ Track 3 清单文档（docs/superpowers/runbooks/rsh-org-onboarding.md）
 
 ## 附录：全域只读命令目录与 scope 差集（2026-07-12 调研）
 
