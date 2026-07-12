@@ -17,7 +17,7 @@ export function loadServerConfig(env = process.env) {
     feishu: resolveFeishuConfig(env),
     pi: {
       provider: env.PI_PROVIDER ?? "cz-gpt",
-      model: env.PI_MODEL ?? "gpt-5.5",
+      model: env.PI_MODEL ?? "gpt-5.6-sol",
       thinking: env.PI_THINKING ?? "medium",
     },
     larkProfile: env.LARK_PROFILE ?? "",

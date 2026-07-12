@@ -1,4 +1,4 @@
-// Opus 出口：一切正式面向用户的表达经此渲染（respond 链）。5.5 只给简报，不写成品。
+// DeepSeek V4 Pro non-thinking 首选出口：一切正式面向用户的表达经此渲染；GPT-5.6 Sol 仅故障兜底。
 
 // Task 10 C4:投递场景决定长度策略——群短平快,私聊可展开(card_copy 不受影响)
 const SCENE = {

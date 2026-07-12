@@ -7,12 +7,14 @@ function modelRegistry(env) {
     "v4-flash": {
       base: env.MSTD_DEEPSEEK_BASE ?? DEEPSEEK_BASE,
       key: env.DEEPSEEK_KEY,
-      model: env.MSTD_MODEL_V4_FLASH ?? "deepseek-chat",
+      model: env.MSTD_MODEL_V4_FLASH ?? "deepseek-v4-flash",
+      disableThinking: true,
     },
     "v4-pro": {
       base: env.MSTD_DEEPSEEK_BASE ?? DEEPSEEK_BASE,
       key: env.DEEPSEEK_KEY,
-      model: env.MSTD_MODEL_V4_PRO ?? "deepseek-reasoner",
+      model: env.MSTD_MODEL_V4_PRO ?? "deepseek-v4-pro",
+      disableThinking: true,
     },
     "opus-4.6": {
       base: env.MSTD_CZ_BASE ?? CZ_BASE,
@@ -33,6 +35,13 @@ function modelRegistry(env) {
       effort: "medium",
       maxTokensField: "max_completion_tokens",
     },
+    "gpt-5.6-sol": {
+      base: env.MSTD_CZ_BASE ?? CZ_BASE,
+      key: env.CZ_GPT_KEY,
+      model: env.MSTD_MODEL_GPT_SOL ?? "gpt-5.6-sol",
+      effort: "medium",
+      maxTokensField: "max_completion_tokens",
+    },
   };
 }
 
@@ -40,8 +49,8 @@ function modelRegistry(env) {
 // opus-4.6 网关持续 503,回复出口换 DeepSeek）。fast 全链强制 non-thinking。
 export const CHAINS = {
   fast: ["v4-flash", "opus-4.6", "gpt-5.5"],
-  reason: ["gpt-5.5", "opus-4.8", "v4-pro"],
-  respond: ["v4-pro", "gpt-5.5"],
+  reason: ["gpt-5.6-sol", "opus-4.8", "v4-pro"],
+  respond: ["v4-pro", "gpt-5.6-sol"],
 };
 
 export class PipelineError extends Error {
@@ -76,7 +85,8 @@ export function createModelCaller({
       messages: system ? [{ role: "system", content: system }, ...messages] : messages,
       [m.maxTokensField ?? "max_tokens"]: maxTokens,
     };
-    if (thinking && m.effort) body.reasoning_effort = m.effort;
+    if (m.disableThinking) body.thinking = { type: "disabled" };
+    else if (thinking && m.effort) body.reasoning_effort = m.effort;
     const res = await fetchFn(`${m.base}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${m.key}` },

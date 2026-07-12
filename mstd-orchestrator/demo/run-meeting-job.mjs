@@ -1,7 +1,7 @@
 /**
  * Demo：无头(headless)跑通"会议纪要→建任务"这条已验证链路的完整多模型闭环。
  *   supervisor(pi-client, RPC) 驱动 Pi：
- *     主脑 = GPT-5.5（CZ 网关，工具循环 / 编排，推理强度始终 medium）
+ *     主脑 = GPT-5.6 Sol（CZ 网关，工具循环 / 编排，推理强度始终 medium）
  *     感知/执行 = lark 工具（真实飞书）
  *     与用户交互/执笔 = draft_zh 工具（Claude Opus 4.6）
  *
@@ -23,7 +23,7 @@ const JOB = `你是「会议纪要编排 Agent」的大脑。请无人工介入�
 
 const client = startPi({
   provider: "cz-gpt",
-  model: "gpt-5.5",
+  model: "gpt-5.6-sol",
   thinking: "medium",
   cwd: ROOT,
   extensions: [
@@ -34,7 +34,7 @@ const client = startPi({
   debug: true,
 });
 
-console.error("[demo] 驱动 Pi 跑 job（GPT-5.5 编排[medium] + lark 感知 + opus 执笔）...");
+console.error("[demo] 驱动 Pi 跑 job（GPT-5.6 Sol 编排[medium] + lark 感知 + opus 执笔）...");
 const t0 = Date.now();
 const out = await client.prompt(JOB, { timeoutMs: 300000 });
 console.error(`[demo] 完成，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s。事件类型: ${[...client.seenTypes].join(", ")}`);

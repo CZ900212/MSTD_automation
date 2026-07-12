@@ -3,7 +3,7 @@ import { startPi } from "./pi-client.mjs";
 
 const ROOT = join(new URL(".", import.meta.url).pathname, "..");
 const client = startPi({
-  provider: "cz-gpt", model: "gpt-5.5", thinking: "medium", cwd: ROOT,
+  provider: "cz-gpt", model: "gpt-5.6-sol", thinking: "medium", cwd: ROOT,
   env: { MSTD_JOB_WORKDIR: ROOT },
   extensions: [
     join(ROOT, "pi-ext", "providers.ts"),

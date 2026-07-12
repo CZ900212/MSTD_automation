@@ -7,10 +7,10 @@
 ```
 飞书事件（lark-cli event consume，每 EventKey 一个子进程，扁平 NDJSON）
   → gateway/inbox 归一化 + MD5 去重 → debounce 3s → admit（disabled/mention_only/ambient/observe_only）
-  → 预算闸 → 主动限额器 → V4 Flash 分诊（fast 链）
+  → 预算闸 → 主动限额器 → DeepSeek V4 Flash non-thinking 分诊（fast 链）
   → ↘ 直答（fast 链渲染）
-    ↘ 升级 GPT-5.5 Pi 中枢（reason 链；池化、闲置回收、steer 注入）
-        · 出站唯一通道 = reply 工具 → daemon /internal/reply → Opus 4.6（respond 链）渲染 → outbound
+    ↘ 升级 GPT-5.6 Sol medium Pi 中枢（reason 链；池化、闲置回收、steer 注入）
+        · 出站唯一通道 = reply 工具 → daemon /internal/reply → DeepSeek V4 Pro non-thinking（respond 首选）渲染 → outbound
         · 写意图 → propose-actions → buildAgentAction 规范化+hash → 卡片确认（approval token 绑发起人）
           → 操作人/令牌/hash 三校验 → executeApprovedAction（dry-run→写→幂等）→ 终态卡 + 回注会话
   记忆：SOUL / ORG / journal / groups/<chat_id> / users/<open_id>（隔离铁律：群A绝不进群B）
@@ -20,9 +20,9 @@
 三条模型链（每级重试 5×10s 再降级）：
 | 链 | 用途 | 顺序 |
 |---|---|---|
-| fast | 分诊/直答/journal 摘要 | v4-flash → opus-4.6 → gpt-5.5 |
-| reason | Pi 中枢编排推理 | gpt-5.5 → opus-4.8 → v4-pro |
-| respond | 对外中文出口 | v4-pro → gpt-5.5（2026-07-11 用户指令:回答不用 opus） |
+| fast | 分诊/直答/journal 摘要 | DeepSeek V4 Flash non-thinking → opus-4.6 → gpt-5.5 |
+| reason | Pi 中枢编排推理 | gpt-5.6-sol (medium) → opus-4.8 → DeepSeek V4 Pro non-thinking |
+| respond | 对外中文出口 | DeepSeek V4 Pro non-thinking → gpt-5.6-sol (medium) |
 
 ## 目录
 

@@ -13,7 +13,7 @@ describe("loadServerConfig", () => {
     expect(c.backfill).toBe(false);
     expect(c.alertOpenId).toBe("");
     expect(c.pi.provider).toBe("cz-gpt");
-    expect(c.pi.model).toBe("gpt-5.5");
+    expect(c.pi.model).toBe("gpt-5.6-sol");
     expect(c.feishu).toHaveProperty("authorizeUrl");
   });
   it("honors overrides", () => {
@@ -24,14 +24,14 @@ describe("loadServerConfig", () => {
       MSTD_ENABLE_TRIGGER: "1",
       MSTD_BACKFILL: "1",
       MSTD_ALERT_OPEN_ID: " ou_alert ",
-      PI_MODEL: "gpt-5.5-mini",
+      PI_MODEL: "gpt-5.6-sol-mini",
     });
     expect(c.maxConcurrentPi).toBe(3);
     expect(c.enableWrite).toBe(true);
     expect(c.enableTrigger).toBe(true);
     expect(c.backfill).toBe(true);
     expect(c.alertOpenId).toBe("ou_alert");
-    expect(c.pi.model).toBe("gpt-5.5-mini");
+    expect(c.pi.model).toBe("gpt-5.6-sol-mini");
   });
 });
 

@@ -27,7 +27,9 @@ describe("model caller", () => {
     expect(sleepFn).toHaveBeenCalledTimes(5);
     expect(sleepFn).toHaveBeenCalledWith(10_000);
     // 前 5 次打 v4-flash，第 6 次打 opus
-    expect(calls[0].body.model).toBe("deepseek-chat");
+    expect(calls[0].body.model).toBe("deepseek-v4-flash");
+    expect(calls[0].body.reasoning_effort).toBeUndefined();
+    expect(calls[0].body.thinking).toEqual({ type: "disabled" });
     expect(calls[5].body.model).toBe("claude-opus-4-6");
   });
 
@@ -41,14 +43,14 @@ describe("model caller", () => {
     expect(sleepFn).toHaveBeenCalledTimes(15);
   });
 
-  it("fast 链请求体不带 reasoning（强制 non-thinking）；reason 链 gpt-5.5 带 medium effort", async () => {
+  it("fast 链显式关闭 thinking；reason 链 gpt-5.6-sol 带 medium effort", async () => {
     const bodies = [];
-    const fetchFn = vi.fn(async (url, opts) => { bodies.push(JSON.parse(opts.body)); return okResponse("ok", "m"); });
+    const fetchFn = vi.fn(async (_url, opts) => { bodies.push(JSON.parse(opts.body)); return okResponse("ok", "m"); });
     const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {} });
     await caller.call("fast", { messages: [{ role: "user", content: "x" }] });
     expect(bodies[0].reasoning_effort).toBeUndefined();
     await caller.call("reason", { messages: [{ role: "user", content: "x" }] });
-    expect(bodies[1].model).toBe("gpt-5.5");
+    expect(bodies[1].model).toBe("gpt-5.6-sol");
     expect(bodies[1].reasoning_effort).toBe("medium");
   });
 
@@ -58,8 +60,27 @@ describe("model caller", () => {
     const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {} });
     await caller.call("respond", { system: "你是出口", messages: [{ role: "user", content: "x" }] });
     expect(captured.body.messages[0]).toEqual({ role: "system", content: "你是出口" });
-    expect(captured.url).toContain("api.deepseek.com");           // respond 首选 v4-pro(2026-07-11 用户改令)
+    expect(captured.body.model).toBe("deepseek-v4-pro");
+    expect(captured.body.reasoning_effort).toBeUndefined();
+    expect(captured.body.thinking).toEqual({ type: "disabled" });
+    expect(captured.url).toContain("api.deepseek.com");           // respond 首选 v4-pro non-thinking
     expect(captured.headers.Authorization).toBe("Bearer dk");
+  });
+
+  it("respond 的 DeepSeek 连败后降级 GPT-5.6 Sol medium", async () => {
+    const calls = [];
+    let n = 0;
+    const fetchFn = vi.fn(async (url, opts) => {
+      calls.push({ url, body: JSON.parse(opts.body) });
+      n += 1;
+      return n <= 5 ? errResponse : okResponse("兜底回复", "gpt-5.6-sol");
+    });
+    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {} });
+    const out = await caller.call("respond", { messages: [{ role: "user", content: "x" }] });
+    expect(out.model).toBe("gpt-5.6-sol");
+    expect(calls[0].url).toContain("api.deepseek.com");
+    expect(calls[5].url).toContain("api.cz900212.com");
+    expect(calls[5].body).toMatchObject({ model: "gpt-5.6-sol", reasoning_effort: "medium" });
   });
 
   it("onEvent 结构化上报：每次失败尝试 model_retry，降级 model_fallback", async () => {
@@ -91,9 +112,9 @@ describe("model caller", () => {
     expect(events.filter((e) => e.type === "pipeline_error")).toEqual([expect.objectContaining({ chain: "fast" })]);
   });
 
-  it("三条链定义与用户定案一致(respond 2026-07-11 改令:v4-pro 主选,不用 opus)", () => {
+  it("三条链定义与用户定案一致：GPT-5.6 Sol medium 中枢，DeepSeek 出口首选", () => {
     expect(CHAINS.fast).toEqual(["v4-flash", "opus-4.6", "gpt-5.5"]);
-    expect(CHAINS.reason).toEqual(["gpt-5.5", "opus-4.8", "v4-pro"]);
-    expect(CHAINS.respond).toEqual(["v4-pro", "gpt-5.5"]);
+    expect(CHAINS.reason).toEqual(["gpt-5.6-sol", "opus-4.8", "v4-pro"]);
+    expect(CHAINS.respond).toEqual(["v4-pro", "gpt-5.6-sol"]);
   });
 });

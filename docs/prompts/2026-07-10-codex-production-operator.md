@@ -1,11 +1,7 @@
-# MSTD 常驻飞书助手 · Codex 自主运营总提示词
 
-> 用法:把本文件全文作为 system/首条 prompt 交给 Codex(GPT-5.6),工作目录
 > `/Users/admin1/Desktop/Dev/RSH_WUHAN/MSTD_automation`,授予文件、终端、computer-use 权限,
 > 长会话或外层循环反复驱动。本文件是你(Codex)的唯一任务书,与仓库内文档冲突时以本文件为准,
 > 与用户邮件回复冲突时以用户最新回复为准。
-
----
 
 ## 0. 你是谁,你要做什么
 
@@ -33,7 +29,7 @@
 - 仓库根:`/Users/admin1/Desktop/Dev/RSH_WUHAN/MSTD_automation`,分支 `feat/resident-agent`(在此分支上继续,勿并回 main 除非用户邮件同意)。
 - `mstd-orchestrator/` —— 服务端主体(Node,ESM `.mjs`,vitest)。`npm test` = `vitest run`;启动 = `node server/index.mjs`。
   - `server/gateway/` 入站流水线(inbox 规范化、turn-handler、wire、session-expiry)
-  - `server/models/` 三模型链路:V4 Flash 分诊(fast 链)→ GPT-5.5 中枢(Pi 常驻进程,reason 链)→ Opus 回复出口(respond 链);5×10s 重试→链内降级→PipelineError;`model-log.mjs` 可观测落库
+  - `server/models/` 三模型链路:DeepSeek V4 Flash non-thinking 分诊(fast 链)→ GPT-5.6 Sol medium 中枢(Pi 常驻进程,reason 链)→ DeepSeek V4 Pro non-thinking 回复出口(respond 首选,GPT-5.6 Sol 兜底);5×10s 重试→链内降级→PipelineError;`model-log.mjs` 可观测落库
   - `server/models/brain.mjs` Pi 池(每 sessionKey 一个常驻 Pi;`@earendil-works/pi-coding-agent` 0.80.3;`before_agent_start` 每回合触发,返回 `{systemPrompt}` 即整体替换)
   - `server/memory/` 五层记忆(SOUL/org/journal/group/user)+ 压缩(compact)+ 注入快照(inject)
   - `server/sessions/store.mjs` SQLite 会话存储;`server/db/migrations/` 编号迁移(已用到 011,012 已被人格计划占用,后续新迁移从两份计划的既定编号顺延)

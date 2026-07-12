@@ -27,7 +27,21 @@ function deferred() {
 
 const nextImmediate = () => new Promise((resolve) => setImmediate(resolve));
 
-describe("brain（5.5 Pi 会话进程管理）", () => {
+describe("brain（GPT-5.6 Sol Pi 会话进程管理）", () => {
+  it("首选 GPT-5.6 Sol medium，末级 DeepSeek V4 Pro non-thinking", () => {
+    expect(REASON_PROVIDERS[0]).toEqual({
+      key: "gpt-5.6-sol",
+      provider: "cz-gpt",
+      model: "gpt-5.6-sol",
+      thinking: "medium",
+    });
+    expect(REASON_PROVIDERS.at(-1)).toEqual({
+      key: "v4-pro",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      thinking: "off",
+    });
+  });
   it("同会话两回合复用同一 Pi 进程；空闲计时到点回收", async () => {
     const clients = [];
     const startPi = vi.fn(() => { const c = mockClient(); clients.push(c); return c; });

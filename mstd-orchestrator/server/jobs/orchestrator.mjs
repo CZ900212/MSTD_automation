@@ -22,7 +22,7 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
 
   const client = startPi({
     provider: piOptions.provider ?? "cz-gpt",
-    model: piOptions.model ?? "gpt-5.5",
+    model: piOptions.model ?? "gpt-5.6-sol",
     thinking: piOptions.thinking ?? "medium",
     cwd: workdir,
     env: { MSTD_JOB_WORKDIR: workdir },

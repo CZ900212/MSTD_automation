@@ -1,12 +1,12 @@
-// 中枢：每活跃会话一个常驻 Pi(5.5) 进程；空闲回收；steer 注入；spawn 失败沿 reason 链降级 provider。
+// 中枢：每活跃会话一个常驻 Pi(GPT-5.6 Sol) 进程；空闲回收；steer 注入；spawn 失败沿 reason 链降级 provider。
 
 import { setMaxListeners } from "node:events";
 import { formatHistoryLine } from "../sessions/history-format.mjs";
 
 export const REASON_PROVIDERS = [
-  { key: "gpt-5.5", provider: "cz-gpt", model: "gpt-5.5", thinking: "medium" },
+  { key: "gpt-5.6-sol", provider: "cz-gpt", model: "gpt-5.6-sol", thinking: "medium" },
   { key: "opus-4.8", provider: "cz-claude", model: "claude-opus-4-8", thinking: "medium" },
-  { key: "v4-pro", provider: "deepseek", model: "deepseek-reasoner" },
+  { key: "v4-pro", provider: "deepseek", model: "deepseek-v4-pro", thinking: "off" },
 ];
 
 export const defaultSleep = (ms, signal) => new Promise((resolve) => {

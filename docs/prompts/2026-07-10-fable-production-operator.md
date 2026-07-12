@@ -38,7 +38,7 @@
 - 仓库根:`/Users/admin1/Desktop/Dev/RSH_WUHAN/MSTD_automation`,分支 `feat/resident-agent`(在此分支继续,勿并回 main 除非用户邮件同意)。
 - `mstd-orchestrator/` —— 服务端主体(Node,ESM `.mjs`,vitest)。`npm test` = `vitest run`;启动 = `node server/index.mjs`。
   - `server/gateway/` 入站流水线(inbox 规范化、turn-handler、wire、session-expiry)
-  - `server/models/` 三模型链路:V4 Flash 分诊(fast 链)→ GPT-5.5 中枢(Pi 常驻进程,reason 链)→ Opus 回复出口(respond 链);5×10s 重试→链内降级→PipelineError;`model-log.mjs` 可观测落库
+  - `server/models/` 三模型链路:DeepSeek V4 Flash non-thinking 分诊(fast 链)→ GPT-5.6 Sol medium 中枢(Pi 常驻进程,reason 链)→ DeepSeek V4 Pro non-thinking 回复出口(respond 首选,GPT-5.6 Sol 兜底);5×10s 重试→链内降级→PipelineError;`model-log.mjs` 可观测落库
   - `server/models/brain.mjs` Pi 池(每 sessionKey 一个常驻 Pi;`@earendil-works/pi-coding-agent` 0.80.3;`before_agent_start` 每回合触发,返回 `{systemPrompt}` 即整体替换)
   - `server/memory/` 五层记忆(SOUL/org/journal/group/user)+ 压缩(compact)+ 注入快照(inject)
   - `server/sessions/store.mjs` SQLite 会话存储;`server/db/migrations/` 编号迁移(已用到 011,012 已被人格计划占用,新迁移从两份计划的既定编号顺延)
@@ -326,3 +326,5 @@ loop:
 5. 查 `operator_qa` 有无用户新回信,有则先消化。
 6. 进入 §7 主循环。首次运行的第一题固定为:适配 §9 邮件信道并发一封自检信
    (`[MSTD-R] Fable 操作员上线自检`,附基线状态与 Codex 可用性),然后开始阶段一 Task 1。
+
+你可以通过CCB 桥接和另一端的两个Codex 交流
