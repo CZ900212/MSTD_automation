@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { buildLarkReadArgs } from "../server/safety/lark-read.mjs";
+import { buildLarkReadArgsScoped, resolveLarkScope } from "../server/safety/lark-read.mjs";
 import { resolveInsideWorkdir } from "../server/execute/job-workdir.mjs";
 
 const LARK_CLI = join(homedir(), ".hermes", "node", "bin", "lark-cli");
@@ -39,8 +39,8 @@ export default function (pi: ExtensionAPI) {
     name: "lark_read",
     label: "Lark Read",
     description:
-      "只读飞书（deny-by-default 白名单，无任何写能力）。op 清单（括号内为必填参数）:\n" +
-      "【消息】list_chats——我在的群列表 | search_chats(query)——搜群 | chat_history(chat_id)——拉群/会话历史(可选 page_token/start/end ISO时间) | chat_members(chat_id)——群成员 | search_messages(query)——跨会话搜消息(可选 chat_id)\n" +
+      "只读飞书（deny-by-default 白名单，无任何写能力）。会话隔离铁律：聊天记录/成员/搜消息只作用于**当前会话**，别的群和私聊的内容一律读不到，不要尝试。op 清单（括号内为必填参数）:\n" +
+      "【消息】list_chats——我在的群列表 | search_chats(query)——搜群 | chat_history——拉当前会话历史(可选 page_token/start/end ISO时间) | chat_members——当前群成员 | search_messages(query)——在当前会话内搜消息\n" +
       "【文档】read_doc(doc)——读文档正文(doc=URL或token,markdown输出) | search_docs(query)——搜云文档/wiki | search_drive——搜云盘文件(可选 query)\n" +
       "【知识库】wiki_spaces——空间列表 | wiki_nodes(space_id)——节点列表 | wiki_node(node_token)——节点详情\n" +
       "【日历】agenda——日程(默认今天,可选 start/end) | search_events——搜日程(可选 query/start/end)\n" +
@@ -82,7 +82,7 @@ export default function (pi: ExtensionAPI) {
           const abs = resolveInsideWorkdir(workdir, params.path ?? "");
           return { content: [{ type: "text", text: clip(readFileSync(abs, "utf8")) }], details: { path: abs } };
         }
-        const args = buildLarkReadArgs(params.op, params);
+        const args = buildLarkReadArgsScoped(params.op, params, resolveLarkScope(process.env));
         const r = await runLark(args, signal);
         const body = r.code === 0 ? r.stdout || "(空输出)" : `exit=${r.code}\nSTDERR:\n${r.stderr}`;
         return { content: [{ type: "text", text: clip(body) }], details: { exitCode: r.code, argv: args } };

@@ -2,6 +2,9 @@
 // 迭代二 T1.2 全域扩容：argv 模板逐条经 lark-cli --dry-run 验证（2026-07-12）。
 // 注意：attendance user_tasks query 底层是 POST 但语义只读——data JSON 由服务端拼装，
 // 不接受自由 JSON 字符串。
+// 迭代三：会话域门禁（buildLarkReadArgsScoped）——聊天内容只许本会话，席位私有只许
+// owner 私聊，后台任务只留妙记链窄集；无会话身份 fail-closed 全拒。
+import { parseSessionKey } from "../sessions/session-key.mjs";
 
 const need = (p, key) => {
   const v = p?.[key];
@@ -159,3 +162,65 @@ export function buildLarkReadArgs(op, params = {}) {
 }
 
 export const READ_OP_NAMES = Object.keys(READ_OPS);
+
+// ---- 会话域门禁（隐私铁律延伸到飞书读取面）----
+// 聊天内容绝不跨会话加载：群 A / 私聊的消息永远到不了群 B 的上下文。
+const CHAT_CONTENT_OPS = new Set(["chat_history", "chat_members", "search_messages"]);
+const CHAT_METADATA_OPS = new Set(["list_chats", "search_chats"]);
+const SEAT_PRIVATE_OPS = new Set(["mail_list", "mail_message", "search_minutes", "get_transcript"]);
+// 后台任务（妙记链）所需窄集——job 域内除此全拒
+const JOB_OPS = new Set(["search_minutes", "get_transcript", "search_user", "get_user"]);
+
+// 从 Pi 进程 env 解析调用域。brain 在 spawn 时注入 MSTD_SESSION_KEY（+私聊的 MSTD_CHAT_ID）；
+// job Pi 只有 MSTD_JOB_WORKDIR；两者皆无 = unknown（fail-closed 全拒）。
+export function resolveLarkScope(env = {}) {
+  const ownerOpenId = String(env.MSTD_OWNER_OPEN_ID ?? "").trim() || null;
+  const sessionKey = String(env.MSTD_SESSION_KEY ?? "").trim();
+  if (sessionKey) {
+    let parsed = null;
+    try { parsed = parseSessionKey(sessionKey); } catch { return { kind: "unknown", ownerOpenId }; }
+    if (parsed.kind === "group") return { kind: "group", chatId: parsed.chatId, ownerOpenId };
+    if (parsed.kind === "p2p") {
+      const chatId = String(env.MSTD_CHAT_ID ?? "").trim() || null;
+      return { kind: "p2p", chatId, openId: parsed.openId, ownerOpenId };
+    }
+    return { kind: parsed.kind, ownerOpenId }; // cron / debug
+  }
+  if (String(env.MSTD_JOB_WORKDIR ?? "").trim()) return { kind: "job", ownerOpenId };
+  return { kind: "unknown", ownerOpenId };
+}
+
+export function buildLarkReadArgsScoped(op, params = {}, scope = { kind: "unknown" }) {
+  if (!READ_OPS[op]) throw new Error(`unknown/不允许的只读操作: ${op}`);
+  const kind = scope?.kind ?? "unknown";
+  if (kind === "unknown") throw new Error("无会话身份，飞书读取一律拒绝（fail-closed）");
+
+  if (CHAT_CONTENT_OPS.has(op)) {
+    if (kind !== "group" && kind !== "p2p") {
+      throw new Error(`${op} 仅限群/私聊会话内使用：${kind} 域禁止读聊天内容`);
+    }
+    if (!scope.chatId) throw new Error("本会话未绑定 chat_id，聊天内容读取被拒绝（fail-closed）");
+    const requested = opt(params, "chat_id");
+    if (requested && requested !== scope.chatId) {
+      throw new Error(`跨会话读取被禁止：本会话只能访问自己的聊天内容（${scope.chatId}）`);
+    }
+    // 缺省即本会话；search_messages 强制圈定在本会话内
+    return buildLarkReadArgs(op, { ...params, chat_id: scope.chatId });
+  }
+
+  if (SEAT_PRIVATE_OPS.has(op)) {
+    if (kind === "job" && JOB_OPS.has(op)) return buildLarkReadArgs(op, params);
+    const isOwnerP2p = kind === "p2p" && scope.openId && scope.ownerOpenId && scope.openId === scope.ownerOpenId;
+    if (!isOwnerP2p) throw new Error(`${op} 属席位私有数据，仅限 owner 私聊使用`);
+    return buildLarkReadArgs(op, params);
+  }
+
+  if (CHAT_METADATA_OPS.has(op)) {
+    if (kind === "job") throw new Error(`后台任务只读白名单不含 ${op}`);
+    return buildLarkReadArgs(op, params);
+  }
+
+  // 公司资产类（文档/wiki/日历/任务/表格/通讯录等）：job 域收窄到妙记链所需，其余域放行
+  if (kind === "job" && !JOB_OPS.has(op)) throw new Error(`后台任务只读白名单不含 ${op}`);
+  return buildLarkReadArgs(op, params);
+}

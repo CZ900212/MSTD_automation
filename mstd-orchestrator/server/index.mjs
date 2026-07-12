@@ -194,6 +194,8 @@ if (config.enableAgent && config.botOpenId) {
     piEnv: {
       MSTD_INTERNAL_URL: `http://127.0.0.1:${config.port}`,
       MSTD_SOUL_PATH: soulPath,                  // persona hook 每 Pi 进程读一次
+      // lark_read 会话域门禁：席位私有 op（邮件/妙记）只对 owner 私聊放行
+      ...(config.alertOpenId ? { MSTD_OWNER_OPEN_ID: config.alertOpenId } : {}),
     },
     onEvent: modelLog.record,
     tokens: sessionTokens,

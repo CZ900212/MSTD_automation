@@ -42,6 +42,19 @@ describe("brain（GPT-5.6 Sol Pi 会话进程管理）", () => {
       thinking: "off",
     });
   });
+  it("spawn env 带 MSTD_SESSION_KEY；session.chat_id 存在时注入 MSTD_CHAT_ID（lark_read 会话域门禁）", async () => {
+    const startPi = vi.fn(() => mockClient());
+    const brain = createBrain({ startPi, store, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {} });
+    await brain.turn({ session: { ...session, chat_id: "oc_p2p_chat" }, sessionKey: "feishu:p2p:ou_x", brief: "问" });
+    expect(startPi.mock.calls[0][0].env).toMatchObject({
+      MSTD_SESSION_KEY: "feishu:p2p:ou_x",
+      MSTD_CHAT_ID: "oc_p2p_chat",
+    });
+    // chat_id 为空（跨目标投递先建的会话）→ 不注入，门禁侧 fail-closed
+    await brain.turn({ session, sessionKey: "feishu:p2p:ou_y", brief: "问" });
+    expect(startPi.mock.calls[1][0].env).not.toHaveProperty("MSTD_CHAT_ID");
+  });
+
   it("同会话两回合复用同一 Pi 进程；空闲计时到点回收", async () => {
     const clients = [];
     const startPi = vi.fn(() => { const c = mockClient(); clients.push(c); return c; });

@@ -127,7 +127,7 @@ export function createBrain({
     assertOpen();
   }
 
-  async function spawnWithFallback(sessionKey, startIdx = 0, lease = null) {
+  async function spawnWithFallback(sessionKey, startIdx = 0, lease = null, meta = null) {
     const errors = [];
     for (let i = startIdx; i < REASON_PROVIDERS.length; i++) {
       const p = REASON_PROVIDERS[i];
@@ -145,6 +145,8 @@ export function createBrain({
             env: {
               ...piEnv,
               MSTD_SESSION_KEY: sessionKey,
+              // 私聊会话的 chat_id 不在 sessionKey 里，spawn 时随 env 注入——lark_read 会话域门禁依赖它
+              ...(meta?.chatId ? { MSTD_CHAT_ID: meta.chatId } : {}),
               ...(internalToken ? { MSTD_INTERNAL_TOKEN: internalToken } : {}),
             },
           });
@@ -177,7 +179,7 @@ export function createBrain({
     throw new Error(`brain 全部 provider 拉起失败: ${errors.at(-1)?.message}`);
   }
 
-  async function ensure(sessionKey, startIdx = 0) {
+  async function ensure(sessionKey, startIdx = 0, meta = null) {
     assertOpen();
     const existing = pool.get(sessionKey);
     if (existing) {
@@ -200,7 +202,7 @@ export function createBrain({
           lease = createLease();
         }
         assertOpen();
-        const entry = await spawnWithFallback(sessionKey, startIdx, lease);
+        const entry = await spawnWithFallback(sessionKey, startIdx, lease, meta);
         lease = null; // permit 生命周期已转交 entry，由 closeEntry 单次释放
         if (closed) {
           await closeEntryQuietly(entry, "spawn-after-shutdown");
@@ -279,7 +281,7 @@ export function createBrain({
     const replayBlock = () => (frozenReplay ??= buildReplayBlock(session));
     // 回合级降级：runJob 失败/超时（如 provider 503）→ 回收 Pi → 换下一个 provider 重拉重放 → 同一回合重跑
     while (startIdx < REASON_PROVIDERS.length) {
-      const entry = await ensure(sessionKey, startIdx);
+      const entry = await ensure(sessionKey, startIdx, { chatId: session?.chat_id ?? null });
       assertOpen();
       entry.busy = true;
       try {

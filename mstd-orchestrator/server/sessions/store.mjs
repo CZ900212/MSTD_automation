@@ -19,7 +19,14 @@ export function createSessionStore(db) {
 
   function getOrCreate(sessionKey, meta = {}, now = Date.now()) {
     const found = getBySessionKey.get(sessionKey);
-    if (found) return found;
+    if (found) {
+      // 跨目标投递先建的 p2p 会话 chat_id 为空；入站带真值时回填——lark_read 会话域门禁依赖它
+      if (!found.chat_id && meta.chatId) {
+        db.prepare("UPDATE agent_sessions SET chat_id = ? WHERE id = ?").run(meta.chatId, found.id);
+        return getBySessionKey.get(sessionKey);
+      }
+      return found;
+    }
     const id = randomUUID();
     insertSession.run(id, sessionKey, meta.kind ?? sessionKey.split(":")[1] ?? "p2p",
       meta.chatId ?? null, meta.title ?? null, now, now);
