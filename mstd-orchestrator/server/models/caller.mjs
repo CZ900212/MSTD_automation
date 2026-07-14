@@ -33,12 +33,19 @@ function modelRegistry(env) {
   };
 }
 
-// 三条降级链（用户定案 2026-07-12:Opus 全面移出备用链——网关持续 503 是假容错）。
-// fast 全链强制 non-thinking。
+// 模型链（用户定案 2026-07-12:Opus 全面移出备用链——网关持续 503 是假容错）。
+// fast/dispatcher/responder 强制 non-thinking；legacy fast/respond 别名保留至 rollback window 结束。
+const FAST_CHAIN = ["v4-flash", "gpt-5.5"];
+const RESPOND_CHAIN = ["v4-pro", "gpt-5.6-sol"];
+const NON_THINKING_CHAINS = new Set(["fast", "dispatcher", "responder"]);
+
 export const CHAINS = {
-  fast: ["v4-flash", "gpt-5.5"],
+  fast: FAST_CHAIN,
   reason: ["gpt-5.6-sol", "v4-pro"],
-  respond: ["v4-pro", "gpt-5.6-sol"],
+  respond: RESPOND_CHAIN,
+  // Responder is the sole public voice; dispatcher is an independent post-response reviewer.
+  responder: RESPOND_CHAIN,
+  dispatcher: FAST_CHAIN,
 };
 
 export class PipelineError extends Error {
@@ -109,8 +116,8 @@ export function createModelCaller({
   async function call(chain, { system, messages, thinking }) {
     const keys = CHAINS[chain];
     if (!keys) throw new Error(`未知模型链: ${chain}`);
-    const wantThinking = chain === "fast" ? false : (thinking ?? true);
-    const delayMs = chain === "fast" ? fastRetryDelayMs : retryDelayMs;
+    const wantThinking = NON_THINKING_CHAINS.has(chain) ? false : (thinking ?? true);
+    const delayMs = NON_THINKING_CHAINS.has(chain) ? fastRetryDelayMs : retryDelayMs;
     const errors = [];
     for (let i = 0; i < keys.length; i++) {
       const modelKey = keys[i];

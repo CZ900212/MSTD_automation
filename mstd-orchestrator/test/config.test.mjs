@@ -79,4 +79,62 @@ describe("loadServerConfig", () => {
       MSTD_CONTEXT_BUDGET_BYTES: "8192",
     }).contextBudgetBytes).toBe(8192);
   });
+
+  it("defaults agent architecture mode to legacy for migration safety", () => {
+    const c = loadServerConfig({ MSTD_SESSION_SECRET: "s" });
+    expect(c.agentArchitectureMode).toBe("legacy");
+  });
+
+  it.each(["legacy", "shadow", "active"])("accepts architecture mode %j", (mode) => {
+    expect(loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_AGENT_ARCHITECTURE_MODE: mode,
+    }).agentArchitectureMode).toBe(mode);
+  });
+
+  it.each(["", "Legacy", "unknown", " shadow ", "0"])(
+    "rejects unknown or blank architecture mode %j at startup",
+    (mode) => {
+      expect(() => loadServerConfig({
+        MSTD_SESSION_SECRET: "s",
+        MSTD_AGENT_ARCHITECTURE_MODE: mode,
+      })).toThrow(/MSTD_AGENT_ARCHITECTURE_MODE/);
+    },
+  );
+
+  it("defaults dispatch context bounds to 20 lines and 8192 bytes", () => {
+    const c = loadServerConfig({ MSTD_SESSION_SECRET: "s" });
+    expect(c.dispatchContextLines).toBe(20);
+    expect(c.dispatchContextBytes).toBe(8192);
+  });
+
+  it("honors dispatch context bound overrides", () => {
+    const c = loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_DISPATCH_CONTEXT_LINES: "12",
+      MSTD_DISPATCH_CONTEXT_BYTES: "4096",
+    });
+    expect(c.dispatchContextLines).toBe(12);
+    expect(c.dispatchContextBytes).toBe(4096);
+  });
+
+  it.each(["", "0", "-1", "1.5", "abc", "Infinity"])(
+    "rejects invalid dispatch context lines %j",
+    (value) => {
+      expect(() => loadServerConfig({
+        MSTD_SESSION_SECRET: "s",
+        MSTD_DISPATCH_CONTEXT_LINES: value,
+      })).toThrow(/MSTD_DISPATCH_CONTEXT_LINES/);
+    },
+  );
+
+  it.each(["", "0", "-1", "1.5", "abc", "Infinity"])(
+    "rejects invalid dispatch context bytes %j",
+    (value) => {
+      expect(() => loadServerConfig({
+        MSTD_SESSION_SECRET: "s",
+        MSTD_DISPATCH_CONTEXT_BYTES: value,
+      })).toThrow(/MSTD_DISPATCH_CONTEXT_BYTES/);
+    },
+  );
 });

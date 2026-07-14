@@ -220,4 +220,51 @@ describe("model caller", () => {
     expect(CHAINS.reason).toEqual(["gpt-5.6-sol", "v4-pro"]);
     expect(CHAINS.respond).toEqual(["v4-pro", "gpt-5.6-sol"]);
   });
+
+  it("responder/dispatcher 链名保留 legacy fast/respond 别名并强制 non-thinking", async () => {
+    expect(CHAINS.responder).toEqual(CHAINS.respond);
+    expect(CHAINS.dispatcher).toEqual(CHAINS.fast);
+
+    const bodies = [];
+    const fetchFn = vi.fn(async (_url, opts) => {
+      bodies.push(JSON.parse(opts.body));
+      return okResponse("ok", "m");
+    });
+    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {} });
+    await caller.call("responder", { messages: [{ role: "user", content: "x" }] });
+    await caller.call("dispatcher", { messages: [{ role: "user", content: "x" }] });
+    expect(bodies[0].thinking).toEqual({ type: "disabled" });
+    expect(bodies[0].reasoning_effort).toBeUndefined();
+    expect(bodies[1].thinking).toEqual({ type: "disabled" });
+    expect(bodies[1].reasoning_effort).toBeUndefined();
+  });
+
+  it("responder 与 dispatcher 各自独立上报 retry/fallback 遥测", async () => {
+    let n = 0;
+    const fetchFn = vi.fn(async () => {
+      n += 1;
+      // Each chain: first model fails once, second model succeeds.
+      if (n === 1 || n === 3) return errResponse;
+      return okResponse("ok", "m");
+    });
+    const events = [];
+    const caller = createModelCaller({
+      fetchFn,
+      env: ENV,
+      sleepFn: async () => {},
+      retries: 1,
+      log: () => {},
+      onEvent: (e) => events.push(e),
+    });
+
+    await caller.call("dispatcher", { messages: [{ role: "user", content: "a" }] });
+    await caller.call("responder", { messages: [{ role: "user", content: "b" }] });
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "model_retry", chain: "dispatcher", model: "v4-flash", attempt: 1 }),
+      expect.objectContaining({ type: "model_fallback", chain: "dispatcher", from: "v4-flash", to: "gpt-5.5" }),
+      expect.objectContaining({ type: "model_retry", chain: "responder", model: "v4-pro", attempt: 1 }),
+      expect.objectContaining({ type: "model_fallback", chain: "responder", from: "v4-pro", to: "gpt-5.6-sol" }),
+    ]));
+  });
 });

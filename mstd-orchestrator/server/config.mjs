@@ -5,6 +5,7 @@ import { buildBotNames } from "./gateway/normalize.mjs";
 
 const NOTIFICATION_MODES = new Set(["card", "feishu_system", "none"]);
 const CONTEXT_ENVELOPE_MODES = new Set(["enforce", "shadow"]);
+const AGENT_ARCHITECTURE_MODES = new Set(["legacy", "shadow", "active"]);
 
 function enumEnv(env, key, fallback, allowed, { trim = false } = {}) {
   if (!(key in env)) return fallback;
@@ -32,6 +33,11 @@ function contextEnvelopeMode(env) {
   return enumEnv(env, "MSTD_CONTEXT_ENVELOPE_MODE", "enforce", CONTEXT_ENVELOPE_MODES);
 }
 
+function agentArchitectureMode(env) {
+  // Migration default remains legacy until shadow evaluation and canary complete.
+  return enumEnv(env, "MSTD_AGENT_ARCHITECTURE_MODE", "legacy", AGENT_ARCHITECTURE_MODES);
+}
+
 export function loadServerConfig(env = process.env) {
   return {
     port: Number(env.PORT ?? 8787),
@@ -45,6 +51,9 @@ export function loadServerConfig(env = process.env) {
     privateDataOwnerOpenId: String(env.MSTD_PRIVATE_DATA_OWNER_OPEN_ID ?? "").trim(),
     minutesBroadcastChat: String(env.MSTD_MINUTES_BROADCAST_CHAT ?? "").trim(),   // 妙记派发执行后播报的群 chat_id
     meetingTaskNotificationMode: meetingTaskNotificationMode(env),
+    agentArchitectureMode: agentArchitectureMode(env),
+    dispatchContextLines: intEnv(env, "MSTD_DISPATCH_CONTEXT_LINES", 20),
+    dispatchContextBytes: intEnv(env, "MSTD_DISPATCH_CONTEXT_BYTES", 8192),
     feishu: resolveFeishuConfig(env),
     pi: {
       provider: env.PI_PROVIDER ?? "cz-gpt",
