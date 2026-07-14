@@ -2,10 +2,10 @@ import { describe, it, expect, vi } from "vitest";
 import { createImproviser } from "../simulator/improviser.mjs";
 
 describe("improviser", () => {
-  it("returns plain text from fast chain only", async () => {
+  it("returns plain text from the GPT-5.6 Sol-only improviser chain", async () => {
     const complete = vi.fn(async ({ chain, thinking }) => {
-      expect(chain).toBe("fast");
-      expect(thinking).toBe(false);
+      expect(chain).toBe("improvise");
+      expect(thinking).toBe(true);
       return { text: "大家好，我是林夕" };
     });
     const imp = createImproviser({ caller: { complete }, maxChars: 500 });
@@ -15,6 +15,23 @@ describe("improviser", () => {
       recent: [],
     });
     expect(text).toBe("大家好，我是林夕");
+  });
+
+  it("passes system/persona context through createModelCaller.call shape", async () => {
+    const call = vi.fn(async () => ({ text: "@小达 在吗" }));
+    const imp = createImproviser({ caller: { call } });
+    await expect(imp.generate({
+      actor: { id: "zhou_yan", name: "周岩" },
+      objective: "自然地问小达是否在线",
+      recent: ["林夕：大家早"],
+    })).resolves.toBe("@小达 在吗");
+    expect(call).toHaveBeenCalledWith("improvise", expect.objectContaining({
+      thinking: true,
+      system: expect.stringContaining("周岩"),
+      messages: expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: expect.stringContaining("自然地问小达是否在线") }),
+      ]),
+    }));
   });
 
   it("fail-closed on empty, json, or too long", async () => {

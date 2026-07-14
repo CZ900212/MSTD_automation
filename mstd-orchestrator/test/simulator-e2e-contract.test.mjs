@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const script = readFileSync(join(ROOT, "scripts/simulator-e2e.sh"), "utf8");
+const cli = readFileSync(join(ROOT, "simulator/cli.mjs"), "utf8");
 const packageJson = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const runbook = readFileSync(join(ROOT, "../docs/superpowers/runbooks/feishu-multi-bot-simulator.md"), "utf8");
 
@@ -29,6 +30,13 @@ describe("simulator e2e contract", () => {
     expect(script).toMatch(/api\/health\/simulator/);
     expect(script).toMatch(/traceEnabled/);
     expect(script).toMatch(/stale|restart current code/);
+  });
+
+  it("wires improv scenarios to the GPT-5.6 Sol improviser", () => {
+    expect(cli).toMatch(/scenario\.mode === "improv"/);
+    expect(cli).toMatch(/createModelCaller/);
+    expect(cli).toMatch(/createImproviser/);
+    expect(cli).toMatch(/improviser,/);
   });
 
   it("runbook documents send-only actor bots and dual-reply semantic difference", () => {

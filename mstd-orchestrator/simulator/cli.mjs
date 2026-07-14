@@ -4,8 +4,10 @@ import { loadScenarioFile } from "./scenario-loader.mjs";
 import { createTransport } from "./transports/index.mjs";
 import { createRunner } from "./runner.mjs";
 import { createGrader } from "./grader.mjs";
+import { createImproviser } from "./improviser.mjs";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { makeRunLark } from "../server/execute/run-lark.mjs";
+import { createModelCaller } from "../server/models/caller.mjs";
 import { requireGatewayCapability } from "./gateway-capability.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -61,6 +63,25 @@ const dbPath = process.env.MSTD_DB_PATH || join(HERE, "..", "db", "mstd.sqlite")
 const db = openDb(dbPath);
 migrate(db);
 const grader = createGrader({ db, waitMs: args.waitMs });
+let improviser = null;
+if (scenario.mode === "improv") {
+  if (!process.env.CZ_GPT_KEY) {
+    console.error(JSON.stringify({
+      error: "improviser_config_missing",
+      reason: "CZ_GPT_KEY required for gpt-5.6-sol",
+    }));
+    process.exit(4);
+  }
+  improviser = createImproviser({
+    caller: createModelCaller({
+      env: process.env,
+      maxTokens: 512,
+      retries: 2,
+      retryDelayMs: 1_000,
+      attemptTimeoutMs: 30_000,
+    }),
+  });
+}
 
 const resultsDir = join(HERE, "..", "simulator-results");
 const runner = createRunner({
@@ -69,6 +90,7 @@ const runner = createRunner({
   chatId,
   resultsDir,
   grader,
+  improviser,
   lockDir: join(resultsDir, "locks"),
 });
 

@@ -42,6 +42,9 @@ const NON_THINKING_CHAINS = new Set(["fast", "dispatcher", "responder"]);
 export const CHAINS = {
   fast: FAST_CHAIN,
   reason: ["gpt-5.6-sol", "v4-pro"],
+  // Actor dialogue generation is intentionally pinned to GPT-5.6 Sol. It uses
+  // the existing CZ endpoint/key and does not silently change model identity.
+  improvise: ["gpt-5.6-sol"],
   respond: RESPOND_CHAIN,
   // Responder is the sole public voice; dispatcher is an independent post-response reviewer.
   responder: RESPOND_CHAIN,

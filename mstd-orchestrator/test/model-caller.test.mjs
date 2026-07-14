@@ -218,7 +218,28 @@ describe("model caller", () => {
   it("三条链定义与用户定案一致：Opus 全面移出备用链，GPT-5.6 Sol medium 中枢，DeepSeek 出口首选", () => {
     expect(CHAINS.fast).toEqual(["v4-flash", "gpt-5.5"]);
     expect(CHAINS.reason).toEqual(["gpt-5.6-sol", "v4-pro"]);
+    expect(CHAINS.improvise).toEqual(["gpt-5.6-sol"]);
     expect(CHAINS.respond).toEqual(["v4-pro", "gpt-5.6-sol"]);
+  });
+
+  it("improvise 链只调用 GPT-5.6 Sol，并锁定 medium effort", async () => {
+    let captured;
+    const fetchFn = vi.fn(async (url, opts) => {
+      captured = { url, body: JSON.parse(opts.body) };
+      return okResponse("演员台词", "gpt-5.6-sol");
+    });
+    const caller = createModelCaller({ fetchFn, env: ENV, retries: 1 });
+    const out = await caller.call("improvise", {
+      system: "你是演员",
+      messages: [{ role: "user", content: "生成一句话" }],
+      thinking: true,
+    });
+    expect(out).toMatchObject({ text: "演员台词", model: "gpt-5.6-sol" });
+    expect(captured.url).toContain("api.cz900212.com");
+    expect(captured.body).toMatchObject({
+      model: "gpt-5.6-sol",
+      reasoning_effort: "medium",
+    });
   });
 
   it("responder/dispatcher 链名保留 legacy fast/respond 别名并强制 non-thinking", async () => {

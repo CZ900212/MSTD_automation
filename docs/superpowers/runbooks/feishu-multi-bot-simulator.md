@@ -61,6 +61,10 @@ C 入口安全：loopback only；出现 `X-Forwarded-For` 直接拒；HMAC + non
 
 `senderType=simulator` 按 **user 语义** 走 mention / 群 policy（@ 小达 → addressed；未 @ → observe/ambient）。
 
+即兴场景由 `improvise` 模型链生成演员台词；该链只包含 `gpt-5.6-sol`（medium），
+复用现有 `MSTD_CZ_BASE` / `CZ_GPT_KEY`，不另存 endpoint 或 key。模型只填充台词，
+调度、限速和期望标签仍由 YAML 与导演掌控。
+
 ## 5. 阅卷与架构迁移说明
 
 - Trace 表使用中性列名：`decision_action/source/guard/provider/latency_ms` + `pipeline`（`legacy`|`responder`），避免 triage 退役后改 schema。

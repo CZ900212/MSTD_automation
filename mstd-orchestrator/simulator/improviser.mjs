@@ -1,7 +1,11 @@
 /**
  * Controlled improviser: fills turn text only. Never owns scheduling or expectations.
  */
-export function createImproviser({ caller, maxChars = 500 } = {}) {
+export function createImproviser({
+  caller,
+  maxChars = 500,
+  chain = "improvise",
+} = {}) {
   if (!caller?.complete && !caller?.chat && !caller?.call) {
     // Allow inject for tests via generate override
   }
@@ -22,10 +26,10 @@ export function createImproviser({ caller, maxChars = 500 } = {}) {
 
     let text = "";
     if (typeof caller?.complete === "function") {
-      const out = await caller.complete({ chain: "fast", system, user, thinking: false });
+      const out = await caller.complete({ chain, system, user, thinking: true });
       text = String(out?.text ?? out ?? "");
     } else if (typeof caller?.call === "function") {
-      const out = await caller.call({ chain: "fast", messages: [
+      const out = await caller.call(chain, { system, thinking: true, messages: [
         { role: "system", content: system },
         { role: "user", content: user },
       ] });
