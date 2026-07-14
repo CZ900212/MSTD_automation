@@ -32,6 +32,13 @@
 
 前置：小达 daemon 已在跑；probe bot 已入测试群。
 
+真机执行前先确认 daemon 是由当前代码与当前环境启动；`sim:run` / `sim:e2e` 会检查
+`/api/health/simulator`。若返回 `gateway_preflight_failed`，应由 daemon 所有者重启当前
+进程，禁止为了绕过门禁再起第二个 event consumer。
+
+`npm run sim:probe`、`npm run sim:run` 与 `npm run sim:e2e` 会读取本目录已有 `.env`；若导演不与 daemon
+共用 `PORT`，显式设置 `MSTD_SIMULATOR_BASE_URL=http://127.0.0.1:<port>`。
+
 ```bash
 cd mstd-orchestrator
 export MSTD_SIM_PROBE_PROFILE=... MSTD_SIM_CHAT_ID=oc_...

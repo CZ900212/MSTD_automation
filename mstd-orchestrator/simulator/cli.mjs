@@ -6,6 +6,7 @@ import { createRunner } from "./runner.mjs";
 import { createGrader } from "./grader.mjs";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { makeRunLark } from "../server/execute/run-lark.mjs";
+import { requireGatewayCapability } from "./gateway-capability.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -36,9 +37,23 @@ if (!chatId) {
   process.exit(2);
 }
 
+const gatewayBaseUrl = process.env.MSTD_SIMULATOR_BASE_URL
+  ?? `http://127.0.0.1:${process.env.PORT ?? 8787}`;
+try {
+  await requireGatewayCapability({ baseUrl: gatewayBaseUrl, transport: args.transport });
+} catch (error) {
+  console.error(JSON.stringify({
+    error: "gateway_preflight_failed",
+    reason: error?.code ?? "gateway_capability_unknown",
+    hint: "restart the daemon with the current code/config before running the simulator",
+  }));
+  process.exit(3);
+}
+
 const transport = createTransport({
   mode: args.transport,
   env: process.env,
+  baseUrl: gatewayBaseUrl,
   runLarkFactory: ({ profile }) => makeRunLark({ profile }),
 });
 

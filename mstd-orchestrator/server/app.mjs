@@ -17,6 +17,15 @@ export function createApp(deps) {
   app.set("trust proxy", false);
 
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  // Simulator director preflight. This endpoint is always mounted so a director
+  // can distinguish a current, trace-capable daemon from a healthy but stale
+  // process before it sends any real Feishu messages.
+  app.get("/api/health/simulator", (_req, res) => res.json({
+    ok: true,
+    contractVersion: 1,
+    traceEnabled: deps.simulatorTraceEnabled === true,
+    ingressEnabled: deps.simulator?.ingressEnabled === true,
+  }));
   // Readiness includes the Lark identity boundary. A process without a configured
   // profile remains live but is deliberately not ready for Feishu-dependent work.
   app.get("/api/ready", (_req, res) => {

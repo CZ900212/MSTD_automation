@@ -13,9 +13,9 @@
     "policy:eval": "node scripts/policy-eval.mjs",
     "start": "node server/index.mjs",
     "dev": "node --env-file=.env --watch server/index.mjs",
-    "sim:probe": "node simulator/probe-bot-visibility.mjs",
-    "sim:run": "node simulator/cli.mjs",
-    "sim:e2e": "bash scripts/simulator-e2e.sh",
+    "sim:probe": "node --env-file-if-exists=.env simulator/probe-bot-visibility.mjs",
+    "sim:run": "node --env-file-if-exists=.env simulator/cli.mjs",
+    "sim:e2e": "node --env-file-if-exists=.env scripts/run-simulator-e2e.mjs",
     "sim:test": "vitest run test/simulator-*.test.mjs"
   },
   "dependencies": {

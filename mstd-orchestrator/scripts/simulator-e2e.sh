@@ -48,6 +48,20 @@ else
   done
 fi
 
+# A plain /api/health is insufficient: a daemon started before the simulator
+# implementation can be healthy while silently lacking message IDs and traces.
+CAPS="$(curl -sf "http://127.0.0.1:${PORT:-8787}/api/health/simulator" || true)"
+if ! echo "$CAPS" | grep -Eq '"contractVersion"[[:space:]]*:[[:space:]]*1' \
+  || ! echo "$CAPS" | grep -Eq '"traceEnabled"[[:space:]]*:[[:space:]]*true'; then
+  echo "[sim-e2e] daemon is stale or trace capability is unavailable — restart current code before sending" >&2
+  exit 8
+fi
+if [[ "$TRANSPORT" == "synthetic" ]] \
+  && ! echo "$CAPS" | grep -Eq '"ingressEnabled"[[:space:]]*:[[:space:]]*true'; then
+  echo "[sim-e2e] simulator ingress is disabled on the running daemon" >&2
+  exit 9
+fi
+
 if [[ "$TRANSPORT" == "bot" ]]; then
   echo "[sim-e2e] running P0 probe for A mode"
   PROBE_OUT="$(npm run -s sim:probe || true)"

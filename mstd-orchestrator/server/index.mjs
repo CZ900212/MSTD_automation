@@ -565,6 +565,7 @@ const app = createApp({
   launcher,
   larkHealth,
   simulator: simulatorConfigForApp,
+  simulatorTraceEnabled: Boolean(gatewayHandle),
   ingestNormalized: gatewayHandle?.ingestNormalized ?? null,
 });
 

@@ -26,6 +26,25 @@ function simConfig(over = {}) {
 }
 
 describe("simulator C ingress", () => {
+  it("reports trace and ingress capabilities before any simulator send", async () => {
+    const db = openDb();
+    migrate(db);
+    const app = createApp({
+      db,
+      config: { sessionSecret: "k".repeat(32) },
+      simulator: { enabled: true, ingressEnabled: true },
+      simulatorTraceEnabled: true,
+    });
+    const res = await request(app).get("/api/health/simulator");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      contractVersion: 1,
+      traceEnabled: true,
+      ingressEnabled: true,
+    });
+  });
+
   it("default app without ingress returns 404", async () => {
     const db = openDb();
     migrate(db);
