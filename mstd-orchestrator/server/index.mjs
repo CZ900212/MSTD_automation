@@ -300,6 +300,23 @@ if (config.enableAgent && config.botOpenId) {
     contextSigner,
     taskContextProvider,
   });
+  const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: observeAgentEvent });
+  // C0.4：reply.target 投递授权表（默认只许本会话;cron 执行窗口临时 grant）
+  const deliverGrants = createDeliverGrants();
+  // 5d：先建出站流水线（渲染→egress→唯一物理出口），再建入站回合执行器
+  const replyPipeline = createReplyPipeline({
+    outbound,
+    store: agentStore,
+    budget,
+    renderReply,
+    caller,
+    snapshotFn,
+    grants: deliverGrants,
+    replyEgress,
+    verbatimGuard,
+    activeBrainTurns,
+    onEvent: observeAgentEvent,
+  });
   const coordinator = createReasoningCoordinator({
     taskStore,
     dispatcher,
@@ -307,6 +324,9 @@ if (config.enableAgent && config.botOpenId) {
     brain,
     store: agentStore,
     snapshotFn: ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey }),
+    activeBrainTurns,
+    replyEgress,
+    deliverTerminal: replyPipeline.deliverTerminal,
     onEvent: modelLog.record,
     maxReasonersPerSession: config.maxReasonersPerSession,
     contextLines: config.dispatchContextLines,
@@ -325,23 +345,6 @@ if (config.enableAgent && config.botOpenId) {
       mode: row.mode,
     });
   }
-  const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: observeAgentEvent });
-  // C0.4：reply.target 投递授权表（默认只许本会话;cron 执行窗口临时 grant）
-  const deliverGrants = createDeliverGrants();
-  // 5d：先建出站流水线（渲染→egress→唯一物理出口），再建入站回合执行器
-  const replyPipeline = createReplyPipeline({
-    outbound,
-    store: agentStore,
-    budget,
-    renderReply,
-    caller,
-    snapshotFn,
-    grants: deliverGrants,
-    replyEgress,
-    verbatimGuard,
-    activeBrainTurns,
-    onEvent: observeAgentEvent,
-  });
   const turnHandler = createTurnHandler({
     triage,
     brain,

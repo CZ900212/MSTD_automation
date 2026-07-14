@@ -1,6 +1,8 @@
 // Post-response coordinator: claim pending_review dispatches, call dispatcher, spawn/attach tasks.
 import { createDispatcher } from "../models/dispatcher.mjs";
 
+const REQUIRED_CLOSURE_FALLBACK = "这次处理没能生成可安全发送的正式答复，请稍后重试。";
+
 /**
  * @param {{
  *   taskStore: ReturnType<import("./task-store.mjs").createReasoningTaskStore>,
@@ -9,6 +11,9 @@ import { createDispatcher } from "../models/dispatcher.mjs";
  *   brain: { turn: Function, steer: Function, isBusy: Function },
  *   store?: { promptRecent?: Function },
  *   snapshotFn?: Function|null,
+ *   activeBrainTurns?: object|null,
+ *   replyEgress?: object|null,
+ *   deliverTerminal?: Function|null,
  *   onEvent?: Function|null,
  *   maxReasonersPerSession?: number,
  *   contextLines?: number,
@@ -23,6 +28,9 @@ export function createReasoningCoordinator({
   brain,
   store = null,
   snapshotFn = null,
+  activeBrainTurns = null,
+  replyEgress = null,
+  deliverTerminal = null,
   onEvent = null,
   maxReasonersPerSession = 3,
   contextLines = 20,
@@ -82,6 +90,71 @@ export function createReasoningCoordinator({
     if (!q.length) waitQueues.delete(sessionKey);
   }
 
+  function taskExecutionKey(taskId) {
+    return `task:${taskId}`;
+  }
+
+  async function closeReasonerLifecycle({ session, sessionKey, task, lifecycle }) {
+    if (!lifecycle) return null;
+    const executionKey = lifecycle.executionKey ?? taskExecutionKey(task.id);
+    const hadFinalReply = Boolean(lifecycle.closing?.finalReceipt);
+    if (!hadFinalReply && task.closure_mode === "required") {
+      if (typeof deliverTerminal !== "function") {
+        throw new Error("coordinator: required closure 缺少 deliverTerminal");
+      }
+      const delivered = await deliverTerminal({
+        deliverKey: sessionKey,
+        sessionId: session.id,
+        text: REQUIRED_CLOSURE_FALLBACK,
+        source: "daemon_terminal_fallback",
+        daemonRef: {
+          sessionKey: lifecycle.sessionKey,
+          turnId: lifecycle.turnId,
+          lease: lifecycle.lease,
+          taskId: task.id,
+          executionKey,
+        },
+        idempotencyKey: `task:${task.id}:turn:${lifecycle.turnId}:terminal`,
+        atomic: true,
+      });
+      emit({
+        type: "handoff_sent",
+        sessionKey,
+        taskId: task.id,
+        turnId: lifecycle.turnId,
+        messageId: delivered?.messageId ?? null,
+        source: "required_closure_fallback",
+      });
+    } else if (!hadFinalReply) {
+      emit({ type: "silent_closed", sessionKey, taskId: task.id, turnId: lifecycle.turnId });
+    } else {
+      emit({
+        type: "handoff_sent",
+        sessionKey,
+        taskId: task.id,
+        turnId: lifecycle.turnId,
+        messageId: lifecycle.closing.finalReceipt.messageId ?? null,
+        source: lifecycle.closing.finalReceipt.source ?? "rendered_reply",
+      });
+    }
+
+    if (!activeBrainTurns) return null;
+    const outcome = activeBrainTurns.finalizeTurn(lifecycle.sessionKey, lifecycle.lease, {
+      taskId: task.id,
+      executionKey,
+    });
+    if (!outcome) throw new Error("coordinator: business lifecycle 未能终态化");
+    return outcome;
+  }
+
+  function recycleTaintedResident({ sessionKey, task }) {
+    const residentKey = taskExecutionKey(task.id);
+    if (!replyEgress?.isTainted?.(sessionKey, { taskId: task.id, residentKey })) return;
+    const reasons = replyEgress.taintReasons?.(sessionKey, { taskId: task.id, residentKey }) ?? [];
+    emit({ type: "resident_taint_recycle", sessionKey, taskId: task.id, residentKey, reasons });
+    brain.recycle?.(sessionKey, { taskId: task.id });
+  }
+
   async function startReasoner({ session, sessionKey, task, brief, messageIds = [] }) {
     const job = { session, sessionKey, task, brief, messageIds };
     if (sessionRunning(sessionKey).size >= maxReasonersPerSession) {
@@ -97,7 +170,7 @@ export function createReasoningCoordinator({
     trackStart(sessionKey, task.id);
     emit({ type: "reasoner_started", sessionKey, taskId: task.id });
     try {
-      await brain.turn({
+      const result = await brain.turn({
         session,
         sessionKey,
         taskId: task.id,
@@ -105,12 +178,25 @@ export function createReasoningCoordinator({
         purpose: "business",
         snapshot: typeof snapshotFn === "function" ? snapshotFn({ sessionKey }) : null,
       });
+      await closeReasonerLifecycle({ session, sessionKey, task, lifecycle: result?.turnLifecycle ?? null });
+      taskStore.transitionTask(task.id, {
+        status: "completed",
+        summary: typeof result?.finalText === "string" && result.finalText.trim()
+          ? result.finalText.slice(0, 500)
+          : null,
+      });
       emit({ type: "reasoner_completed", sessionKey, taskId: task.id });
     } catch (e) {
+      try {
+        await closeReasonerLifecycle({ session, sessionKey, task, lifecycle: e?.turnLifecycle ?? null });
+      } catch (closureError) {
+        emit({ type: "reasoner_closure_failed", sessionKey, taskId: task.id, error: closureError?.message ?? closureError });
+      }
       emit({ type: "task_failed", sessionKey, taskId: task.id, error: e?.message ?? e });
       try { taskStore.transitionTask(task.id, { status: "failed", summary: String(e?.message ?? e).slice(0, 200) }); } catch { /* */ }
       throw e;
     } finally {
+      recycleTaintedResident({ sessionKey, task });
       trackEnd(sessionKey, task.id);
     }
   }

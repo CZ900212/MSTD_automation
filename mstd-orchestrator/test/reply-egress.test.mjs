@@ -138,6 +138,39 @@ describe("reply egress turn-handler integration", () => {
     expect(x.outbound.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("authorizes a task-scoped resident with the server-bound task identity", async () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const sessionKey = "feishu:p2p:ou_task";
+    const registry = createReplyProvenanceRegistry();
+    const provenance = registry.activate(sessionKey, { taskId: "task-a", residentKey: "task:task-a" });
+    const outbound = {
+      sendMessage: vi.fn(async () => ({ messageId: "om_task" })),
+      sendCard: vi.fn(async () => ({ messageId: "om_task_card" })),
+    };
+    const handler = createTurnHandler({
+      triage: { triage: vi.fn() },
+      brain: { isBusy: () => false, turn: vi.fn(), steer: vi.fn() },
+      renderReply: vi.fn(async () => ({ text: "任务结果", usage: null })),
+      outbound,
+      store,
+      budget: { allow: () => ({ ok: true }), record: vi.fn() },
+      replyEgress: registry,
+    });
+
+    const result = await handler.handleReply({
+      sessionKey,
+      taskId: "task-a",
+      residentKey: "task:task-a",
+      residentEpoch: provenance.epoch,
+      brief: "把任务结果告诉用户",
+    });
+
+    expect(result).toMatchObject({ ok: true, message_id: "om_task" });
+    expect(outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "任务结果" }));
+  });
+
   it("replaces unsafe rendered output with the fixed safe fallback and does not leak it", async () => {
     const x = setup({ text: "api_key: abcdefghijklmnop" });
     const result = await x.handler.handleReply({ sessionKey: "feishu:p2p:ou_a", brief: "回复" });

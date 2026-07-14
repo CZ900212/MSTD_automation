@@ -3,6 +3,9 @@ import { openDb, migrate } from "../server/db/index.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
 import { createReasoningTaskStore } from "../server/reasoning/task-store.mjs";
 import { createReasoningCoordinator } from "../server/reasoning/coordinator.mjs";
+import { createActiveTurnRegistry } from "../server/sessions/active-turn.mjs";
+import { createReplyPipeline } from "../server/gateway/reply-pipeline.mjs";
+import { createReplyProvenanceRegistry } from "../server/safety/reply-egress.mjs";
 
 describe("reasoning coordinator", () => {
   let db, sessions, taskStore, session, brain, events;
@@ -113,7 +116,8 @@ describe("reasoning coordinator", () => {
     });
     expect(out.started).toBe(true);
     await vi.waitFor(() => expect(brain.turn).toHaveBeenCalledTimes(1));
-    expect(taskStore.activeSummaries(session.id)).toHaveLength(before);
+    await vi.waitFor(() => expect(taskStore.getTask(task.id).status).toBe("completed"));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM reasoning_tasks WHERE session_id = ?").get(session.id).n).toBe(before);
   });
 
   it("two unrelated tasks can run concurrently in one session", async () => {
@@ -137,6 +141,75 @@ describe("reasoning coordinator", () => {
     expect(brain.turn.mock.calls[0][0].taskId).not.toBe(brain.turn.mock.calls[1][0].taskId);
     gates[0].resolve();
     gates[1].resolve();
+  });
+
+  it("required task without a final reply sends one daemon closure and completes the task", async () => {
+    const activeBrainTurns = createActiveTurnRegistry().brainTurns;
+    const outbound = {
+      sendMessage: vi.fn(async () => ({ messageId: "om_required" })),
+      sendCard: vi.fn(async () => ({ messageId: "om_required_card" })),
+    };
+    const pipeline = createReplyPipeline({
+      outbound,
+      store: sessions,
+      budget: { record: vi.fn() },
+      renderReply: vi.fn(),
+      activeBrainTurns,
+    });
+    brain.turn = vi.fn(async ({ sessionKey, taskId }) => {
+      const executionKey = `task:${taskId}`;
+      const turnId = `turn:${taskId}`;
+      const lease = activeBrainTurns.activate({ sessionKey, taskId, executionKey, turnId, purpose: "business" });
+      activeBrainTurns.bindResident(sessionKey, lease, 1, { taskId, executionKey });
+      const closing = await activeBrainTurns.closeAdmissions(sessionKey, lease, { taskId, executionKey });
+      return { turnLifecycle: { sessionKey, taskId, turnId, lease, closing } };
+    });
+    const c = makeCoordinator({ activeBrainTurns, deliverTerminal: pipeline.deliverTerminal });
+
+    const out = await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: { action: "spawn_new", title: "必须闭合", brief: "处理", closure: "required", reason_code: "promise" },
+    });
+
+    await vi.waitFor(() => expect(taskStore.getTask(out.taskId).status).toBe("completed"));
+    expect(outbound.sendMessage).toHaveBeenCalledTimes(1);
+    expect(outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("没能生成"),
+    }));
+    expect(activeBrainTurns.resolve("feishu:p2p:ou_a", { taskId: out.taskId, executionKey: `task:${out.taskId}` })).toBeNull();
+  });
+
+  it("silent_ok closes without a message and recycles only its tainted task resident", async () => {
+    const activeBrainTurns = createActiveTurnRegistry().brainTurns;
+    const replyEgress = createReplyProvenanceRegistry();
+    brain.recycle = vi.fn();
+    brain.turn = vi.fn(async ({ sessionKey, taskId }) => {
+      const executionKey = `task:${taskId}`;
+      const turnId = `turn:${taskId}`;
+      const provenance = replyEgress.activate(sessionKey, { taskId, residentKey: executionKey });
+      replyEgress.markTainted(sessionKey, "lark_read:mail_list", { taskId, residentKey: executionKey });
+      const lease = activeBrainTurns.activate({ sessionKey, taskId, executionKey, turnId, purpose: "business" });
+      activeBrainTurns.bindResident(sessionKey, lease, provenance.epoch, { taskId, executionKey });
+      const closing = await activeBrainTurns.closeAdmissions(sessionKey, lease, { taskId, executionKey });
+      return { turnLifecycle: { sessionKey, taskId, turnId, lease, closing } };
+    });
+    const deliverTerminal = vi.fn();
+    const c = makeCoordinator({ activeBrainTurns, replyEgress, deliverTerminal });
+
+    const out = await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: { action: "spawn_new", title: "静默复核", brief: "复核", closure: "silent_ok", reason_code: "review" },
+    });
+
+    await vi.waitFor(() => expect(taskStore.getTask(out.taskId).status).toBe("completed"));
+    expect(deliverTerminal).not.toHaveBeenCalled();
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "silent_closed", taskId: out.taskId }),
+      expect.objectContaining({ type: "resident_taint_recycle", taskId: out.taskId }),
+    ]));
+    expect(brain.recycle).toHaveBeenCalledWith("feishu:p2p:ou_a", { taskId: out.taskId });
   });
 
   it("refuses fabricated or cross-session task ids", async () => {
