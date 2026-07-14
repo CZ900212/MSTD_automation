@@ -17,7 +17,9 @@ import { createDreaming } from "../server/ticker/dreaming.mjs";
 import { createCronStore } from "../server/ticker/cron-jobs.mjs";
 import { createHeartbeatStore } from "../server/ticker/heartbeat-store.mjs";
 
-const RUN = String(process.env.MSTD_E2E ?? "") === "1" && String(process.env.MSTD_ENABLE_WRITE ?? "") === "1";
+const E2E = String(process.env.MSTD_E2E ?? "") === "1";
+const WRITE = String(process.env.MSTD_ENABLE_WRITE ?? "") === "1";
+const RUN = E2E && WRITE;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const P2P_CHAT = process.env.MSTD_E2E_P2P_CHAT ?? "oc_11b72bc3d3bdedff7c86f3c4c61560fc";
 const GROUP = process.env.MSTD_E2E_GROUP ?? "oc_b67c4510743e68be6a9a91f3906e7f97";
@@ -28,6 +30,19 @@ const MEMORY_DIR = join(ROOT, "db", "e2e-full-memory");
 const PORT = 8793;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Preflight: MSTD_E2E=1 without write flag must fail loudly — never report a skipped suite as green acceptance.
+describe("e2e-full preflight", () => {
+  it("refuses MSTD_E2E=1 without MSTD_ENABLE_WRITE=1", () => {
+    if (E2E && !WRITE) {
+      throw new Error(
+        "MSTD_E2E=1 但 MSTD_ENABLE_WRITE 未置 1：全链路验收必须同时开启写闸。"
+        + " 有意跳过本地验收时请不要设置 MSTD_E2E。",
+      );
+    }
+    expect(true).toBe(true);
+  });
+});
 
 describe.skipIf(!RUN)("H3 全链路 E2E 回归剧本", () => {
   let daemon = null;
