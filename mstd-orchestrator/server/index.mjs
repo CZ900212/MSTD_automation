@@ -29,6 +29,7 @@ import { createModelLog } from "./models/model-log.mjs";
 import { createTriage } from "./models/triage.mjs";
 import { createBrain } from "./models/brain.mjs";
 import { renderReply } from "./models/reply.mjs";
+import { createResponder } from "./models/responder.mjs";
 import { createOutbound } from "./gateway/outbound.mjs";
 import { createTurnHandler } from "./gateway/turn-handler.mjs";
 import { createReplyPipeline } from "./gateway/reply-pipeline.mjs";
@@ -239,6 +240,9 @@ if (config.enableAgent && config.botOpenId) {
   const snapshotFn = ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey });
   // 分诊上下文:2048-token 预算窗口(末条不截断),自然参与判定的依据
   const triage = createTriage({ caller, store: agentStore, windowTokens: Number(process.env.MSTD_TRIAGE_WINDOW_TOKENS ?? 2048) });
+  // Always-available responder (Task 2): sole public voice for first reply + handoff rendering.
+  // Wired for shadow/active modes; legacy path continues to use triage + renderReply adapter.
+  const responder = createResponder({ caller });
   const brain = createBrain({
     startPi,
     store: agentStore,
