@@ -1,4 +1,32 @@
 // 后台 job 完成回注：版本判定（新鲜→正常播报；过时→提示可能翻篇由 5.5 决定）+ 进度心跳编辑。
+import { createHash } from "node:crypto";
+import { createContextEnvelope } from "../safety/context-envelope.mjs";
+import { stableHash } from "../safety/action-dsl.mjs";
+
+const SAFE_SENSITIVITY = new Set(["public", "internal"]);
+
+function normalizeDerivedResult({ derived_result, result, sessionKey, sessionVersion, jobId }) {
+  // Legacy producers are supported only at the boundary, then normalized. The
+  // resident flow below never consumes an unstructured String(result).
+  const source = derived_result ?? (typeof result === "string" ? { text: result } : null);
+  if (!source || typeof source !== "object" || typeof source.text !== "string") return null;
+  const suppliedParent = source.parent && typeof source.parent === "object" ? source.parent : {};
+  return {
+    text: source.text,
+    sensitivity: typeof source.sensitivity === "string" ? source.sensitivity : "internal",
+    parent: {
+      // Keep the provenance schema closed and primitive so canonical hashing cannot
+      // be influenced by arbitrary nested producer objects or key ordering.
+      ...(typeof suppliedParent.kind === "string" ? { kind: suppliedParent.kind } : {}),
+      ...(typeof suppliedParent.brief === "string" ? { brief: suppliedParent.brief } : {}),
+      // Completion identity is authoritative; an envelope cannot redirect it.
+      sessionKey,
+      sessionVersion,
+      jobId,
+    },
+  };
+}
+
 export function createReinjector({
   store,
   actors,
@@ -6,15 +34,50 @@ export function createReinjector({
   outbound,
   versionThreshold = 3,
   progressIntervalMs = 3 * 60_000,
+  ambiguityBaseMs = 60_000,
+  ambiguityMaxMs = 60 * 60_000,
+  contextSigner = null,
+  contextBudget = null,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   now = () => Date.now(),
   log = console.error,
 }) {
   const progressTimers = new Map(); // jobId -> { timer, startedAt }
+  const ambiguity = new Map(); // provenance hash -> { attempts, retryAt }
 
-  function onJobComplete({ jobId, sessionKey, sessionVersion = 0, ok, result, error }) {
+  function claimAmbiguity(key) {
+    const at = now();
+    // 顺手清扫：retryAt 已过期一个最大退避周期仍未再来的条目不再参与去重，删掉防常驻泄漏
+    for (const [k, entry] of ambiguity) {
+      if (entry.retryAt + ambiguityMaxMs <= at) ambiguity.delete(k);
+    }
+    const current = ambiguity.get(key);
+    if (current && current.retryAt > at) return false;
+    const attempts = (current?.attempts ?? 0) + 1;
+    ambiguity.set(key, {
+      attempts,
+      retryAt: at + Math.min(ambiguityBaseMs * (2 ** (attempts - 1)), ambiguityMaxMs),
+    });
+    return true;
+  }
+
+  function onJobComplete({ jobId, sessionKey, sessionVersion = 0, taskId = null, ok, derived_result, result, error }) {
     stopProgress(jobId);
+    const derived = ok ? normalizeDerivedResult({ derived_result, result, sessionKey, sessionVersion, jobId }) : null;
+    const provenance = createHash("sha256").update(JSON.stringify({
+      jobId,
+      sessionKey,
+      sessionVersion,
+      taskId,
+      parent: derived?.parent ?? null,
+      sensitivity: derived?.sensitivity ?? null,
+      text: derived?.text ?? error ?? "",
+    })).digest("hex");
+    if (!claimAmbiguity(provenance)) return Promise.resolve({ status: "deduplicated", provenance });
+    if (ok && (!derived || !SAFE_SENSITIVITY.has(derived.sensitivity))) {
+      return Promise.resolve({ status: "controlled", reason: !derived ? "missing_derived_result" : "sensitive_result", provenance });
+    }
     return actors.enqueue(sessionKey, async () => {
       const session = store.getOrCreate(sessionKey);
       const drift = (session.version ?? 0) - sessionVersion;
@@ -25,7 +88,23 @@ export function createReinjector({
           : `后台任务(${jobId})已完成，请向用户播报结果要点。`)
         : `后台任务(${jobId})执行失败（${error ?? "未知原因"}），请酌情告知用户并给出建议。`;
       try {
-        await brain.turn({ session, sessionKey, brief, context: ok ? String(result ?? "") : "" });
+        await brain.turn({
+          session,
+          sessionKey,
+          // Reinjection stays on the originating task when taskId was server-bound at spawn.
+          ...(taskId ? { taskId } : {}),
+          brief,
+          // Kept for compatibility with the brain boundary and its existing
+          // observability tests; the signed envelope remains authoritative.
+          context: ok ? derived.text : "",
+          contextEnvelope: ok ? createContextEnvelope({
+            trust: "internal", source: "background", scope: sessionKey,
+            sensitivity: derived.sensitivity, content: derived.text,
+            // parent 是封闭的平面原始值对象，stableHash 的深 canonical 与旧的按键排序
+            // JSON.stringify 语义等价——哈希值不变。
+            parentHashes: [stableHash(derived.parent)],
+          }, { signer: contextSigner, ...(contextBudget ? { budget: contextBudget } : {}) }) : null,
+        });
       } catch (e) {
         log(`[reinject] 回注回合失败 job=${jobId}: ${e?.message ?? e}`);
       }

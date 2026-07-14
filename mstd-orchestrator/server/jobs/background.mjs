@@ -13,12 +13,13 @@ export function createBackgroundJobs({
 }) {
   const queue = [];
 
-  function spawn({ sessionKey, sessionVersion, kind, params = {}, brief = "" }) {
+  function spawn({ sessionKey, sessionVersion, kind, params = {}, brief = "", taskId = null }) {
     const canRun = semaphore.tryAcquire();
     const job = createJob(db, {
       templateId: "agent_background",
       title: brief || kind,
-      paramsJson: JSON.stringify({ sessionKey, sessionVersion, kind, params, brief }),
+      // taskId is authoritative ownership for reinjection; never invent from model params alone.
+      paramsJson: JSON.stringify({ sessionKey, sessionVersion, kind, params, brief, taskId }),
       status: canRun ? "running" : "queued",
     }, now());
     if (canRun) launch(job.id).catch(() => {});
