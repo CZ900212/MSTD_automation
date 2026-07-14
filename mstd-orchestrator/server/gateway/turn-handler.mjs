@@ -34,6 +34,11 @@ export function createTurnHandler({
   activeBrainTurns = null,    // 当前 Pi execution 的 daemon turnId/purpose 绑定
   caller = null,              // 供 renderReply 使用（renderReply 已柯里化时可为 null）
   replyPipeline = null,       // 5d：出站流水线；index.mjs 装配期先建 pipeline 再建 turnHandler
+  // Responder–Dispatcher–Reasoner (architecture modes: legacy|shadow|active)
+  architectureMode = "legacy",
+  responder = null,
+  taskStore = null,
+  coordinator = null,
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
 } = {}) {
@@ -141,6 +146,133 @@ export function createTurnHandler({
     });
   }
 
+  /**
+   * Active architecture: responder speaks first; dispatcher/reasoner run after pending_review.
+   * Does not wait for reasoner completion (non-blocking foreground).
+   */
+  async function handleTurnActive(turn, emitEvent) {
+    const { session, sessionKey, items, mode } = turn;
+    if (!responder || !taskStore || !coordinator) {
+      throw new Error("active mode requires responder, taskStore, and coordinator");
+    }
+    if (!budget.allow(sessionKey).ok) {
+      appendItems(session.id, items);
+      await sendAndRecord(sessionKey, session.id, BUDGET_REFUSAL);
+      return;
+    }
+    if (mode === "ambient" && limiter && session.chat_id && !limiter.allow(session.chat_id, Date.now())) {
+      appendItems(session.id, items, { observed: true });
+      emitEvent({ type: "rate_limited", sessionKey });
+      return;
+    }
+
+    const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
+    // Append first so source message ids exist for dispatch batch identity.
+    appendItems(session.id, items, { observed: mode === "ambient" });
+    const sourceRows = store.promptRecent(session.id, { limit: items.length, roles: ["user"] });
+    const sourceMessageIds = sourceRows.slice(-items.length).map((r) => r.id);
+
+    const answer = await responder.answerTurn({
+      sessionKey,
+      items,
+      mode,
+      snapshot,
+      soul: snapshot?.soul ?? soul,
+    });
+
+    if (answer.action === "no_reply") {
+      const dispatch = taskStore.createDispatch({
+        sessionId: session.id,
+        sourceMessageIds,
+        responderAction: "no_reply",
+        mode,
+      });
+      emitEvent({ type: "responder_sent", sessionKey, action: "no_reply", dispatchId: dispatch.id });
+      coordinator.schedule({
+        dispatchId: dispatch.id,
+        session,
+        sessionKey,
+        items,
+        mode,
+      });
+      scheduleMaintenanceOutsideActor({ session, sessionKey, snapshot, emitEvent });
+      return { action: "no_reply", dispatchId: dispatch.id };
+    }
+
+    // reply path: pending_send → physical send → pending_review → coordinator
+    const dispatch = taskStore.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds,
+      responderAction: "reply",
+      responderText: answer.text,
+      mode,
+    });
+    const { messageId } = await deliverText(sessionKey, answer.text, {
+      idempotencyKey: dispatch.outbound_idempotency_key,
+    });
+    const assistant = store.append(session.id, {
+      role: "assistant",
+      content: answer.text,
+      platformMessageId: messageId,
+      ts: Date.now(),
+    });
+    taskStore.markDispatchSent(dispatch.id, assistant.id);
+    emitEvent({
+      type: "responder_sent",
+      sessionKey,
+      action: "reply",
+      dispatchId: dispatch.id,
+      messageId,
+    });
+    if (mode === "ambient" && limiter && session.chat_id) limiter.record(session.chat_id, Date.now());
+    journal?.recordTurn({ sessionKey, sessionTitle: session.title, items, replyText: answer.text });
+    coordinator.schedule({
+      dispatchId: dispatch.id,
+      session,
+      sessionKey,
+      items,
+      mode,
+    });
+    scheduleMaintenanceOutsideActor({ session, sessionKey, snapshot, emitEvent });
+    return { action: "reply", dispatchId: dispatch.id, messageId };
+  }
+
+  /** Shadow mode: compute responder (+ optional dispatcher) without outbound or task side effects. */
+  async function handleTurnShadow(turn, emitEvent) {
+    const { session, sessionKey, items, mode } = turn;
+    if (!responder) return handleTurnLegacy(turn, emitEvent);
+    const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
+    appendItems(session.id, items, { observed: true });
+    const answer = await responder.answerTurn({ sessionKey, items, mode, snapshot, soul: snapshot?.soul ?? soul });
+    emitEvent({ type: "shadow_responder", sessionKey, action: answer.action, text: answer.action === "reply" ? answer.text : null });
+    // No physical send, no task store mutation, no reasoner.
+    return { action: answer.action, shadow: true };
+  }
+
+  function scheduleMaintenanceOutsideActor({ session, sessionKey, snapshot, emitEvent }) {
+    // Fire-and-forget so later responder turns are not blocked by nudge/compact.
+    void (async () => {
+      try {
+        const nudgePoint = store.peekMemoryNudge?.(session.id);
+        if (nudgePoint) {
+          await brain.turn({
+            session,
+            sessionKey,
+            turnId: randomUUID(),
+            purpose: "memory_maintenance",
+            brief: NUDGE_MAINTENANCE_BRIEF,
+            snapshot,
+          });
+          store.claimMemoryNudge?.(session.id, { point: nudgePoint });
+        }
+        if (compactor) await compactor.maybeCompact({ session, sessionKey, brain, snapshot });
+      } catch (e) {
+        log(`[turn] maintenance outside actor failed session=${sessionKey}: ${e?.message ?? e}`);
+        emitEvent({ type: "memory_maintenance_error", sessionKey, error: String(e?.message ?? e) });
+      }
+    })();
+  }
+
   async function handleTurn(turn) {
     const { kind, session, sessionKey, items, mode, traceId = null } = turn;
     // Bind traceId for this turn so model_log + turn_trace share the same key.
@@ -155,6 +287,14 @@ export function createTurnHandler({
       // card_action / minutes：Phase D/E 接缝
       return emitEvent({ type: "unhandled_kind", kind, turn });
     }
+
+    if (architectureMode === "active") return handleTurnActive(turn, emitEvent);
+    if (architectureMode === "shadow") return handleTurnShadow(turn, emitEvent);
+    return handleTurnLegacy(turn, emitEvent);
+  }
+
+  async function handleTurnLegacy(turn, emitEvent) {
+    const { session, sessionKey, items, mode } = turn;
 
     if (!budget.allow(sessionKey).ok) {
       appendItems(session.id, items);

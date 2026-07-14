@@ -30,6 +30,10 @@ import { createTriage } from "./models/triage.mjs";
 import { createBrain } from "./models/brain.mjs";
 import { renderReply } from "./models/reply.mjs";
 import { createResponder } from "./models/responder.mjs";
+import { createDispatcher } from "./models/dispatcher.mjs";
+import { createReasoningTaskStore } from "./reasoning/task-store.mjs";
+import { createReasoningCoordinator } from "./reasoning/coordinator.mjs";
+import { createTaskContextProvider } from "./reasoning/task-context.mjs";
 import { createOutbound } from "./gateway/outbound.mjs";
 import { createTurnHandler } from "./gateway/turn-handler.mjs";
 import { createReplyPipeline } from "./gateway/reply-pipeline.mjs";
@@ -259,6 +263,17 @@ if (config.enableAgent && config.botOpenId) {
   // Always-available responder (Task 2): sole public voice for first reply + handoff rendering.
   // Wired for shadow/active modes; legacy path continues to use triage + renderReply adapter.
   const responder = createResponder({ caller });
+  const taskStore = createReasoningTaskStore(db);
+  const dispatcher = createDispatcher({
+    caller,
+    onEvent: modelLog.record,
+    contextLines: config.dispatchContextLines,
+    contextBytes: config.dispatchContextBytes,
+  });
+  const taskContextProvider = createTaskContextProvider({
+    taskStore,
+    snapshotFn: ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey }),
+  });
   const brain = createBrain({
     startPi,
     store: agentStore,
@@ -283,7 +298,33 @@ if (config.enableAgent && config.botOpenId) {
     contextBudget,
     contextMode: config.contextEnvelopeMode,
     contextSigner,
+    taskContextProvider,
   });
+  const coordinator = createReasoningCoordinator({
+    taskStore,
+    dispatcher,
+    caller,
+    brain,
+    store: agentStore,
+    snapshotFn: ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey }),
+    onEvent: modelLog.record,
+    maxReasonersPerSession: config.maxReasonersPerSession,
+    contextLines: config.dispatchContextLines,
+    contextBytes: config.dispatchContextBytes,
+  });
+  // Resume pending dispatcher work after restart (release stale claims first).
+  for (const row of coordinator.resumePending()) {
+    const session = agentStore.getById?.(row.session_id)
+      ?? db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(row.session_id);
+    if (!session) continue;
+    coordinator.schedule({
+      dispatchId: row.id,
+      session,
+      sessionKey: session.session_key,
+      items: [],
+      mode: row.mode,
+    });
+  }
   const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: observeAgentEvent });
   // C0.4：reply.target 投递授权表（默认只许本会话;cron 执行窗口临时 grant）
   const deliverGrants = createDeliverGrants();
@@ -311,6 +352,10 @@ if (config.enableAgent && config.botOpenId) {
     activeTurns,
     activeBrainTurns,
     replyPipeline,
+    architectureMode: config.agentArchitectureMode,
+    responder,
+    taskStore,
+    coordinator,
     snapshotFn,
     compactor: createCompactor({ caller, store: agentStore }),
     journal: createJournal({ caller, files: memoryFiles }),
@@ -320,6 +365,9 @@ if (config.enableAgent && config.botOpenId) {
       observeAgentEvent(e);
       if (e.type === "triage") {
         console.error(`[agent] triage session=${e.sessionKey} action=${e.action} source=${e.sourceAction} provider=${e.provider} guard=${e.guard ?? "none"} latency_ms=${e.latencyMs}`);
+      }
+      if (e.type === "responder_sent") {
+        console.error(`[agent] responder session=${e.sessionKey} action=${e.action} dispatch=${e.dispatchId ?? "-"}`);
       }
     },
   });
