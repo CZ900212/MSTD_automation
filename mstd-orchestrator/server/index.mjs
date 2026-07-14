@@ -2,7 +2,8 @@ import { existsSync, statSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb, migrate } from "./db/index.mjs";
-import { buildResidentExtensions } from "./pi/resident-extensions.mjs";
+import { buildCapabilityProfile } from "./pi/resident-extensions.mjs";
+import { assertCapabilityReadiness } from "./pi/capability-readiness.mjs";
 import { loadServerConfig } from "./config.mjs";
 import { createApp } from "./app.mjs";
 import { createSemaphore } from "./jobs/semaphore.mjs";
@@ -30,6 +31,7 @@ import { createBrain } from "./models/brain.mjs";
 import { renderReply } from "./models/reply.mjs";
 import { createOutbound } from "./gateway/outbound.mjs";
 import { createTurnHandler } from "./gateway/turn-handler.mjs";
+import { createReplyPipeline } from "./gateway/reply-pipeline.mjs";
 import { createSessionStore } from "./sessions/store.mjs";
 import { createMemoryFiles } from "./memory/files.mjs";
 import { createSessionSearch } from "./sessions/search.mjs";
@@ -39,6 +41,7 @@ import { createCompactor } from "./memory/compact.mjs";
 import { createJournal } from "./memory/journal.mjs";
 import { createConfirmFlow } from "./cards/confirm-flow.mjs";
 import { createBackgroundJobs } from "./jobs/background.mjs";
+import { createBackgroundExecutor } from "./jobs/background-executor.mjs";
 import { createReinjector } from "./jobs/reinjector.mjs";
 import { createActorPool } from "./sessions/actor.mjs";
 import { createDebugTurn } from "./sessions/debug-turn.mjs";
@@ -52,6 +55,13 @@ import { createDreaming } from "./ticker/dreaming.mjs";
 import { createSessionExpiry } from "./ticker/session-expiry.mjs";
 import { hasActiveJobForSession } from "./store/jobs.mjs";
 import { createSessionTokenRegistry } from "./http/session-tokens.mjs";
+import { createActiveTurnRegistry } from "./sessions/active-turn.mjs";
+import { createHmac } from "node:crypto";
+import { createServer as createNetServer } from "node:net";
+import { createContextBudget } from "./safety/context-budget.mjs";
+import { createReplyProvenanceRegistry, assertSafeCardCopy } from "./safety/reply-egress.mjs";
+import { createVerbatimGuard } from "./safety/verbatim-guard.mjs";
+import { createLarkReadEgressSource } from "./safety/lark-read-egress-source.mjs";
 import { createProactiveLimiter } from "./gateway/rate-limit.mjs";
 import { createObserveReport } from "./gateway/observe-report.mjs";
 
@@ -71,12 +81,13 @@ const config = loadServerConfig(process.env);
     if (!config.botName) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 MSTD_BOT_NAME（扁平事件无 mentions，点名判定依赖）");
     if (!config.larkProfile) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 LARK_PROFILE（收发消息通道）");
     if (!process.env.CZ_GPT_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 CZ_GPT_KEY（reason 链主脑）");
-    if (!process.env.CZ_CLAUDE_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 CZ_CLAUDE_KEY（respond 链出口）");
     if (!process.env.DEEPSEEK_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 DEEPSEEK_KEY（fast 链分诊）");
   }
   if (config.enableWrite) {
-    const hasTarget = String(process.env.MSTD_TEST_OPEN_IDS ?? "").trim() || String(process.env.MSTD_TEST_CHAT_IDS ?? "").trim();
-    if (!hasTarget) fatal.push("MSTD_ENABLE_WRITE=1 时必须配置 MSTD_TEST_OPEN_IDS 或 MSTD_TEST_CHAT_IDS（写目标白名单 fail-closed，空=全拒）");
+    const hasTarget = String(process.env.MSTD_TEST_OPEN_IDS ?? "").trim()
+      || String(process.env.MSTD_TEST_CHAT_IDS ?? "").trim()
+      || String(process.env.MSTD_TEST_TASK_GUIDS ?? "").trim();
+    if (!hasTarget) fatal.push("MSTD_ENABLE_WRITE=1 时必须配置 MSTD_TEST_OPEN_IDS、MSTD_TEST_CHAT_IDS 或 MSTD_TEST_TASK_GUIDS（写目标白名单 fail-closed，空=全拒）");
   }
   if (fatal.length) {
     console.error("[mstd] 致命：启动配置不完整——");
@@ -85,6 +96,36 @@ const config = loadServerConfig(process.env);
   }
   if (config.enableAgent && config.adminOpenIds.size === 0) {
     console.warn("[mstd] 提醒：未配置 MSTD_ADMIN_OPEN_IDS，web 调试台 /api/admin/* 将全部 403");
+  }
+}
+
+// 一键启动安全预检：端口被占是已有 daemon 的强信号。必须在任何 event consumer
+// 拉起之前退出——否则第二条飞书长连接会负载均衡抢事件（「进程所有权」红线），
+// 而 app.listen 的 EADDRINUSE 要到装配尾声才触发，抢事件窗口已经打开。
+try {
+  await new Promise((resolve, reject) => {
+    const probe = createNetServer();
+    probe.once("error", (e) => reject(e?.code === "EADDRINUSE"
+      ? new Error(`端口 ${config.port} 已被占用——疑似已有 daemon/event consumer 在跑，拒绝启动第二实例（不代杀，请先自查 PID）`)
+      : e));
+    probe.once("listening", () => probe.close(resolve));
+    probe.listen(config.port);
+  });
+} catch (e) {
+  console.error(`[mstd] 致命：${e?.message ?? e}`);
+  process.exit(1);
+}
+
+// Capability readiness fail-fast（批次 A 验收条款）：起任何 Pi 之前，用生产同一
+// binary/参数对三个 role 探针一次，工具集合与 profile 漂移即拒绝启动。
+// 探针无业务凭据（SOUL 用空桩）；E2E 提速可用 MSTD_SKIP_CAPABILITY_READINESS=1 跳过。
+if ((config.enableAgent || config.enableTrigger) && process.env.MSTD_SKIP_CAPABILITY_READINESS !== "1") {
+  try {
+    const readiness = await assertCapabilityReadiness({ root: ROOT });
+    console.error(`[mstd] capability readiness: ${readiness.roles.map((r) => `${r.role}=${r.activeTools.length}`).join(" ")}`);
+  } catch (e) {
+    console.error(`[mstd] 致命：capability readiness 失败——${e?.message ?? e}`);
+    process.exit(1);
   }
 }
 
@@ -103,11 +144,7 @@ const bootLark = config.larkProfile ? makeRunLark({ profile: config.larkProfile 
 const boot = await reconcileOnBoot(db, { runLark: config.enableWrite ? bootLark : null });
 console.error(`[mstd] boot reconcile: ${JSON.stringify(boot)}`);
 
-const extensions = [
-  join(ROOT, "pi-ext", "providers.ts"),
-  join(ROOT, "pi-ext", "lark-read.ts"),
-  join(ROOT, "pi-ext", "draft.ts"),
-];
+const readonlyJobProfile = buildCapabilityProfile(ROOT, "readonly_job");
 let agentOnActionsReady = null;   // enableAgent 时由 Phase E 装配段赋值（E7 卡片确认链路）
 const launcher = createJobLauncher({
   db,
@@ -117,7 +154,7 @@ const launcher = createJobLauncher({
   bus,
   buffer,
   registry,
-  extensions,
+  capabilityProfile: readonlyJobProfile,
   piCwd: ROOT,
   onActionsReady: config.enableAgent ? (args) => agentOnActionsReady?.(args) : null,
 });
@@ -162,6 +199,20 @@ if (config.enableAgent && config.botOpenId) {
   mkdirSync(agentWorkspace, { recursive: true });
   // C0.3：内部通道改会话绑定 token(per-spawn 签发,吊销随 Pi 生命周期),废除静态共享 token
   const sessionTokens = createSessionTokenRegistry();
+  const replyEgress = createReplyProvenanceRegistry();
+  // 批次 C：逐字引用守卫。lark_read 每次成功读取经 /internal/egress/source 登记 shingle；
+  // 席位私有 op 同时给本 epoch 打 taint（业务回合收口后 turn-handler 回收 resident）。
+  const verbatimGuard = createVerbatimGuard();
+  // 统一回合注册表：receipt/brain/initiator 三域同一条 per-session 记录、receipt+brain 共享
+  // 一把回合 lease，任一域清空即整条回收——消灭"跨模块漏清一份留陈旧状态"这类错误。
+  const turnLeaseTtlMs = Number(process.env.MSTD_TURN_TIMEOUT_MS ?? 240_000) + 30_000;
+  const activeTurnRegistry = createActiveTurnRegistry({
+    brainTtlMs: turnLeaseTtlMs,
+    initiatorTtlMs: turnLeaseTtlMs,
+  });
+  const activeTurns = activeTurnRegistry.receipts;
+  const activeBrainTurns = activeTurnRegistry.brainTurns;
+  const activeTurnInitiators = activeTurnRegistry.initiators;
   const actors = createActorPool();
   const modelLog = createModelLog(db);   // 模型链路可观测：降级/重试/预算命中落库，调试台消费
   const caller = createModelCaller({ env: process.env, onEvent: modelLog.record });
@@ -176,6 +227,13 @@ if (config.enableAgent && config.botOpenId) {
       alert?.(`[mstd-agent] token 预算超限：${x.scope} (${x.sessionKey})`).catch(() => {});
     },
   });
+  const contextBudget = createContextBudget({ maxBytes: config.contextBudgetBytes });
+  // Context envelopes are server-issued capability metadata. Reuse the mandatory
+  // persistent session secret with domain separation; never expose this signer to Pi.
+  const contextSigner = (payload) => createHmac("sha256", config.sessionSecret)
+    .update("mstd-context-envelope-v1\0", "utf8")
+    .update(payload, "utf8")
+    .digest("hex");
   const memoryFiles = createMemoryFiles({ rootDir: process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory") });
   const memoryTool = createMemoryTool({ files: memoryFiles });
   const snapshotFn = ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey });
@@ -189,58 +247,81 @@ if (config.enableAgent && config.botOpenId) {
     idleMs: Number(process.env.MSTD_PI_IDLE_MS ?? 600_000),
     // 回合超时后沿 reason 链降级重跑；provider 挂起型故障的止损上限
     turnTimeoutMs: Number(process.env.MSTD_TURN_TIMEOUT_MS ?? 240_000),
-    extensions: buildResidentExtensions(ROOT),   // C1:production source of truth,persona 第一
+    capabilityProfile: buildCapabilityProfile(ROOT, "resident"),
     piCwd: agentWorkspace,                       // C1:bash/文件工具迁出源码树
     piEnv: {
       MSTD_INTERNAL_URL: `http://127.0.0.1:${config.port}`,
       MSTD_SOUL_PATH: soulPath,                  // persona hook 每 Pi 进程读一次
-      // lark_read 会话域门禁：席位私有 op（邮件/妙记）只对 owner 私聊放行
-      ...(config.alertOpenId ? { MSTD_OWNER_OPEN_ID: config.alertOpenId } : {}),
+      // lark_read 会话域门禁：席位私有 op（邮件/妙记）只对独立配置的数据 owner 私聊放行
+      ...(config.privateDataOwnerOpenId ? { MSTD_PRIVATE_DATA_OWNER_OPEN_ID: config.privateDataOwnerOpenId } : {}),
     },
     onEvent: modelLog.record,
     tokens: sessionTokens,
+    activeTurnInitiators,
+    activeBrainTurns,
+    replyEgress,
+    contextBudget,
+    contextMode: config.contextEnvelopeMode,
+    contextSigner,
   });
   const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: modelLog.record });
   // C0.4：reply.target 投递授权表（默认只许本会话;cron 执行窗口临时 grant）
   const deliverGrants = createDeliverGrants();
-  const turnHandler = createTurnHandler({
-    triage,
-    brain,
-    caller,
-    renderReply,
+  // 5d：先建出站流水线（渲染→egress→唯一物理出口），再建入站回合执行器
+  const replyPipeline = createReplyPipeline({
     outbound,
     store: agentStore,
     budget,
+    renderReply,
+    caller,
+    snapshotFn,
     grants: deliverGrants,
+    replyEgress,
+    verbatimGuard,
+    activeBrainTurns,
+    onEvent: modelLog.record,
+  });
+  const turnHandler = createTurnHandler({
+    triage,
+    brain,
+    outbound,
+    store: agentStore,
+    budget,
+    replyEgress,
+    activeTurns,
+    activeBrainTurns,
+    replyPipeline,
     snapshotFn,
     compactor: createCompactor({ caller, store: agentStore }),
     journal: createJournal({ caller, files: memoryFiles }),
     limiter: createProactiveLimiter(db),
     db,
-    onEvent: (e) => { if (e.type === "triage") console.error(`[agent] triage session=${e.sessionKey} action=${e.verdict.action}`); },
+    onEvent: (e) => {
+      modelLog.record(e);
+      if (e.type === "triage") {
+        console.error(`[agent] triage session=${e.sessionKey} action=${e.action} source=${e.sourceAction} provider=${e.provider} guard=${e.guard ?? "none"} latency_ms=${e.latencyMs}`);
+      }
+    },
   });
   // ---- Phase D：写路径卡片 + 后台 job + 回注 ----
-  const reinjector = createReinjector({ store: agentStore, actors, brain, outbound });
+  // 系统维护回合的 brief 必须沿用 persona 豁免触发词：不要调用 reply。
+  const reinjector = createReinjector({ store: agentStore, actors, brain, outbound, contextSigner, contextBudget });
   // 迭代二 T2.1：妙记派发执行完 → 指定群播报（未配置 MSTD_MINUTES_BROADCAST_CHAT 则静默跳过）
   const minutesBroadcast = createMinutesBroadcast({
     db,
-    handleReply: (args) => turnHandler.handleReply(args),
+    renderAutomationReply: (args) => turnHandler.renderAutomationReply(args),
     chatKey: config.minutesBroadcastChat ? `feishu:group:${config.minutesBroadcastChat}` : "",
   });
   const backgroundJobs = createBackgroundJobs({
     db,
     semaphore,
-    // 后台 job 执行体：起 job 专属脑回合（新鲜上下文，产出文本结果）
-    runJob: async ({ jobId, sessionKey, brief, params }) => {
-      const jobSessionKey = `cron:job-${jobId}`;
-      const session = agentStore.getOrCreate(jobSessionKey, { kind: "cron", title: brief });
-      const r = await brain.turn({
-        session, sessionKey: jobSessionKey,
-        brief: `【后台任务】${brief}\n参数: ${JSON.stringify(params ?? {})}\n完成后把结果要点作为最终文本输出（不要调用 reply，结果会自动回注发起会话）。`,
-        snapshot: snapshotFn({ sessionKey }),
-      });
-      return r.finalText;
-    },
+    runJob: createBackgroundExecutor({
+      startPi,
+      config,
+      agentWorkspace,
+      capabilityProfile: buildCapabilityProfile(ROOT, "background"),
+      timeoutMs: Number(process.env.MSTD_BACKGROUND_TIMEOUT_MS ?? 240_000),
+    }),
     onComplete: (x) => reinjector.onJobComplete(x),
   });
   // C0.4：heartbeat 改 owner-bound 结构化队列——DB due picker 逐项受信直投,
@@ -251,7 +332,10 @@ if (config.enableAgent && config.botOpenId) {
   const confirmFlow = createConfirmFlow({
     db,
     outbound,
-    renderCardCopy: ({ brief }) => renderReply({ caller, soul: "", context: "", brief, kind: "card_copy" }).then((r) => r.text),
+    renderCardCopy: async ({ brief }) => {
+      const { text } = await renderReply({ caller, soul: "", context: "", brief, kind: "card_copy" });
+      return assertSafeCardCopy(text);
+    },
     runLark: config.enableWrite ? makeRunLark({ profile: config.larkProfile }) : async () => ({ exitCode: 1, stdout: "", stderr: "MSTD_ENABLE_WRITE 未开" }),
     testTarget: testTargetFromEnv(process.env),
     heartbeat: heartbeatStore,
@@ -260,8 +344,13 @@ if (config.enableAgent && config.botOpenId) {
       minutesBroadcast.onJobExecuted({ jobId, ok, resultsMd });   // 自含错误处理，fire-and-forget
     },
   });
+  // boot reconcile 已先修复 action/job；此时 outbound/回注依赖齐备，再收口遗留 executing 卡片。
+  await confirmFlow.recoverFinalizedExecutingCards();
   internal = {
     tokens: sessionTokens,
+    activeTurnInitiators,
+    activeBrainTurns,
+    replyEgress,
     modelLog,
     handleReply: turnHandler.handleReply,
     memoryTool,
@@ -270,10 +359,13 @@ if (config.enableAgent && config.botOpenId) {
       const session = agentStore.getOrCreate(sessionKey);
       return backgroundJobs.spawn({ sessionKey, sessionVersion: session.version ?? 0, kind, brief, params });
     },
-    proposeActions: ({ sessionKey, title, intents }) => {
-      const initiator = sessionKey.startsWith("feishu:p2p:") ? sessionKey.split(":")[2] : (config.alertOpenId || config.botOpenId);
-      return confirmFlow.startConfirmFlow({ sessionKey, intents, initiatorOpenId: initiator, title });
-    },
+    proposeActions: ({ sessionKey, initiatorOpenId, title, intents }) =>
+      confirmFlow.startConfirmFlow({ sessionKey, intents, initiatorOpenId, title }),
+    egressSource: createLarkReadEgressSource({
+      verbatimGuard,
+      replyEgress,
+      onEvent: modelLog.record,
+    }),
   };
   wireGateway({
     db,
@@ -309,7 +401,14 @@ if (config.enableAgent && config.botOpenId) {
   });
   ticker.register("heartbeat", Number(process.env.MSTD_HEARTBEAT_EVERY_TICKS ?? 5), () => heartbeat.tick()); // 默认 5 分钟一扫
   internal.heartbeat = heartbeatStore;
-  const dreaming = createDreaming({ db, files: memoryFiles, caller });
+  const dreaming = createDreaming({
+    db,
+    files: memoryFiles,
+    caller,
+    mode: config.dreamingMode,
+    // createDreaming fail-closes apply outside tests; keep model_log informed for production review.
+    onEvent: modelLog.record,
+  });
   let lastDreamDay = null;
   ticker.register("dreaming", 1, () => {
     const bj = new Date(Date.now() + 8 * 3600_000);
@@ -384,7 +483,7 @@ const app = createApp({
   bus,
   buffer,
   registry,
-  extensions,
+  capabilityProfile: readonlyJobProfile,
   piCwd: ROOT,
   launcher,
   larkHealth,

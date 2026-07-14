@@ -16,18 +16,6 @@ function modelRegistry(env) {
       model: env.MSTD_MODEL_V4_PRO ?? "deepseek-v4-pro",
       disableThinking: true,
     },
-    "opus-4.6": {
-      base: env.MSTD_CZ_BASE ?? CZ_BASE,
-      key: env.CZ_CLAUDE_KEY,
-      model: env.MSTD_MODEL_OPUS_RESPOND ?? "claude-opus-4-6",
-      effort: "medium",
-    },
-    "opus-4.8": {
-      base: env.MSTD_CZ_BASE ?? CZ_BASE,
-      key: env.CZ_CLAUDE_KEY,
-      model: env.MSTD_MODEL_OPUS_REASON ?? "claude-opus-4-8",
-      effort: "medium",
-    },
     "gpt-5.5": {
       base: env.MSTD_CZ_BASE ?? CZ_BASE,
       key: env.CZ_GPT_KEY,
@@ -45,11 +33,11 @@ function modelRegistry(env) {
   };
 }
 
-// 三条降级链（用户定案;2026-07-11 用户改令:respond 主选 v4-pro、不用 opus——
-// opus-4.6 网关持续 503,回复出口换 DeepSeek）。fast 全链强制 non-thinking。
+// 三条降级链（用户定案 2026-07-12:Opus 全面移出备用链——网关持续 503 是假容错）。
+// fast 全链强制 non-thinking。
 export const CHAINS = {
-  fast: ["v4-flash", "opus-4.6", "gpt-5.5"],
-  reason: ["gpt-5.6-sol", "opus-4.8", "v4-pro"],
+  fast: ["v4-flash", "gpt-5.5"],
+  reason: ["gpt-5.6-sol", "v4-pro"],
   respond: ["v4-pro", "gpt-5.6-sol"],
 };
 
@@ -63,6 +51,7 @@ export class PipelineError extends Error {
 }
 
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
 
 export function createModelCaller({
   fetchFn = fetch,
@@ -70,11 +59,16 @@ export function createModelCaller({
   sleepFn = defaultSleep,
   retries = 5,
   retryDelayMs = 10_000,
+  fastRetryDelayMs = 100,
+  attemptTimeoutMs = DEFAULT_ATTEMPT_TIMEOUT_MS,
   maxTokens = 8192,
   log = console.error,
   onEvent = null,
 } = {}) {
   const registry = modelRegistry(env);
+  if (!Number.isSafeInteger(attemptTimeoutMs) || attemptTimeoutMs < 1) {
+    throw new Error("model attemptTimeoutMs 必须是正整数");
+  }
   // 可观测上报 fail-safe：观察者出错绝不反噬调用主链路
   const emit = (evt) => { try { onEvent?.(evt); } catch { /* 忽略 */ } };
 
@@ -87,22 +81,36 @@ export function createModelCaller({
     };
     if (m.disableThinking) body.thinking = { type: "disabled" };
     else if (thinking && m.effort) body.reasoning_effort = m.effort;
-    const res = await fetchFn(`${m.base}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${m.key}` },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`${modelKey} HTTP ${res.status}`);
-    const j = await res.json();
-    const text = j.choices?.[0]?.message?.content;
-    if (typeof text !== "string") throw new Error(`${modelKey} 响应缺 content`);
-    return { text, model: modelKey, usage: j.usage ?? null };
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const error = new Error(`${modelKey} attempt timeout after ${attemptTimeoutMs}ms`);
+      error.name = "TimeoutError";
+      controller.abort(error);
+    }, attemptTimeoutMs);
+    timer.unref?.();
+    try {
+      const res = await fetchFn(`${m.base}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${m.key}` },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`${modelKey} HTTP ${res.status}`);
+      // 同一个 attempt deadline 覆盖响应头与 body；部分代理会先回 200 再卡死 JSON body。
+      const j = await res.json();
+      const text = j.choices?.[0]?.message?.content;
+      if (typeof text !== "string") throw new Error(`${modelKey} 响应缺 content`);
+      return { text, model: modelKey, usage: j.usage ?? null };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function call(chain, { system, messages, thinking }) {
     const keys = CHAINS[chain];
     if (!keys) throw new Error(`未知模型链: ${chain}`);
     const wantThinking = chain === "fast" ? false : (thinking ?? true);
+    const delayMs = chain === "fast" ? fastRetryDelayMs : retryDelayMs;
     const errors = [];
     for (let i = 0; i < keys.length; i++) {
       const modelKey = keys[i];
@@ -113,7 +121,7 @@ export function createModelCaller({
         } catch (e) {
           lastErr = e;
           emit({ type: "model_retry", chain, model: modelKey, attempt, error: e.message });
-          await sleepFn(retryDelayMs);
+          if (attempt < retries) await sleepFn(delayMs);
         }
       }
       errors.push(lastErr);

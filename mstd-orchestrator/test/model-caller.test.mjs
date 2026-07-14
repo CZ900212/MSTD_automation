@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createModelCaller, PipelineError, CHAINS } from "../server/models/caller.mjs";
 
-const ENV = { DEEPSEEK_KEY: "dk", CZ_GPT_KEY: "gk", CZ_CLAUDE_KEY: "ck" };
+const ENV = { DEEPSEEK_KEY: "dk", CZ_GPT_KEY: "gk" };
 
 const okResponse = (text, model) => ({
   ok: true,
@@ -10,37 +10,133 @@ const okResponse = (text, model) => ({
 const errResponse = { ok: false, status: 500, text: async () => "boom" };
 
 describe("model caller", () => {
-  it("首模型失败 5 次（sleep 5×10s）后降级第二模型，返回其结果与 model 标识", async () => {
+  it("首模型失败 5 次（默认 fastRetryDelayMs=100）后降级第二模型，返回其结果与 model 标识", async () => {
     const calls = [];
     let n = 0;
     const fetchFn = vi.fn(async (url, opts) => {
       calls.push({ url, body: JSON.parse(opts.body) });
       n += 1;
       if (n <= 5) return errResponse;              // v4-flash 5 次全挂
-      return okResponse("来自 Opus", "claude-opus-4-6");
+      return okResponse("来自 GPT", "gpt-5.5");
     });
     const sleepFn = vi.fn(async () => {});
-    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn, retries: 5, retryDelayMs: 10_000 });
+    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn, retries: 5 });
     const out = await caller.call("fast", { system: "s", messages: [{ role: "user", content: "hi" }] });
-    expect(out.text).toBe("来自 Opus");
-    expect(out.model).toBe("opus-4.6");
-    expect(sleepFn).toHaveBeenCalledTimes(5);
-    expect(sleepFn).toHaveBeenCalledWith(10_000);
-    // 前 5 次打 v4-flash，第 6 次打 opus
+    expect(out.text).toBe("来自 GPT");
+    expect(out.model).toBe("gpt-5.5");
+    expect(sleepFn).toHaveBeenCalledTimes(4);
+    expect(sleepFn).toHaveBeenCalledWith(100);     // 快机重试不再干等 10s（用户定案 2026-07-12）
+    // 前 5 次打 v4-flash，第 6 次打 gpt-5.5
     expect(calls[0].body.model).toBe("deepseek-v4-flash");
     expect(calls[0].body.reasoning_effort).toBeUndefined();
     expect(calls[0].body.thinking).toEqual({ type: "disabled" });
-    expect(calls[5].body.model).toBe("claude-opus-4-6");
+    expect(calls[5].body.model).toBe("gpt-5.5");
   });
 
-  it("三个模型全挂（各 5 次）抛 PipelineError", async () => {
+  it("pending fetch 达到 per-attempt deadline 后 abort，并继续 retry/fallback", async () => {
+    const signals = [];
+    let calls = 0;
+    const fetchFn = vi.fn((_url, opts) => {
+      calls += 1;
+      signals.push(opts.signal);
+      if (calls === 1) {
+        return new Promise((_resolve, reject) => {
+          opts.signal.addEventListener("abort", () => reject(opts.signal.reason), { once: true });
+        });
+      }
+      return Promise.resolve(okResponse("fallback after timeout", "gpt-5.5"));
+    });
+    const events = [];
+    const caller = createModelCaller({
+      fetchFn,
+      env: ENV,
+      retries: 1,
+      attemptTimeoutMs: 5,
+      sleepFn: async () => {},
+      log: () => {},
+      onEvent: (event) => events.push(event),
+    });
+
+    await expect(caller.call("fast", { messages: [{ role: "user", content: "x" }] }))
+      .resolves.toMatchObject({ text: "fallback after timeout", model: "gpt-5.5" });
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[0].aborted).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "model_retry", model: "v4-flash", attempt: 1 }),
+      expect.objectContaining({ type: "model_fallback", from: "v4-flash", to: "gpt-5.5" }),
+    ]));
+  });
+
+  it("response body parsing is covered by the same per-attempt deadline", async () => {
+    let calls = 0;
+    const fetchFn = vi.fn(async (_url, opts) => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          ok: true,
+          json: () => new Promise((_resolve, reject) => {
+            opts.signal.addEventListener("abort", () => reject(opts.signal.reason), { once: true });
+          }),
+        };
+      }
+      return okResponse("fallback after body timeout", "gpt-5.5");
+    });
+    const caller = createModelCaller({
+      fetchFn,
+      env: ENV,
+      retries: 1,
+      attemptTimeoutMs: 5,
+      sleepFn: async () => {},
+      log: () => {},
+    });
+
+    await expect(caller.call("fast", { messages: [{ role: "user", content: "x" }] }))
+      .resolves.toMatchObject({ text: "fallback after body timeout", model: "gpt-5.5" });
+  });
+
+  it("全链模型全挂（各 5 次）抛 PipelineError", async () => {
     const fetchFn = vi.fn(async () => errResponse);
     const sleepFn = vi.fn(async () => {});
     const caller = createModelCaller({ fetchFn, env: ENV, sleepFn, retries: 5 });
     await expect(caller.call("reason", { messages: [{ role: "user", content: "x" }] }))
       .rejects.toThrow(PipelineError);
-    expect(fetchFn).toHaveBeenCalledTimes(15);
-    expect(sleepFn).toHaveBeenCalledTimes(15);
+    expect(fetchFn).toHaveBeenCalledTimes(10);
+    expect(sleepFn).toHaveBeenCalledTimes(8);
+    expect(sleepFn).toHaveBeenCalledWith(10_000);
+  });
+
+  it("respond 链默认保留 10s 重试间隔，数字覆盖仍兼容所有链", async () => {
+    const fetchFn = vi.fn(async () => errResponse);
+    const conservativeSleep = vi.fn(async () => {});
+    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: conservativeSleep, retries: 2 });
+    await expect(caller.call("respond", { messages: [{ role: "user", content: "x" }] })).rejects.toThrow(PipelineError);
+    expect(conservativeSleep).toHaveBeenCalledTimes(2);
+    expect(conservativeSleep).toHaveBeenCalledWith(10_000);
+
+    const overrideSleep = vi.fn(async () => {});
+    const overridden = createModelCaller({ fetchFn, env: ENV, sleepFn: overrideSleep, retries: 2, retryDelayMs: 7 });
+    await expect(overridden.call("respond", { messages: [{ role: "user", content: "x" }] })).rejects.toThrow(PipelineError);
+    expect(overrideSleep).toHaveBeenCalledWith(7);
+  });
+
+  it("fastRetryDelayMs 独立覆盖 fast 链，不改变 reason/respond 的 retryDelayMs", async () => {
+    const fetchFn = vi.fn(async () => errResponse);
+    const sleepFn = vi.fn(async () => {});
+    const caller = createModelCaller({
+      fetchFn,
+      env: ENV,
+      sleepFn,
+      retries: 2,
+      retryDelayMs: 7,
+      fastRetryDelayMs: 3,
+      log: () => {},
+    });
+
+    await expect(caller.call("fast", { messages: [{ role: "user", content: "x" }] }))
+      .rejects.toThrow(PipelineError);
+    expect(sleepFn).toHaveBeenCalledTimes(2);
+    expect(sleepFn).toHaveBeenCalledWith(3);
+    expect(sleepFn).not.toHaveBeenCalledWith(7);
   });
 
   it("fast 链显式关闭 thinking；reason 链 gpt-5.6-sol 带 medium effort", async () => {
@@ -98,7 +194,7 @@ describe("model caller", () => {
     expect(retries[0]).toMatchObject({ chain: "fast", model: "v4-flash", attempt: 1 });
     expect(retries[0].error).toContain("500");
     const fallbacks = events.filter((e) => e.type === "model_fallback");
-    expect(fallbacks).toEqual([expect.objectContaining({ chain: "fast", from: "v4-flash", to: "opus-4.6" })]);
+    expect(fallbacks).toEqual([expect.objectContaining({ chain: "fast", from: "v4-flash", to: "gpt-5.5" })]);
   });
 
   it("onEvent 全链耗尽上报 pipeline_error；onEvent 抛错不影响主流程", async () => {
@@ -112,9 +208,16 @@ describe("model caller", () => {
     expect(events.filter((e) => e.type === "pipeline_error")).toEqual([expect.objectContaining({ chain: "fast" })]);
   });
 
-  it("三条链定义与用户定案一致：GPT-5.6 Sol medium 中枢，DeepSeek 出口首选", () => {
-    expect(CHAINS.fast).toEqual(["v4-flash", "opus-4.6", "gpt-5.5"]);
-    expect(CHAINS.reason).toEqual(["gpt-5.6-sol", "opus-4.8", "v4-pro"]);
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "非法 per-attempt deadline %p 在启动边界拒绝",
+    (attemptTimeoutMs) => {
+      expect(() => createModelCaller({ env: ENV, attemptTimeoutMs })).toThrow(/attemptTimeoutMs/);
+    },
+  );
+
+  it("三条链定义与用户定案一致：Opus 全面移出备用链，GPT-5.6 Sol medium 中枢，DeepSeek 出口首选", () => {
+    expect(CHAINS.fast).toEqual(["v4-flash", "gpt-5.5"]);
+    expect(CHAINS.reason).toEqual(["gpt-5.6-sol", "v4-pro"]);
     expect(CHAINS.respond).toEqual(["v4-pro", "gpt-5.6-sol"]);
   });
 });

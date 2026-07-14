@@ -3,6 +3,9 @@ import request from "supertest";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createApp } from "../server/app.mjs";
 import { createSessionTokenRegistry } from "../server/http/session-tokens.mjs";
+import { createSessionStore } from "../server/sessions/store.mjs";
+import { createActiveTurnRegistry } from "../server/sessions/active-turn.mjs";
+import { createTurnHandler } from "../server/gateway/turn-handler.mjs";
 
 function makeApp(internal) {
   const db = openDb();
@@ -11,6 +14,21 @@ function makeApp(internal) {
 }
 
 describe("C0.3 内部通道会话绑定鉴权", () => {
+  it("缺少 resolveBinding 的旧 token registry 在鉴权边界 fail-closed", async () => {
+    const handleReply = vi.fn(async () => ({ ok: true }));
+    const app = makeApp({
+      tokens: { resolve: vi.fn(() => "feishu:p2p:ou_legacy") },
+      handleReply,
+    });
+
+    const response = await request(app).post("/internal/reply")
+      .set("Authorization", "Bearer legacy-token")
+      .send({ brief: "x" });
+
+    expect(response.status).toBe(403);
+    expect(handleReply).not.toHaveBeenCalled();
+  });
+
   it("token 反查会话:冒名 session_key 403 且落 model_log;正确调用以服务端解析值为准", async () => {
     const reg = createSessionTokenRegistry();
     const tok = reg.issue("feishu:p2p:ou_a");
@@ -49,6 +67,118 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
       .set("Authorization", `Bearer ${tok}`)
       .send({ kind: "message", brief: "x" });
     expect(r4.status).toBe(403);   // 已吊销 token 的在途请求 fail-closed 且留痕
+  });
+
+  it("reply resident epoch is read only from the server-issued token binding", async () => {
+    const reg = createSessionTokenRegistry();
+    const tok = reg.issue("feishu:p2p:ou_me", { residentEpoch: 7, provenanceHash: "server-hash" });
+    const seen = [];
+    const app = makeApp({ tokens: reg, handleReply: async (args) => { seen.push(args); return { ok: true }; } });
+    const r = await request(app).post("/internal/reply")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ brief: "x", stage: "progress", residentEpoch: 999, provenanceHash: "forged", turn_id: "turn-1", turn_lease: "lease-1" });
+    expect(r.status).toBe(200);
+    expect(seen[0]).toMatchObject({
+      sessionKey: "feishu:p2p:ou_me",
+      residentEpoch: 7,
+      turnId: "turn-1",
+      turnLease: "lease-1",
+      stage: "progress",
+    });
+    expect(seen[0]).not.toHaveProperty("provenanceHash");
+  });
+
+  it("reply admission rejection codes are mapped to 403 after handleReply owns admission", async () => {
+    const reg = createSessionTokenRegistry();
+    const tok = reg.issue("feishu:p2p:ou_me", { residentEpoch: 7 });
+    const codes = ["no_active_turn", "maintenance_silent", "turn_closing", "stale_turn_context"];
+
+    for (const code of codes) {
+      const handleReply = vi.fn(async () => ({ ok: false, code, error: `reply 拒绝: ${code}` }));
+      const app = makeApp({ tokens: reg, handleReply });
+      const response = await request(app).post("/internal/reply")
+        .set("Authorization", `Bearer ${tok}`)
+        .send({ brief: code, turn_id: "wrong", turn_lease: "wrong" });
+
+      expect(response.status, code).toBe(403);
+      expect(handleReply, code).toHaveBeenCalledWith(expect.objectContaining({
+        sessionKey: "feishu:p2p:ou_me",
+        turnId: "wrong",
+        turnLease: "wrong",
+        residentEpoch: 7,
+      }));
+    }
+  });
+
+  it("集成：合法路由调用经真实 handleReply admission 到物理投递并终态化回执；坏 lease 403 零投递", async () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const sessionKey = "feishu:p2p:ou_int";
+    store.getOrCreate(sessionKey, { kind: "p2p" });
+
+    const registry = createActiveTurnRegistry({ issueId: () => "turn-1" });
+    const outbound = {
+      sendMessage: vi.fn(async () => ({ messageId: "om_final" })),
+      sendCard: vi.fn(async () => ({ messageId: "om_card" })),
+    };
+    const handler = createTurnHandler({
+      triage: { triage: vi.fn() },
+      brain: { turn: vi.fn(), steer: vi.fn(), isBusy: () => false },
+      renderReply: vi.fn(async () => ({ text: "正式答复", usage: null })),
+      outbound,
+      store,
+      budget: { allow: () => ({ ok: true }), record: vi.fn() },
+      activeTurns: registry.receipts,
+      activeBrainTurns: registry.brainTurns,
+      onEvent: () => {},
+      log: () => {},
+    });
+
+    // daemon 侧真实开启 business 回合：receipt + brain lease + resident 绑定
+    registry.receipts.begin({ sessionKey, purpose: "business", expectsReply: true });
+    const lease = registry.brainTurns.activate({ sessionKey, turnId: "turn-1", purpose: "business" });
+    registry.brainTurns.bindResident(sessionKey, lease, 7);
+
+    const reg = createSessionTokenRegistry();
+    const tok = reg.issue(sessionKey, { residentEpoch: 7 });
+    const app = makeApp({ tokens: reg, handleReply: handler.handleReply });
+
+    // 坏 lease：admission 在 handleReply 内被拒 → 403 机器可读 code，零物理投递
+    const denied = await request(app).post("/internal/reply")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ kind: "message", brief: "答复", turn_id: "turn-1", turn_lease: "forged-lease" });
+    expect(denied.status).toBe(403);
+    expect(denied.body).toMatchObject({ ok: false, code: "stale_turn_context" });
+    expect(outbound.sendMessage).not.toHaveBeenCalled();
+
+    // 合法调用：路由不做 admit，handleReply 独占 admission → 渲染 → 投递 → 回执终态
+    const allowed = await request(app).post("/internal/reply")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ kind: "message", stage: "final", brief: "给用户答复", turn_id: "turn-1", turn_lease: lease });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.ok).toBe(true);
+    expect(outbound.sendMessage).toHaveBeenCalledTimes(1);
+    expect(outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "正式答复" }));
+    expect(registry.receipts.resolve(sessionKey)).toMatchObject({
+      turnId: "turn-1",
+      state: "terminal",
+      terminal: { outcome: "formal_reply_sent", messageId: "om_final" },
+    });
+  });
+
+  it("blank reply brief is rejected before admission so finish cannot hang", async () => {
+    const reg = createSessionTokenRegistry();
+    const tok = reg.issue("feishu:p2p:ou_me", { residentEpoch: 7 });
+    const activeBrainTurns = { admit: vi.fn() };
+    const handleReply = vi.fn(async () => ({ ok: true }));
+    const app = makeApp({ tokens: reg, activeBrainTurns, handleReply });
+    const r = await request(app).post("/internal/reply")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ brief: "   ", turn_id: "turn-1", turn_lease: "lease-1" });
+    expect(r.status).toBe(400);
+    expect(activeBrainTurns.admit).not.toHaveBeenCalled();
+    expect(handleReply).not.toHaveBeenCalled();
   });
 
   it("falsy session_key(空串)按未声明处理:回落绑定会话,不算冒名", async () => {
@@ -112,6 +242,15 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
     const calls = { reply: [], memory: [], propose: [], background: [], heartbeat: [], search: [] };
     const app = makeApp({
       tokens: reg,
+      activeTurnInitiators: {
+        resolveAuthorized: ({ sessionKey, turnId, lease, residentEpoch }) =>
+          sessionKey === "feishu:p2p:ou_me"
+            && turnId === "turn-1"
+            && lease === "lease-1"
+            && residentEpoch === null
+            ? "ou_me"
+            : null,
+      },
       handleReply: async (a) => { calls.reply.push(a); return { ok: true }; },
       memoryTool: { run: (params, ctx) => { calls.memory.push({ params, ctx }); return { ok: true }; } },
       proposeActions: async (a) => { calls.propose.push(a); return { ok: true, jobId: 1, messageId: "m" }; },
@@ -126,7 +265,7 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
     const routes = [
       ["/internal/reply", { kind: "message", brief: "x" }],
       ["/internal/memory", { op: "read" }],
-      ["/internal/propose-actions", { title: "t", intents: [] }],
+      ["/internal/propose-actions", { title: "t", intents: [], turn_id: "turn-1", turn_lease: "lease-1" }],
       ["/internal/background", { kind: "k", brief: "b" }],
       ["/internal/heartbeat", { action: "add", due_iso: "2026-07-12T00:00:00+08:00", text: "t" }],
       ["/internal/session-search", { q: "关键词" }],
@@ -159,6 +298,26 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
       const r = await request(appBare).post(path).send({});
       expect(r.status, `${path} 无 token+未启用`).toBe(403);
     }
+  });
+
+  it("propose-actions 有效 token 但无 active initiator 时零副作用 403；body 伪造 initiator 无效", async () => {
+    const reg = createSessionTokenRegistry();
+    const tok = reg.issue("feishu:group:oc_g");
+    const proposeActions = vi.fn(async () => ({ ok: true, jobId: "j", messageId: "m" }));
+    const active = { resolveAuthorized: vi.fn(() => null) };
+    const app = makeApp({ tokens: reg, activeTurnInitiators: active, proposeActions, handleReply: async () => ({ ok: true }) });
+    const denied = await request(app).post("/internal/propose-actions")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ initiatorOpenId: "ou_forged", title: "x", intents: [], turn_id: "turn-1", turn_lease: "lease-1" });
+    expect(denied.status).toBe(403);
+    expect(proposeActions).not.toHaveBeenCalled();
+
+    active.resolveAuthorized.mockReturnValue("ou_real");
+    const allowed = await request(app).post("/internal/propose-actions")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ initiatorOpenId: "ou_forged", title: "x", intents: [], turn_id: "turn-1", turn_lease: "lease-1" });
+    expect(allowed.status).toBe(200);
+    expect(proposeActions).toHaveBeenCalledWith(expect.objectContaining({ sessionKey: "feishu:group:oc_g", initiatorOpenId: "ou_real" }));
   });
 
   it("精确 Bearer 且无 body 时不得 500,由具体路由返回 501/400", async () => {
@@ -277,5 +436,46 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
       .set("Authorization", "Bearer any-token")
       .send({ brief: "x" });
     expect(r.status).toBe(403);
+  });
+});
+
+describe("批次 C：/internal/egress/source 读取回执登记", () => {
+  it("token 绑定会话登记 shingle；席位私有 op 打 taint；缺参 400；未启用 501", async () => {
+    const reg = createSessionTokenRegistry();
+    const tok = reg.issue("feishu:p2p:ou_owner");
+    const recorded = [];
+    const app = makeApp({
+      tokens: reg,
+      handleReply: async () => ({ ok: true }),
+      egressSource: {
+        record({ sessionKey, op, text }) {
+          recorded.push({ sessionKey, op, textLength: text.length });
+          return { ok: true, shingles: 3, sensitivity: op === "mail_list" ? "restricted" : "internal" };
+        },
+      },
+    });
+
+    const ok = await request(app).post("/internal/egress/source")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ session_key: "feishu:p2p:ou_owner", op: "mail_list", text: "邮件正文".repeat(20) });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ ok: true, sensitivity: "restricted" });
+    expect(recorded[0]).toMatchObject({ sessionKey: "feishu:p2p:ou_owner", op: "mail_list" });
+
+    const missing = await request(app).post("/internal/egress/source")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ session_key: "feishu:p2p:ou_owner", op: "read_doc" });
+    expect(missing.status).toBe(400);
+
+    const spoof = await request(app).post("/internal/egress/source")
+      .set("Authorization", `Bearer ${tok}`)
+      .send({ session_key: "feishu:p2p:ou_别人", op: "read_doc", text: "x" });
+    expect(spoof.status).toBe(403);
+
+    const bare = makeApp({ tokens: reg, handleReply: async () => ({ ok: true }) });
+    const off = await request(bare).post("/internal/egress/source")
+      .set("Authorization", `Bearer ${reg.issue("feishu:p2p:ou_owner")}`)
+      .send({ op: "read_doc", text: "x" });
+    expect(off.status).toBe(501);
   });
 });

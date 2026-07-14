@@ -2,10 +2,17 @@
 import { randomUUID } from "node:crypto";
 
 export function createSessionTokenRegistry() {
-  const byToken = new Map(); // token -> sessionKey
+  const byToken = new Map(); // token -> immutable server-owned binding
+  const resolveBinding = (token) => byToken.get(token) ?? null;
   return {
-    issue(sessionKey) { const t = randomUUID(); byToken.set(t, sessionKey); return t; },
-    resolve(token) { return byToken.get(token) ?? null; },
+    issue(sessionKey, binding = {}) {
+      const t = randomUUID();
+      byToken.set(t, Object.freeze({ sessionKey, ...binding }));
+      return t;
+    },
+    // Compatibility API delegates to the authoritative binding lookup.
+    resolve(token) { return resolveBinding(token)?.sessionKey ?? null; },
+    resolveBinding,
     revoke(token) { if (token) byToken.delete(token); },
   };
 }
