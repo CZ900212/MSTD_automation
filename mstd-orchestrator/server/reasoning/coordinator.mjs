@@ -14,6 +14,7 @@ const REQUIRED_CLOSURE_FALLBACK = "这次处理没能生成可安全发送的正
  *   activeBrainTurns?: object|null,
  *   replyEgress?: object|null,
  *   deliverTerminal?: Function|null,
+ *   deliverText?: Function|null,
  *   onEvent?: Function|null,
  *   maxReasonersPerSession?: number,
  *   contextLines?: number,
@@ -31,6 +32,7 @@ export function createReasoningCoordinator({
   activeBrainTurns = null,
   replyEgress = null,
   deliverTerminal = null,
+  deliverText = null,
   onEvent = null,
   maxReasonersPerSession = 3,
   contextLines = 20,
@@ -153,6 +155,36 @@ export function createReasoningCoordinator({
     const reasons = replyEgress.taintReasons?.(sessionKey, { taskId: task.id, residentKey }) ?? [];
     emit({ type: "resident_taint_recycle", sessionKey, taskId: task.id, residentKey, reasons });
     brain.recycle?.(sessionKey, { taskId: task.id });
+  }
+
+  async function retryPendingSend({ dispatchId, session, sessionKey }) {
+    const row = taskStore.getDispatch(dispatchId);
+    if (!row) throw new Error("coordinator: pending_send dispatch 不存在");
+    if (row.session_id !== session?.id) throw new Error("coordinator: pending_send 会话不匹配");
+    if (row.status === "pending_review") return row;
+    if (row.status !== "pending_send") throw new Error(`coordinator: pending_send 非法状态 ${row.status}`);
+    if (typeof deliverText !== "function") throw new Error("coordinator: pending_send 缺少 deliverText");
+
+    const { messageId } = await deliverText(sessionKey, row.responder_text, {
+      idempotencyKey: row.outbound_idempotency_key,
+    });
+    const committed = taskStore.recordDispatchSent(dispatchId, {
+      platformMessageId: messageId,
+      appendAssistant: () => store.append(session.id, {
+        role: "assistant",
+        content: row.responder_text,
+        platformMessageId: messageId,
+        ts: Date.now(),
+      }),
+    });
+    emit({
+      type: "responder_send_recovered",
+      sessionKey,
+      dispatchId,
+      messageId,
+      idempotencyKey: row.outbound_idempotency_key,
+    });
+    return committed.dispatch;
   }
 
   async function startReasoner({ session, sessionKey, task, brief, messageIds = [] }) {
@@ -278,8 +310,14 @@ export function createReasoningCoordinator({
   }) {
     const claimed = taskStore.claimDispatchForReview(dispatchId);
     const sourceMessageIds = JSON.parse(claimed.source_message_ids_json ?? "[]");
+    const effectiveItems = items.length ? items : taskStore.dispatchSourceItems(dispatchId);
+    const excludedRecentIds = new Set([
+      ...sourceMessageIds,
+      ...(claimed.responder_message_id ? [claimed.responder_message_id] : []),
+    ]);
     const recentRows = typeof store?.promptRecent === "function"
       ? store.promptRecent(session.id, { limit: 200, roles: ["user", "assistant"] })
+        .filter((row) => !excludedRecentIds.has(row.id))
       : [];
     const candidates = taskStore.activeSummaries(session.id);
 
@@ -290,7 +328,7 @@ export function createReasoningCoordinator({
     try {
       decision = await review({
         sessionKey,
-        items,
+        items: effectiveItems,
         mode: claimed.mode || mode,
         responderAction: claimed.responder_action,
         responderText: claimed.responder_text,
@@ -337,6 +375,7 @@ export function createReasoningCoordinator({
     schedule,
     resumePending,
     startReasoner,
+    retryPendingSend,
     maxReasonersPerSession,
   };
 }

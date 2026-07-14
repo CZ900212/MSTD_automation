@@ -94,6 +94,12 @@ describe("turn-handler active architecture", () => {
       order.push("pending_send");
       return origCreate(args);
     };
+    const origRecordSent = taskStore.recordDispatchSent.bind(taskStore);
+    taskStore.recordDispatchSent = (dispatchId, options) => {
+      order.push("commit_send");
+      return origRecordSent(dispatchId, options);
+    };
+    taskStore.markDispatchSent = () => { throw new Error("active path must use atomic recordDispatchSent"); };
     const handler = createTurnHandler({
       architectureMode: "active",
       triage: { triage: vi.fn() },
@@ -122,7 +128,8 @@ describe("turn-handler active architecture", () => {
 
     expect(done.action).toBe("reply");
     expect(order.indexOf("pending_send")).toBeLessThan(order.indexOf("send"));
-    expect(order.indexOf("send")).toBeLessThan(order.indexOf("schedule"));
+    expect(order.indexOf("send")).toBeLessThan(order.indexOf("commit_send"));
+    expect(order.indexOf("commit_send")).toBeLessThan(order.indexOf("schedule"));
     expect(order).not.toContain("reasoner");
     expect(coordinator.schedule).toHaveBeenCalled();
     expect(outboundCalls[0].opts.idempotencyKey).toMatch(/^[a-f0-9]{64}$/);

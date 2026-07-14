@@ -71,6 +71,12 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
   const getDispatchByOutbound = db.prepare(`
     SELECT * FROM reasoning_dispatches WHERE outbound_idempotency_key = ?
   `);
+  const getMessage = db.prepare(`SELECT * FROM agent_messages WHERE id = ?`);
+  const getAssistantByPlatformId = db.prepare(`
+    SELECT * FROM agent_messages
+    WHERE session_id = ? AND role = 'assistant' AND platform_message_id = ?
+    ORDER BY rowid DESC LIMIT 1
+  `);
   const markPendingReview = db.prepare(`
     UPDATE reasoning_dispatches
     SET status = 'pending_review',
@@ -163,6 +169,25 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
     return listTaskMessages.all(taskId);
   }
 
+  function dispatchSourceItems(dispatchId) {
+    const dispatch = getDispatch.get(dispatchId);
+    if (!dispatch) throw new Error("dispatchSourceItems: dispatch 不存在");
+    const ids = JSON.parse(dispatch.source_message_ids_json ?? "[]");
+    return ids.map((id) => {
+      const row = getMessage.get(id);
+      if (!row || row.session_id !== dispatch.session_id || row.role !== "user") {
+        throw new Error("dispatchSourceItems: source message 缺失、跨会话或角色非法");
+      }
+      return {
+        content: row.content,
+        senderOpenId: row.sender_open_id,
+        senderName: row.sender_name,
+        platformMessageId: row.platform_message_id,
+        ts: row.ts,
+      };
+    });
+  }
+
   /**
    * Create a durable dispatch before physical send (reply) or directly for review (no_reply).
    * Idempotent on (sessionId, source message batch).
@@ -242,6 +267,45 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
     return getDispatch.get(dispatchId);
   }
 
+  const recordDispatchSentTx = db.transaction((dispatchId, {
+    platformMessageId = null,
+    appendAssistant,
+  } = {}) => {
+    const row = getDispatch.get(dispatchId);
+    if (!row) throw new Error("recordDispatchSent: dispatch 不存在");
+    if (row.responder_action !== "reply") throw new Error("recordDispatchSent: 仅 reply dispatch 可记录发送");
+    if (typeof appendAssistant !== "function") throw new Error("recordDispatchSent: appendAssistant 必填");
+
+    let assistant = row.responder_message_id ? getMessage.get(row.responder_message_id) : null;
+    if (!assistant && platformMessageId != null) {
+      assistant = getAssistantByPlatformId.get(row.session_id, platformMessageId) ?? null;
+    }
+    if (row.status === "pending_review") {
+      if (!assistant) throw new Error("recordDispatchSent: pending_review 缺少 responder message");
+      return { dispatch: row, assistant };
+    }
+    if (row.status !== "pending_send") {
+      throw new Error(`recordDispatchSent: 非法状态 ${row.status}`);
+    }
+
+    if (!assistant) assistant = appendAssistant();
+    const assistantId = assistant?.id;
+    const assistantSessionId = assistant?.session_id ?? assistant?.sessionId;
+    if (!assistantId || assistantSessionId !== row.session_id || assistant.role !== "assistant") {
+      throw new Error("recordDispatchSent: responder message 非法或跨会话");
+    }
+    if (assistant.content !== row.responder_text) {
+      throw new Error("recordDispatchSent: responder message 文本不匹配");
+    }
+    const updated = markPendingReview.run(assistantId, now(), dispatchId);
+    if (!updated.changes) throw new Error("recordDispatchSent: 状态竞争失败");
+    return { dispatch: getDispatch.get(dispatchId), assistant };
+  });
+
+  function recordDispatchSent(dispatchId, options) {
+    return recordDispatchSentTx.immediate(dispatchId, options);
+  }
+
   /** Dispatcher pump: claim only pending_review (never pending_send). */
   function claimDispatchForReview(dispatchId) {
     const row = getDispatch.get(dispatchId);
@@ -287,9 +351,11 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
     transitionTask,
     activeSummaries,
     listMessages,
+    dispatchSourceItems,
     getTask: (id) => getTask.get(id),
     createDispatch,
     markDispatchSent,
+    recordDispatchSent,
     claimDispatchForReview,
     completeDispatch,
     recoverStaleRunning,

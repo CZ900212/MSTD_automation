@@ -211,13 +211,15 @@ export function createTurnHandler({
     const { messageId } = await deliverText(sessionKey, answer.text, {
       idempotencyKey: dispatch.outbound_idempotency_key,
     });
-    const assistant = store.append(session.id, {
-      role: "assistant",
-      content: answer.text,
+    taskStore.recordDispatchSent(dispatch.id, {
       platformMessageId: messageId,
-      ts: Date.now(),
+      appendAssistant: () => store.append(session.id, {
+        role: "assistant",
+        content: answer.text,
+        platformMessageId: messageId,
+        ts: Date.now(),
+      }),
     });
-    taskStore.markDispatchSent(dispatch.id, assistant.id);
     emitEvent({
       type: "responder_sent",
       sessionKey,

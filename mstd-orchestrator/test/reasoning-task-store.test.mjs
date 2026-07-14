@@ -120,6 +120,51 @@ describe("createReasoningTaskStore", () => {
     expect(JSON.parse(done.verdict_json).action).toBe("spawn_new");
   });
 
+  it("atomically appends the responder message and advances pending_send", () => {
+    const source = append(session.id, "查一下");
+    const dispatch = store.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [source.id],
+      responderAction: "reply",
+      responderText: "我去查",
+      mode: "p2p",
+    });
+
+    expect(() => store.recordDispatchSent(dispatch.id, {
+      platformMessageId: "om_atomic",
+      appendAssistant: () => {
+        sessions.append(session.id, {
+          role: "assistant",
+          content: "我去查",
+          platformMessageId: "om_atomic",
+          ts: 2,
+        });
+        throw new Error("crash before dispatch update");
+      },
+    })).toThrow(/crash/);
+    expect(store.getDispatch(dispatch.id).status).toBe("pending_send");
+    expect(sessions.transcript(session.id).filter((row) => row.role === "assistant")).toHaveLength(0);
+
+    const committed = store.recordDispatchSent(dispatch.id, {
+      platformMessageId: "om_atomic",
+      appendAssistant: () => sessions.append(session.id, {
+        role: "assistant",
+        content: "我去查",
+        platformMessageId: "om_atomic",
+        ts: 2,
+      }),
+    });
+    expect(committed.dispatch.status).toBe("pending_review");
+    expect(committed.dispatch.responder_message_id).toBe(committed.assistant.id);
+    expect(sessions.transcript(session.id).filter((row) => row.role === "assistant")).toHaveLength(1);
+
+    const replay = store.recordDispatchSent(dispatch.id, {
+      platformMessageId: "om_atomic",
+      appendAssistant: () => { throw new Error("must reuse persisted assistant"); },
+    });
+    expect(replay.assistant.id).toBe(committed.assistant.id);
+  });
+
   it("no_reply starts at pending_review without outbound key", () => {
     const m = append(session.id, "哈哈");
     const d = store.createDispatch({

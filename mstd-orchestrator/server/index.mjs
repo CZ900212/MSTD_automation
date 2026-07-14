@@ -327,11 +327,28 @@ if (config.enableAgent && config.botOpenId) {
     activeBrainTurns,
     replyEgress,
     deliverTerminal: replyPipeline.deliverTerminal,
+    deliverText: replyPipeline.deliverText,
     onEvent: modelLog.record,
     maxReasonersPerSession: config.maxReasonersPerSession,
     contextLines: config.dispatchContextLines,
     contextBytes: config.dispatchContextBytes,
   });
+  // A process may die after physical delivery but before the assistant row/dispatch state
+  // commits. Retry with the durable idempotency key, then let the normal review pump claim it.
+  for (const row of taskStore.listRetryableSends()) {
+    const session = agentStore.getById?.(row.session_id)
+      ?? db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(row.session_id);
+    if (!session) continue;
+    try {
+      await coordinator.retryPendingSend({
+        dispatchId: row.id,
+        session,
+        sessionKey: session.session_key,
+      });
+    } catch (error) {
+      console.error(`[mstd] pending_send recovery failed dispatch=${row.id}: ${error?.message ?? error}`);
+    }
+  }
   // Resume pending dispatcher work after restart (release stale claims first).
   for (const row of coordinator.resumePending()) {
     const session = agentStore.getById?.(row.session_id)

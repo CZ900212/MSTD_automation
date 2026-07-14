@@ -212,6 +212,91 @@ describe("reasoning coordinator", () => {
     expect(brain.recycle).toHaveBeenCalledWith("feishu:p2p:ou_a", { taskId: out.taskId });
   });
 
+  it("retries pending_send with the stable key and reuses a crash-residue assistant row", async () => {
+    const source = sessions.append(session.id, {
+      role: "user",
+      senderOpenId: "ou_a",
+      senderName: "甲",
+      content: "帮我查",
+      ts: 1,
+    });
+    const dispatch = taskStore.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [source.id],
+      responderAction: "reply",
+      responderText: "我去查",
+      mode: "p2p",
+    });
+    sessions.append(session.id, {
+      role: "assistant",
+      content: "我去查",
+      platformMessageId: "om_recovered",
+      ts: 2,
+    });
+    const deliverText = vi.fn(async () => ({ messageId: "om_recovered" }));
+    const c = makeCoordinator({ deliverText });
+
+    const recovered = await c.retryPendingSend({
+      dispatchId: dispatch.id,
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+    });
+
+    expect(deliverText).toHaveBeenCalledWith("feishu:p2p:ou_a", "我去查", {
+      idempotencyKey: dispatch.outbound_idempotency_key,
+    });
+    expect(recovered.status).toBe("pending_review");
+    expect(sessions.transcript(session.id).filter((row) => row.role === "assistant")).toHaveLength(1);
+  });
+
+  it("reconstructs original user items after restart and keeps the current batch out of recent transcript", async () => {
+    sessions.append(session.id, { role: "user", content: "之前的话题", senderOpenId: "ou_a", ts: 1 });
+    const source = sessions.append(session.id, {
+      role: "user",
+      senderOpenId: "ou_a",
+      senderName: "甲",
+      content: "对，改成周五",
+      platformMessageId: "om_user",
+      ts: 2,
+    });
+    const dispatch = taskStore.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [source.id],
+      responderAction: "reply",
+      responderText: "收到",
+      mode: "p2p",
+    });
+    const assistant = sessions.append(session.id, {
+      role: "assistant",
+      content: "收到",
+      platformMessageId: "om_responder",
+      ts: 3,
+    });
+    taskStore.markDispatchSent(dispatch.id, assistant.id);
+    const dispatcher = {
+      review: vi.fn(async () => ({ action: "no_reasoning", reason_code: "complete" })),
+    };
+    const c = makeCoordinator({ dispatcher });
+
+    await c.processDispatch({
+      dispatchId: dispatch.id,
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      items: [],
+      mode: "p2p",
+    });
+
+    expect(dispatcher.review).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({
+        content: "对，改成周五",
+        senderOpenId: "ou_a",
+        senderName: "甲",
+        platformMessageId: "om_user",
+      })],
+      recentRows: [expect.objectContaining({ content: "之前的话题" })],
+    }));
+  });
+
   it("refuses fabricated or cross-session task ids", async () => {
     const other = sessions.getOrCreate("feishu:p2p:ou_b", { kind: "p2p" });
     const foreign = taskStore.createTask({ sessionId: other.id, title: "外会话" });
