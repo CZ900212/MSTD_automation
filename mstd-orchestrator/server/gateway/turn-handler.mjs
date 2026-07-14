@@ -37,6 +37,7 @@ export function createTurnHandler({
   // Responder–Dispatcher–Reasoner (architecture modes: legacy|shadow|active)
   architectureMode = "legacy",
   responder = null,
+  dispatcher = null,
   taskStore = null,
   coordinator = null,
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
@@ -237,16 +238,52 @@ export function createTurnHandler({
     return { action: "reply", dispatchId: dispatch.id, messageId };
   }
 
-  /** Shadow mode: compute responder (+ optional dispatcher) without outbound or task side effects. */
-  async function handleTurnShadow(turn, emitEvent) {
+  /** Shadow mode: keep the legacy user path authoritative and observe the new chain off-actor. */
+  function observeTurnShadow(turn, emitEvent) {
     const { session, sessionKey, items, mode } = turn;
-    if (!responder) return handleTurnLegacy(turn, emitEvent);
+    if (!responder) return;
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
-    appendItems(session.id, items, { observed: true });
-    const answer = await responder.answerTurn({ sessionKey, items, mode, snapshot, soul: snapshot?.soul ?? soul });
-    emitEvent({ type: "shadow_responder", sessionKey, action: answer.action, text: answer.action === "reply" ? answer.text : null });
-    // No physical send, no task store mutation, no reasoner.
-    return { action: answer.action, shadow: true };
+    const recentRows = store.promptRecent(session.id, { limit: 200, roles: ["user", "assistant"] });
+    const activeTaskCandidates = taskStore?.activeSummaries?.(session.id) ?? [];
+    void (async () => {
+      const answer = await responder.answerTurn({
+        sessionKey,
+        items,
+        mode,
+        snapshot,
+        soul: snapshot?.soul ?? soul,
+      });
+      emitEvent({
+        type: "shadow_responder",
+        sessionKey,
+        action: answer.action,
+        text: answer.action === "reply" ? answer.text : null,
+      });
+      if (typeof dispatcher?.review !== "function") return;
+      const decision = await dispatcher.review({
+        sessionKey,
+        items,
+        mode,
+        responderAction: answer.action,
+        responderText: answer.action === "reply" ? answer.text : null,
+        recentRows,
+        activeTaskCandidates,
+      });
+      emitEvent({
+        type: "shadow_dispatcher",
+        sessionKey,
+        action: decision.action,
+        reason_code: decision.reason_code ?? null,
+      });
+    })().catch((error) => {
+      log(`[turn] shadow observation failed session=${sessionKey}: ${error?.message ?? error}`);
+      emitEvent({ type: "shadow_error", sessionKey, error: String(error?.message ?? error) });
+    });
+  }
+
+  async function handleTurnShadow(turn, emitEvent) {
+    observeTurnShadow(turn, emitEvent);
+    return handleTurnLegacy(turn, emitEvent);
   }
 
   function scheduleMaintenanceOutsideActor({ session, sessionKey, snapshot, emitEvent }) {

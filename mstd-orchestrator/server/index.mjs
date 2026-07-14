@@ -354,6 +354,7 @@ if (config.enableAgent && config.botOpenId) {
     replyPipeline,
     architectureMode: config.agentArchitectureMode,
     responder,
+    dispatcher,
     taskStore,
     coordinator,
     snapshotFn,

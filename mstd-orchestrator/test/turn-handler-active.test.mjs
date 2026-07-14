@@ -5,6 +5,61 @@ import { createReasoningTaskStore } from "../server/reasoning/task-store.mjs";
 import { createTurnHandler } from "../server/gateway/turn-handler.mjs";
 
 describe("turn-handler active architecture", () => {
+  it("shadow preserves legacy outbound while reviewing responder and dispatcher without task side effects", async () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const taskStore = createReasoningTaskStore(db);
+    const sessionKey = "feishu:p2p:ou_shadow";
+    const session = store.getOrCreate(sessionKey, { kind: "p2p" });
+    const deliverText = vi.fn(async () => ({ messageId: "om_legacy" }));
+    const dispatcher = {
+      review: vi.fn(async () => ({ action: "no_reasoning", reason_code: "complete" })),
+    };
+    const responder = {
+      answerTurn: vi.fn(async () => ({ action: "reply", text: "影子首答候选" })),
+    };
+    const brain = { turn: vi.fn(), isBusy: () => false, steer: vi.fn(), recycle: vi.fn() };
+    const handler = createTurnHandler({
+      architectureMode: "shadow",
+      triage: { triage: vi.fn(async () => ({ action: "quick_reply", text: "现网正式回复" })) },
+      brain,
+      responder,
+      dispatcher,
+      taskStore,
+      coordinator: { schedule: vi.fn() },
+      store,
+      budget: { allow: () => ({ ok: true }), record: vi.fn() },
+      replyPipeline: {
+        deliverText,
+        deliverTerminal: vi.fn(),
+        handleReply: vi.fn(),
+        renderAutomationReply: vi.fn(),
+        deliverTrusted: vi.fn(),
+      },
+    });
+    const items = [{ content: "你是谁？", senderOpenId: "ou_shadow", ts: 1 }];
+
+    await handler.handleTurn({ kind: "message", session, sessionKey, mode: "p2p", items });
+
+    expect(deliverText).toHaveBeenCalledWith(sessionKey, "现网正式回复");
+    expect(store.transcript(session.id).map((row) => [row.role, row.content])).toEqual([
+      ["user", "你是谁？"],
+      ["assistant", "现网正式回复"],
+    ]);
+    await vi.waitFor(() => expect(dispatcher.review).toHaveBeenCalledTimes(1));
+    expect(dispatcher.review).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKey,
+      items,
+      mode: "p2p",
+      responderAction: "reply",
+      responderText: "影子首答候选",
+    }));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM reasoning_dispatches").get().n).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM reasoning_tasks").get().n).toBe(0);
+    expect(brain.turn).not.toHaveBeenCalled();
+  });
+
   it("persists pending_send before physical send and schedules review without waiting on reasoner", async () => {
     const db = openDb();
     migrate(db);
