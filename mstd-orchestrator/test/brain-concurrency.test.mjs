@@ -492,4 +492,141 @@ describe("池满 LRU 驱逐(evictIdleForSlot)", () => {
       await brain.shutdown();
     }
   });
+
+  it("同一会话两个 taskId 可并发进入 runJob", async () => {
+    const gateA = deferred();
+    const gateB = deferred();
+    const entered = [];
+    const cA = mockClient();
+    const cB = mockClient();
+    cA.runJob = vi.fn(async () => {
+      entered.push("A");
+      await gateA.promise;
+      return { finalText: "A" };
+    });
+    cB.runJob = vi.fn(async () => {
+      entered.push("B");
+      await gateB.promise;
+      return { finalText: "B" };
+    });
+    let n = 0;
+    const startPi = vi.fn(() => (n++ === 0 ? cA : cB));
+    const brain = createBrain({
+      startPi,
+      store,
+      sleepFn: async () => {},
+      setTimeoutFn: () => 0,
+      clearTimeoutFn: () => {},
+    });
+    let pA; let pB;
+    try {
+      pA = brain.turn({ session, sessionKey: "same-chat", taskId: "task-a", brief: "任务A" });
+      pB = brain.turn({ session, sessionKey: "same-chat", taskId: "task-b", brief: "任务B" });
+      await vi.waitFor(() => expect(entered.sort()).toEqual(["A", "B"]));
+      expect(startPi).toHaveBeenCalledTimes(2);
+      expect(cA.runJob).toHaveBeenCalled();
+      expect(cB.runJob).toHaveBeenCalled();
+      gateA.resolve();
+      gateB.resolve();
+      const [a, b] = await Promise.all([pA, pB]);
+      expect(a.finalText).toBe("A");
+      expect(b.finalText).toBe("B");
+    } finally {
+      gateA.resolve();
+      gateB.resolve();
+      await Promise.allSettled([pA, pB].filter(Boolean));
+      await brain.shutdown();
+    }
+  });
+
+  it("同 task 仍串行，且 steer/recycle 只命中该 task", async () => {
+    const firstGate = deferred();
+    const order = [];
+    const c = mockClient();
+    c.runJob = vi.fn(async (prompt) => {
+      if (prompt.includes("第一")) {
+        await firstGate.promise;
+        order.push("t1");
+        return { finalText: "1" };
+      }
+      order.push("t2");
+      return { finalText: "2" };
+    });
+    const foreign = mockClient();
+    foreign.runJob = vi.fn(async () => {
+      await firstGate.promise;
+      return { finalText: "foreign" };
+    });
+    let n = 0;
+    const startPi = vi.fn(() => (n++ === 0 ? c : foreign));
+    const brain = createBrain({
+      startPi,
+      store,
+      sleepFn: async () => {},
+      setTimeoutFn: () => 0,
+      clearTimeoutFn: () => {},
+    });
+    let p1; let p2; let pForeign;
+    try {
+      p1 = brain.turn({ session, sessionKey: "chat", taskId: "task-a", brief: "第一" });
+      p2 = brain.turn({ session, sessionKey: "chat", taskId: "task-a", brief: "第二" });
+      pForeign = brain.turn({ session, sessionKey: "chat", taskId: "task-b", brief: "外任务" });
+      await vi.waitFor(() => expect(c.runJob).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(foreign.runJob).toHaveBeenCalledTimes(1));
+
+      expect(brain.steer("chat", "插话A", { taskId: "task-a" })).toBe(true);
+      expect(c.send).toHaveBeenCalledWith({ type: "prompt", message: "【用户插话】插话A" });
+      expect(brain.steer("chat", "插话B", { taskId: "task-b" })).toBe(true);
+      expect(foreign.send).toHaveBeenCalled();
+      // Cross-task: steering A must not touch B's client with A's note alone already verified;
+      // recycling A while busy is a no-op and must leave B running.
+      brain.recycle("chat", { taskId: "task-a" });
+      expect(c.close).not.toHaveBeenCalled();
+      expect(foreign.close).not.toHaveBeenCalled();
+
+      firstGate.resolve();
+      const [r1, r2, rf] = await Promise.all([p1, p2, pForeign]);
+      expect(order).toEqual(["t1", "t2"]);
+      expect(r1.finalText).toBe("1");
+      expect(r2.finalText).toBe("2");
+      expect(rf.finalText).toBe("foreign");
+    } finally {
+      firstGate.resolve();
+      await Promise.allSettled([p1, p2, pForeign].filter(Boolean));
+      await brain.shutdown();
+    }
+  });
+
+  it("task A 不能 close/recycle 掉 task B 的 resident", async () => {
+    const gate = deferred();
+    const cA = mockClient();
+    const cB = mockClient();
+    cA.runJob = vi.fn(async () => { await gate.promise; return { finalText: "A" }; });
+    cB.runJob = vi.fn(async () => { await gate.promise; return { finalText: "B" }; });
+    let n = 0;
+    const brain = createBrain({
+      startPi: vi.fn(() => (n++ === 0 ? cA : cB)),
+      store,
+      sleepFn: async () => {},
+      setTimeoutFn: () => 0,
+      clearTimeoutFn: () => {},
+    });
+    let pA; let pB;
+    try {
+      pA = brain.turn({ session, sessionKey: "chat", taskId: "task-a", brief: "A" });
+      pB = brain.turn({ session, sessionKey: "chat", taskId: "task-b", brief: "B" });
+      await vi.waitFor(() => expect(cA.runJob).toHaveBeenCalled());
+      await vi.waitFor(() => expect(cB.runJob).toHaveBeenCalled());
+      brain.recycle("chat", { taskId: "task-a" });
+      expect(cB.close).not.toHaveBeenCalled();
+      expect(brain.steer("chat", "x", { taskId: "task-a" })).toBe(true);
+      expect(cB.send).not.toHaveBeenCalled();
+      gate.resolve();
+      await Promise.all([pA, pB]);
+    } finally {
+      gate.resolve();
+      await Promise.allSettled([pA, pB].filter(Boolean));
+      await brain.shutdown();
+    }
+  });
 });

@@ -61,13 +61,39 @@ export function createActiveTurnRegistry({
   if (!Number.isSafeInteger(drainTimeoutMs) || drainTimeoutMs < 1) {
     throw new Error("drainTimeoutMs 必须是正整数");
   }
-  // sessionKey -> { sessionKey, turnId, lease, receipt, brain, initiator }
+  // executionKey -> { sessionKey, taskId, runId, executionKey, turnId, lease, receipt, brain, initiator }
+  // Legacy callers pass only sessionKey, so executionKey defaults to sessionKey.
+  // Task-scoped reasoners use task:<id> / run:<id> keys so two tasks can share one sessionKey.
   const sessions = new Map();
   const admissions = new Map();
 
+  function executionKeyOf({ sessionKey, taskId = null, runId = null, executionKey = null } = {}) {
+    if (executionKey) return String(executionKey);
+    if (runId) return `run:${runId}`;
+    if (taskId) return `task:${taskId}`;
+    return sessionKey;
+  }
+
+  function findByLease(lease) {
+    if (!lease) return null;
+    for (const rec of sessions.values()) {
+      if (rec.lease === lease) return rec;
+    }
+    return null;
+  }
+
+  function resolveRec(sessionKey, lease = null, opts = {}) {
+    if (lease) {
+      const byLease = findByLease(lease);
+      if (byLease) return byLease;
+    }
+    const key = executionKeyOf({ sessionKey, ...opts });
+    return sessions.get(key) ?? null;
+  }
+
   function prune(rec) {
-    if (!rec.receipt && !rec.brain && !rec.initiator && sessions.get(rec.sessionKey) === rec) {
-      sessions.delete(rec.sessionKey);
+    if (!rec.receipt && !rec.brain && !rec.initiator && sessions.get(rec.executionKey) === rec) {
+      sessions.delete(rec.executionKey);
     }
   }
 
@@ -104,14 +130,25 @@ export function createActiveTurnRegistry({
     return i;
   }
 
-  // 取得/轮换会话记录：无活跃 receipt/brain 时轮换到新 turnId + 新 lease；
+  // 取得/轮换执行记录：无活跃 receipt/brain 时轮换到新 turnId + 新 lease；
   // 与活跃回合 turnId 冲突时返回 null（gateway 与 reinjector 共用 actor 队列串行化，
   // 生产路径不可达——宁可 fail-loud 也不让新回合借走活跃回合的 lease）。
-  function ensureTurn(sessionKey, turnId) {
-    let rec = sessions.get(sessionKey);
+  function ensureTurn(sessionKey, turnId, opts = {}) {
+    const executionKey = executionKeyOf({ sessionKey, ...opts });
+    let rec = sessions.get(executionKey);
     if (!rec) {
-      rec = { sessionKey, turnId, lease: issueLease(), receipt: null, brain: null, initiator: null };
-      sessions.set(sessionKey, rec);
+      rec = {
+        sessionKey,
+        taskId: opts.taskId ?? null,
+        runId: opts.runId ?? null,
+        executionKey,
+        turnId,
+        lease: issueLease(),
+        receipt: null,
+        brain: null,
+        initiator: null,
+      };
+      sessions.set(executionKey, rec);
       return rec;
     }
     if (!receiptLive(rec) && !brainLive(rec)) {
@@ -199,15 +236,16 @@ export function createActiveTurnRegistry({
   // ---- brain 域（Pi execution admission/delivery/drain）----
 
   const brainTurns = {
-    activate({ sessionKey, turnId, purpose = "automation" }) {
+    activate({ sessionKey, turnId, purpose = "automation", taskId = null, runId = null, executionKey = null } = {}) {
       if (typeof sessionKey !== "string" || !sessionKey.trim()) return null;
       if (typeof turnId !== "string" || !turnId.trim()) return null;
       if (!PURPOSES.has(purpose)) return null;
-      // One execution owns a session until the gateway freezes its outcome. This closes
-      // the small brain-return → daemon-fallback gap where a replacement could otherwise
-      // steal the session before the old fallback receipt is committed.
-      if (brainLive(sessions.get(sessionKey))) return null;
-      const rec = ensureTurn(sessionKey, turnId);
+      const opts = { taskId, runId, executionKey };
+      const key = executionKeyOf({ sessionKey, ...opts });
+      // One execution owns its executionKey until the gateway freezes its outcome.
+      // Different taskIds in the same conversation may run concurrently.
+      if (brainLive(sessions.get(key))) return null;
+      const rec = ensureTurn(sessionKey, turnId, opts);
       if (!rec) return null;   // 与活跃 receipt 的 turnId 不一致：fail-loud
       rec.brain = {
         turnId,
@@ -228,8 +266,8 @@ export function createActiveTurnRegistry({
       return rec.lease;    // business 回合与 receipt 共享同一把回合 lease
     },
 
-    bindResident(sessionKey, lease, residentEpoch) {
-      const rec = sessions.get(sessionKey);
+    bindResident(sessionKey, lease, residentEpoch, opts = {}) {
+      const rec = resolveRec(sessionKey, lease, opts);
       const b = brainLive(rec);
       if (!b || b.state !== "active" || !lease || rec.lease !== lease) return false;
       if (!Number.isSafeInteger(residentEpoch) || residentEpoch <= 0) return false;
@@ -238,14 +276,14 @@ export function createActiveTurnRegistry({
       return true;
     },
 
-    resolve(sessionKey) {
-      const rec = sessions.get(sessionKey);
+    resolve(sessionKey, opts = {}) {
+      const rec = resolveRec(sessionKey, opts.lease ?? null, opts);
       const b = brainLive(rec);
       return b ? brainSnapshot(rec, b) : null;
     },
 
-    admit({ sessionKey, turnId, lease, residentEpoch } = {}) {
-      const rec = sessions.get(sessionKey);
+    admit({ sessionKey, turnId, lease, residentEpoch, taskId = null, executionKey = null } = {}) {
+      const rec = resolveRec(sessionKey, lease, { taskId, executionKey });
       const b = brainLive(rec);
       if (!b) return rejection("no_active_turn");
       if (b.purpose === "memory_maintenance") return rejection("maintenance_silent");
@@ -324,8 +362,8 @@ export function createActiveTurnRegistry({
       return { ok: true, receipt };
     },
 
-    recordDaemonDelivery({ sessionKey, turnId, lease } = {}, { messageId = null } = {}) {
-      const rec = sessions.get(sessionKey);
+    recordDaemonDelivery({ sessionKey, turnId, lease, taskId = null, executionKey = null } = {}, { messageId = null } = {}) {
+      const rec = resolveRec(sessionKey, lease, { taskId, executionKey });
       const b = rec?.brain;
       if (
         !b
@@ -358,8 +396,8 @@ export function createActiveTurnRegistry({
       return true;
     },
 
-    closeAdmissions(sessionKey, lease, { provider = null } = {}) {
-      const rec = sessions.get(sessionKey);
+    closeAdmissions(sessionKey, lease, { provider = null, taskId = null, executionKey = null } = {}) {
+      const rec = resolveRec(sessionKey, lease, { taskId, executionKey });
       const b = rec?.brain;
       if (!b || !lease || rec.lease !== lease) return Promise.resolve(null);
       if (b.state === "closed") return Promise.resolve(null);
@@ -392,8 +430,8 @@ export function createActiveTurnRegistry({
       return b.drainPromise;
     },
 
-    finalizeTurn(sessionKey, lease) {
-      const rec = sessions.get(sessionKey);
+    finalizeTurn(sessionKey, lease, opts = {}) {
+      const rec = resolveRec(sessionKey, lease, opts);
       const b = rec?.brain;
       if (!b || !lease || rec.lease !== lease || b.state !== "closing" || b.inFlight > 0) {
         return null;
@@ -415,8 +453,8 @@ export function createActiveTurnRegistry({
       return brainTurns.finalizeTurn(sessionKey, lease);
     },
 
-    clear(sessionKey, lease) {
-      const rec = sessions.get(sessionKey);
+    clear(sessionKey, lease, opts = {}) {
+      const rec = resolveRec(sessionKey, lease, opts);
       const b = rec?.brain;
       if (!b || !lease || rec.lease !== lease || b.inFlight > 0) return false;
       b.state = "closed";
@@ -522,17 +560,19 @@ export function createActiveTurnRegistry({
   };
 
   // 统一视图（调试台/巡检用；lease 是服务端私有凭证，不外泄）
-  function inspect(sessionKey) {
-    const rec = sessions.get(sessionKey);
+  function inspect(sessionKey, opts = {}) {
+    const rec = resolveRec(sessionKey, opts.lease ?? null, opts);
     if (!rec) return null;
     const r = receiptLive(rec);
     const b = brainLive(rec);
     const i = initiatorLive(rec);
     if (!r && !b && !i) return null;
     return Object.freeze({
-      sessionKey,
+      sessionKey: rec.sessionKey,
+      taskId: rec.taskId ?? null,
+      executionKey: rec.executionKey,
       turnId: rec.turnId,
-      receipt: r ? receiptSnapshot(r, sessionKey) : null,
+      receipt: r ? receiptSnapshot(r, rec.sessionKey) : null,
       brain: b ? brainSnapshot(rec, b) : null,
       initiatorOpenId: i?.openId ?? null,
     });
@@ -566,6 +606,8 @@ function receiptSnapshot(r, sessionKey) {
 function brainSnapshot(rec, b) {
   return Object.freeze({
     sessionKey: rec.sessionKey,
+    taskId: rec.taskId ?? null,
+    executionKey: rec.executionKey,
     turnId: b.turnId,
     purpose: b.purpose,
     state: b.state,
@@ -583,6 +625,8 @@ function outcome(rec, b) {
   return Object.freeze({
     turnId: b.turnId,
     sessionKey: rec.sessionKey,
+    taskId: rec.taskId ?? null,
+    executionKey: rec.executionKey,
     purpose: b.purpose,
     state: "closed",
     residentEpoch: b.residentEpoch,
