@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { canonicalJson, stableHash, canonicalizeActions } from "../server/safety/action-dsl.mjs";
+import { createEventBus } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/event-bus.js";
 
 const items = [
   { owner_name: "张三", task: "写周报", due: "2026-07-15", suggested_open_id: "ou_a", confidence: "high" },
@@ -233,7 +234,7 @@ describe("propose_actions schema（TypeBox union 含 schedule_reminder）", () =
   it("union 含 schedule_reminder，描述明确 {due_iso,text,deliver_to} 形状", async () => {
     const mod = await import("../pi-ext/propose-actions.ts");
     const tools = [];
-    mod.default({ registerTool: (t) => tools.push(t) });
+    mod.default({ registerTool: (t) => tools.push(t), events: createEventBus() });
     const spec = tools.find((t) => t.name === "propose_actions");
     expect(spec).toBeTruthy();
     const s = JSON.stringify(spec.parameters);
