@@ -13,12 +13,21 @@ export function createLarkReadEgressSource({
     throw new Error("lark-read egress source 需要 replyEgress");
   }
 
-  function record({ sessionKey, op, text }) {
+  function record({ sessionKey, op, text, residentKey = null, taskId = null }) {
+    // residentKey/taskId must come from server token binding, never model body fields.
     const shingles = verbatimGuard.record(sessionKey, text);
     const sensitivity = larkReadSensitivity(op);
     if (sensitivity === "restricted") {
-      const tainted = replyEgress.markTainted(sessionKey, `lark_read:${op}`);
-      if (tainted) onEvent({ type: "resident_tainted", sessionKey, detail: `lark_read:${op}` });
+      const tainted = replyEgress.markTainted(sessionKey, `lark_read:${op}`, { residentKey, taskId });
+      if (tainted) {
+        onEvent({
+          type: "resident_tainted",
+          sessionKey,
+          residentKey: residentKey ?? null,
+          taskId: taskId ?? null,
+          detail: `lark_read:${op}`,
+        });
+      }
     }
     return { ok: true, shingles, sensitivity };
   }

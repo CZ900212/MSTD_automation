@@ -43,7 +43,12 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
     if (typeof brief !== "string" || !brief.trim()) {
       return res.status(400).json({ ok: false, error: "brief 必填" });
     }
+    // Authoritative task/run/resident identity comes only from the server token binding.
+    // Model-supplied body.task_id / body.resident_key are ignored.
     const residentEpoch = binding?.residentEpoch ?? null;
+    const taskId = binding?.taskId ?? null;
+    const runId = binding?.runId ?? null;
+    const residentKey = binding?.residentKey ?? null;
     try {
       const result = await handleReply({
         sessionKey,
@@ -55,6 +60,9 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
         turnId,
         turnLease,
         residentEpoch,
+        taskId,
+        runId,
+        residentKey,
       });
       // ok:false 也要留痕：否则失败只存在于 Pi transcript,daemon 侧零可观测
       if (!result?.ok) log(`[internal/reply] ok=false session=${sessionKey}: ${JSON.stringify(result?.error ?? null)?.slice(0, 300)}`);
@@ -106,10 +114,16 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
     const auth = guard(req, res);
     if (!auth) return;
     if (!spawnBackground) return res.status(501).json({ ok: false, error: "后台 job 未启用" });
-    const { sessionKey, body } = auth;
+    const { sessionKey, binding, body } = auth;
     const { kind, brief, params } = body;
     try {
-      const jobId = spawnBackground({ sessionKey, kind, brief, params });
+      const jobId = spawnBackground({
+        sessionKey,
+        kind,
+        brief,
+        params,
+        taskId: binding?.taskId ?? null,
+      });
       res.json({ ok: true, job_id: jobId });
     } catch (e) {
       res.status(500).json({ ok: false, error: String(e?.message ?? e) });
@@ -159,12 +173,19 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
     const auth = guard(req, res);
     if (!auth) return;
     if (!egressSource) return res.status(501).json({ ok: false, error: "egress source 未启用" });
-    const { sessionKey, body } = auth;
+    const { sessionKey, binding, body } = auth;
     const op = typeof body.op === "string" ? body.op : "";
     const text = typeof body.text === "string" ? body.text : "";
     if (!op || !text) return res.status(400).json({ ok: false, error: "op + text 必填" });
     try {
-      res.json(egressSource.record({ sessionKey, op, text }));
+      // Never trust model-supplied resident_key/task_id on the body for taint attribution.
+      res.json(egressSource.record({
+        sessionKey,
+        op,
+        text,
+        residentKey: binding?.residentKey ?? null,
+        taskId: binding?.taskId ?? null,
+      }));
     } catch (e) {
       res.status(500).json({ ok: false, error: String(e?.message ?? e) });
     }

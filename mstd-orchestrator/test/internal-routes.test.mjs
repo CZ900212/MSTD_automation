@@ -196,6 +196,46 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
     expect(seen[0]).toMatchObject({ sessionKey: "feishu:p2p:ou_me" });
   });
 
+  it("ignores forged body task_id/resident_key and uses token binding only", async () => {
+    const calls = [];
+    const tokens = {
+      resolveBinding: (t) => t === "tok"
+        ? { sessionKey: "feishu:p2p:ou_me", taskId: "task-real", residentKey: "resident-real", residentEpoch: 3 }
+        : null,
+    };
+    const app = express();
+    app.use(express.json());
+    mountInternalRoutes(app, {
+      tokens,
+      handleReply: async (args) => { calls.push(args); return { ok: true }; },
+      egressSource: {
+        record: (args) => { calls.push(args); return { ok: true, shingles: 0, sensitivity: "restricted" }; },
+      },
+      spawnBackground: (args) => { calls.push(args); return "job-1"; },
+    });
+    await request(app).post("/internal/reply")
+      .set("Authorization", "Bearer tok")
+      .send({
+        brief: "x",
+        task_id: "forged-task",
+        resident_key: "forged-resident",
+        turn_id: "t1",
+        turn_lease: "l1",
+      });
+    await request(app).post("/internal/egress/source")
+      .set("Authorization", "Bearer tok")
+      .send({ op: "mail_list", text: "secret", resident_key: "forged", task_id: "forged" });
+    await request(app).post("/internal/background")
+      .set("Authorization", "Bearer tok")
+      .send({ kind: "x", brief: "y", task_id: "forged" });
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: "task-real", residentKey: "resident-real" }),
+      expect.objectContaining({ taskId: "task-real", residentKey: "resident-real", op: "mail_list" }),
+      expect.objectContaining({ taskId: "task-real", kind: "x" }),
+    ]));
+    expect(JSON.stringify(calls)).not.toContain("forged");
+  });
+
   it("body 不带 session_key 时,路由使用服务端绑定会话", async () => {
     const reg = createSessionTokenRegistry();
     const tok = reg.issue("feishu:group:oc_g");
