@@ -41,30 +41,34 @@ describe("记忆注入器（冻结快照 + 隔离铁律）", () => {
     expect(pAll).not.toContain("乙的画像");
   });
 
-  it("journalDigest 只含当日；cron/debug 会话无 scoped", () => {
+  it("默认快照从不注入全局 journal digest；journal 仍保留作审计记录", () => {
     files.appendJournal("- 昨天的事", now - 86_400_000);
-    const s = buildMemorySnapshot({ files, sessionKey: "cron:daily", now });
-    expect(s.journalDigest).toContain("今天发生了大事");
-    expect(s.journalDigest).not.toContain("昨天的事");
-    expect(s.scoped).toBe("");
-  });
-
-  it("journalDigest 超长截断对齐条目边界：不带被切半的首行", () => {
-    // 造 60 条各 ~40 字符的条目（总量 >1500），digest 应从完整 "- " 条目开始
-    for (let i = 0; i < 60; i++) {
-      files.appendJournal(`- 10:${String(i).padStart(2, "0")} [私聊·张三] 第${i}条要点内容一二三四五六七八九十`, now);
+    for (const sessionKey of ["cron:daily", "feishu:group:oc_A", "feishu:p2p:ou_a"]) {
+      const s = buildMemorySnapshot({ files, sessionKey, now });
+      expect(s.journalDigest).toBe("");
+      expect(JSON.stringify(s)).not.toContain("今天发生了大事");
+      expect(JSON.stringify(s)).not.toContain("昨天的事");
     }
-    const s = buildMemorySnapshot({ files, sessionKey: "cron:daily", now });
-    expect(s.journalDigest.length).toBeLessThanOrEqual(1500);
-    expect(s.journalDigest.startsWith("- ")).toBe(true);          // 首行是完整条目
-    expect(s.journalDigest.trimEnd().endsWith("十")).toBe(true);  // 最新条目保留在尾部
+    expect(files.readJournal(now)).toContain("今天发生了大事");
+    expect(files.readJournal(now - 86_400_000)).toContain("昨天的事");
   });
 
-  it("journalDigest 单条超长无边界可对齐时保留尾截兜底", () => {
-    files.appendJournal(`- 11:00 ${"长".repeat(2000)}`, now);
-    const s = buildMemorySnapshot({ files, sessionKey: "cron:daily", now });
-    expect(s.journalDigest.length).toBeLessThanOrEqual(1500);
-    expect(s.journalDigest.length).toBeGreaterThan(0);
+  it("私聊自动摘要只注入本人快照，并与 curated user memory 明确分区", () => {
+    const isolated = {
+      ...files,
+      readUserJournal: (openId) => ({
+        content: openId === "ou_a" ? "甲的近期私聊摘要" : "乙的近期私聊摘要",
+        snapshotHash: "h",
+      }),
+    };
+    const own = buildMemorySnapshot({ files: isolated, sessionKey: "feishu:p2p:ou_a", now });
+    expect(own.scoped).toContain("## 人工维护记忆\n甲的画像");
+    expect(own.scoped).toContain("## 近期私聊摘要\n甲的近期私聊摘要");
+    expect(own.scoped).not.toContain("乙的近期私聊摘要");
+
+    const group = buildMemorySnapshot({ files: isolated, sessionKey: "feishu:group:oc_A", now });
+    expect(group.scoped).toBe("群A秘密");
+    expect(group.scoped).not.toContain("私聊摘要");
   });
 
   it("快照冻结不可变", () => {

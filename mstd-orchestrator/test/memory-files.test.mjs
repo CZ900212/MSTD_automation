@@ -52,6 +52,19 @@ describe("memory files（五层/上限/漂移/journal）", () => {
     expect(files.readJournal(now)).toContain("发生了B");
   });
 
+  it("私聊自动摘要使用独立 user-journal 文件并受 4000 字符上限保护", () => {
+    expect(files).toMatchObject({
+      readUserJournal: expect.any(Function),
+      writeUserJournal: expect.any(Function),
+    });
+    files.writeUserJournal("ou_a", "私聊摘要", {});
+    const p = join(root, "memory", "user-journal", "ou_a.md");
+    expect(readFileSync(p, "utf8")).toBe("私聊摘要");
+    expect(files.readUserJournal("ou_a").content).toBe("私聊摘要");
+    expect(() => files.writeUserJournal("ou_a", "x".repeat(4001))).toThrow(LimitError);
+    expect(() => files.writeUserJournal("../evil", "x")).toThrow();
+  });
+
   it("id 防路径穿越", () => {
     expect(() => files.writeLayer("group", "../evil", "x")).toThrow();
     expect(() => files.readLayer("user", "a/b")).toThrow();

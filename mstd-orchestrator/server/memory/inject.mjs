@@ -2,28 +2,26 @@
 // 隔离铁律：群会话 scoped=本群；私聊 scoped=本人；群 A / 私聊原文绝不进群 B。
 import { parseSessionKey } from "../sessions/session-key.mjs";
 
-const JOURNAL_DIGEST_MAX = 1500;
-
-// 尾截后对齐条目边界（journal 每条一行、以 "- " 开头）：丢弃被切半的首行。
-// 单条超长找不到边界时保留原始尾截兜底——宁带半句不空手。
-function digestJournal(journal) {
-  if (journal.length <= JOURNAL_DIGEST_MAX) return journal;
-  const tail = journal.slice(-JOURNAL_DIGEST_MAX);
-  if (tail.startsWith("- ")) return tail;
-  const boundary = tail.indexOf("\n- ");
-  return boundary >= 0 ? tail.slice(boundary + 1) : tail;
-}
-
 export function buildMemorySnapshot({ files, sessionKey, now = Date.now() }) {
   const soul = files.readLayer("soul").content;
   const org = files.readLayer("org").content;
-  const journalDigest = digestJournal(files.readJournal(now));
+  // journal 是审计记录，不是任意会话可见的上下文；保留 journal 文件供受控读取与审计，不进入默认快照。
+  const journalDigest = "";
 
   let scoped = "";
   let parsed = null;
   try { parsed = parseSessionKey(sessionKey); } catch { /* 未知会话不给 scoped */ }
   if (parsed?.kind === "group") scoped = files.readLayer("group", parsed.chatId).content;
-  else if (parsed?.kind === "p2p") scoped = files.readLayer("user", parsed.openId).content;
+  else if (parsed?.kind === "p2p") {
+    const curated = files.readLayer("user", parsed.openId).content;
+    const privateJournal = files.readUserJournal?.(parsed.openId).content ?? "";
+    scoped = privateJournal
+      ? [
+        curated ? `## 人工维护记忆\n${curated}` : "",
+        `## 近期私聊摘要\n${privateJournal}`,
+      ].filter(Boolean).join("\n\n")
+      : curated;
+  }
 
   return Object.freeze({ soul, org, journalDigest, scoped, sessionKey, frozenAt: now });
 }
