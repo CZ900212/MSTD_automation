@@ -624,7 +624,11 @@ export function createBrain({
     return shutdownPromise;
   }
 
+  function ensureForSession(sessionKeyOrIdentity, startIdx = 0, meta = null) {
+    return ensure(resolveTarget(sessionKeyOrIdentity), startIdx, meta);
+  }
+
   // recycle 对外暴露给批次 C taint 链路：resident 看过席位私有数据，完成本回合授权
   // 答复后由 turn-handler 主动回收；busy 防护与幂等同 idle 回收。
-  return { turn, steer, isBusy, recycle, shutdown, _pool: pool, _ensure: ensure, _turnTails: turnTails };
+  return { turn, steer, isBusy, recycle, shutdown, _pool: pool, _ensure: ensureForSession, _turnTails: turnTails };
 }
