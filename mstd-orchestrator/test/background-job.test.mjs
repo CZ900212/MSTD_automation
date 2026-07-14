@@ -24,7 +24,22 @@ describe("后台 job 委托（orch_jobs 复用 + 版本快照 + 信号量）", (
     await sleep(10);
     expect(db.prepare("SELECT status FROM orch_jobs WHERE id = ?").get(jobId).status).toBe("done");
     expect(done).toHaveLength(1);
-    expect(done[0]).toMatchObject({ jobId, sessionKey: "feishu:p2p:ou_a", sessionVersion: 3, ok: true, result: "深度检索结果" });
+    expect(done[0]).toMatchObject({ jobId, sessionKey: "feishu:p2p:ou_a", sessionVersion: 3, ok: true, derived_result: { text: "深度检索结果", sensitivity: "internal" } });
+  });
+
+  it("completion carries a structured derived_result with parent provenance and sensitivity", async () => {
+    const done = [];
+    const bg = createBackgroundJobs({
+      db,
+      semaphore: createSemaphore(1),
+      runJob: vi.fn(async () => ({ text: "供应商报价汇总", sensitivity: "internal" })),
+      onComplete: (x) => done.push(x),
+    });
+    bg.spawn({ sessionKey: "feishu:p2p:ou_a", sessionVersion: 3, kind: "research", brief: "查报价", params: { q: "供应商" } });
+    await sleep(10);
+    expect(done[0]).toMatchObject({ ok: true, derived_result: { text: "供应商报价汇总", sensitivity: "internal" } });
+    expect(done[0].derived_result.parent).toEqual({ kind: "research", brief: "查报价" });
+    expect(done[0]).not.toHaveProperty("result");
   });
 
   it("信号量限流：超出并发的 job 排队，前一个完成后自动泵出", async () => {

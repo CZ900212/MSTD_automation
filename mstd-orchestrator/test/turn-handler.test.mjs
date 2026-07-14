@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
-import { createTurnHandler } from "../server/gateway/turn-handler.mjs";
+import { createTurnHandler, DAEMON_TERMINAL_FALLBACK } from "../server/gateway/turn-handler.mjs";
 import { createDeliverGrants } from "../server/sessions/deliver-grants.mjs";
+import { createTriage } from "../server/models/triage.mjs";
 
 const items = [{ content: "帮我查下周三的会", senderOpenId: "ou_a", senderName: "张三", ts: 1000 }];
 
@@ -134,7 +135,7 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
     expect(deps.renderReply).toHaveBeenCalledWith(expect.objectContaining({ deliverKind: "p2p" }));
 
     deps.renderReply.mockClear();
-    await handler.handleReply({ sessionKey: "debug:web:u1", kind: "message", brief: "调试" });
+    await handler.handleReply({ sessionKey: "debug:web-u1", kind: "message", brief: "调试" });
     expect(deps.renderReply).toHaveBeenCalledWith(expect.objectContaining({ deliverKind: "p2p" }));
   });
 
@@ -212,9 +213,9 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
 
   // §5.2 审卷补杀:debug"不真发"语义锁——md 也不发卡,platformMessageId 落 null
   it("C6 debug 会话:md 也零出站,落库即出站且 platform_message_id 为空", async () => {
-    const dbg = store.getOrCreate("debug:web:u1", { kind: "debug" });
+    const dbg = store.getOrCreate("debug:web-u1", { kind: "debug" });
     deps.renderReply.mockResolvedValue({ text: "# 富文本\n| a |\n|---|", usage: null });
-    const out = await handler.handleReply({ sessionKey: "debug:web:u1", kind: "message", brief: "调试" });
+    const out = await handler.handleReply({ sessionKey: "debug:web-u1", kind: "message", brief: "调试" });
     expect(out.ok).toBe(true);
     expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
     expect(deps.outbound.sendCard).not.toHaveBeenCalled();
@@ -271,11 +272,21 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
     expect(store.transcript(session.id)).toHaveLength(before);    // 失败零落库
   });
 
-  // §5.2 审卷补杀:结构锁——outbound.send* 只许出现在 deliverText 实现内(恰 2 处);
+  // §5.2 审卷补杀:结构锁——outbound.send* 只许出现在 reply-pipeline 的 deliverText 实现内
+  // (恰 3 处:富 md 卡片/atomic 多段合卡/纯文本循环);turn-handler 拆分后必须零直调。
   // 新路径想直调 outbound 必须先来改这条测试,评审自然看见
-  it("C6 结构锁:turn-handler 源码 outbound.send 调用恰 2 处(均在 deliverText)", () => {
+  it("C6 结构锁:reply-pipeline 源码 outbound.send 调用恰 3 处(均在 deliverText);turn-handler 零处", () => {
+    const pipelineSrc = readFileSync(new URL("../server/gateway/reply-pipeline.mjs", import.meta.url), "utf8");
+    expect(pipelineSrc.match(/outbound\.send(Message|Card)\(/g)).toHaveLength(3);
+    const handlerSrc = readFileSync(new URL("../server/gateway/turn-handler.mjs", import.meta.url), "utf8");
+    expect(handlerSrc.match(/outbound\.send(Message|Card)\(/g)).toBeNull();
+  });
+
+  it("结构锁：active turn 依赖只归一化一次，发送并落库由 sendAndRecord 单点持有", () => {
     const src = readFileSync(new URL("../server/gateway/turn-handler.mjs", import.meta.url), "utf8");
-    expect(src.match(/outbound\.send(Message|Card)\(/g)).toHaveLength(2);
+    expect(src).not.toMatch(/activeTurns\?\./);
+    expect(src).toMatch(/const receipts = activeTurns \?\? createActiveTurnRegistry\(\)\.receipts/);
+    expect(src).toMatch(/async function sendAndRecord\(/);
   });
 
   it("C6 deliverText 幂等键透传:卡片路径也带 idempotencyKey", async () => {
@@ -418,26 +429,36 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
     expect(db.prepare("SELECT COUNT(*) n FROM agent_messages WHERE session_id = ?").get(session.id).n).toBe(2);
   });
 
-  it("C3.5 nudge 走持久 watermark:第 10 条 user 后恰提醒一次,重复回合不再提醒", async () => {
+  it("C3.5 nudge 走独立维护回合:第 10 条后恰运行一次,绝不混入业务 brief", async () => {
     deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "问" });
     for (let i = 1; i <= 9; i++) store.append(session.id, { role: "user", senderOpenId: "ou_a", content: `u${i}`, ts: i });
-    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });  // 第 10 条
-    expect(deps.brain.turn.mock.calls[0][0].brief).toContain("系统提醒");
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
+    expect(deps.brain.turn.mock.calls[0][0]).toMatchObject({ purpose: "business", brief: "问" });
+    expect(deps.brain.turn.mock.calls[1][0].purpose).toBe("memory_maintenance");
+    expect(deps.brain.turn.mock.calls[1][0].brief).toContain("系统维护回合");
+    expect(deps.brain.turn.mock.calls[1][0].brief).toContain("不要调用 reply");
     await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items: [{ content: "追问", senderOpenId: "ou_a", ts: 99 }], mode: "addressed" });
-    expect(deps.brain.turn.mock.calls[1][0].brief).not.toContain("系统提醒");
+    expect(deps.brain.turn.mock.calls.filter(([arg]) => arg.purpose === "memory_maintenance")).toHaveLength(1);
   });
 
-  // §5.1 审核采纳:brain 失败不消费水位——提醒下回合重试,不许"claim 了却没送达"永久丢失
-  it("C3.5 nudge 回合 brain 失败:水位不消费,下回合重新提醒", async () => {
+  it("C3.5 独立 maintenance 失败不消费水位,下回合重试且不影响业务终态", async () => {
     deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "问" });
-    deps.brain.turn.mockRejectedValueOnce(new Error("网关 503"));
+    let failedOnce = false;
+    deps.brain.turn.mockImplementation(async ({ purpose }) => {
+      if (purpose === "memory_maintenance" && !failedOnce) {
+        failedOnce = true;
+        throw new Error("网关 503");
+      }
+      return { finalText: "内部", events: [] };
+    });
     for (let i = 1; i <= 9; i++) store.append(session.id, { role: "user", senderOpenId: "ou_a", content: `u${i}`, ts: i });
-    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });  // 第 10 条,brain 挂
-    expect(deps.brain.turn.mock.calls[0][0].brief).toContain("系统提醒");
+    await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
     await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items: [{ content: "再来", senderOpenId: "ou_a", ts: 99 }], mode: "addressed" });
-    expect(deps.brain.turn.mock.calls[1][0].brief).toContain("系统提醒");   // 未消费 → 重试
+    const maintenance = deps.brain.turn.mock.calls.filter(([arg]) => arg.purpose === "memory_maintenance");
+    expect(maintenance).toHaveLength(2);
+    expect(maintenance.every(([arg]) => arg.brief.includes("不要调用 reply"))).toBe(true);
     await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items: [{ content: "又来", senderOpenId: "ou_a", ts: 100 }], mode: "addressed" });
-    expect(deps.brain.turn.mock.calls[2][0].brief).not.toContain("系统提醒");  // 成功后已消费
+    expect(deps.brain.turn.mock.calls.filter(([arg]) => arg.purpose === "memory_maintenance")).toHaveLength(2);
   });
 });
 
@@ -489,21 +510,76 @@ describe("空行拆分与快机先应答", () => {
     deps.outbound.sendMessage.mockImplementation(async ({ text }) => { order.push(`send:${text}`); return { messageId: "om_a" }; });
     deps.brain.turn.mockImplementation(async () => { order.push("brain"); return { finalText: "结论", events: [] }; });
     await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
-    expect(order).toEqual(["send:收到,我看看哈", "brain"]);
+    expect(order).toEqual(["send:收到,我看看哈", "brain", expect.stringContaining("send:这次处理没能")]);
     const rows = store.transcript(session.id).map((m) => `${m.role}:${m.content}`);
     expect(rows.some((r) => r.startsWith("assistant:收到,我看看哈"))).toBe(true);
 
     // ack 失败不阻断
-    deps.outbound.sendMessage.mockRejectedValue(new Error("boom"));
+    deps.outbound.sendMessage.mockRejectedValueOnce(new Error("boom"));
     deps.brain.turn.mockClear();
     await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
     expect(deps.brain.turn).toHaveBeenCalledTimes(1);
   });
 
-  it("escalate 无 ack(steer 转 escalate 等):不发 ack,直接进 brain", async () => {
+  it("escalate 无 ack(steer 转 escalate 等):直接进 brain,无正式 reply 时 daemon 收口", async () => {
     deps.triage.triage.mockResolvedValue({ action: "escalate", brief: "选型" });
     await handler.handleTurn({ kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed" });
-    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+    expect(deps.outbound.sendMessage).toHaveBeenCalledTimes(1);
+    expect(deps.outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("没能生成") }));
+    expect(deps.brain.turn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 2026-07-14 真机事故回归:"测试消息"被快机误 escalate→慢机空转→daemon fallback 出站。
+// 全链断言:真 createTriage(mock 快机 caller)接入 turn-handler,轻交互零慢机调用。
+describe("轻交互零慢机调用(全链回归)", () => {
+  let db, store, session, deps, events;
+  const mkHandler = (fastPayload) => {
+    db = openDb();
+    migrate(db);
+    store = createSessionStore(db);
+    session = store.getOrCreate("feishu:p2p:ou_a", { kind: "p2p" });
+    events = [];
+    deps = {
+      triage: createTriage({ caller: { call: vi.fn(async () => ({ text: fastPayload, model: "v4-flash" })) }, store }),
+      brain: { turn: vi.fn(async () => ({ finalText: "内部结论", events: [] })), steer: vi.fn(), isBusy: () => false },
+      renderReply: vi.fn(async () => ({ text: "渲染稿", usage: null })),
+      outbound: { sendMessage: vi.fn(async () => ({ messageId: "om_9" })), sendCard: vi.fn(async () => ({ messageId: "om_card_9" })), editMessage: vi.fn() },
+      store,
+      budget: { allow: vi.fn(() => ({ ok: true })), record: vi.fn() },
+      grants: createDeliverGrants(),
+      onEvent: (e) => events.push(e),
+    };
+    return createTurnHandler(deps);
+  };
+  const turn = (content) => ({
+    kind: "message", session, sessionKey: "feishu:p2p:ou_a",
+    items: [{ content, senderOpenId: "ou_a", senderName: "张三", ts: 1000 }], mode: "addressed",
+  });
+
+  it('"测试消息"+快机误 escalate:只出一条回复,零 brain 调用,零 business turn,无 daemon fallback', async () => {
+    const handler = mkHandler('{"action":"escalate","brief":"用户在测试","ack":"收到,我看看哈"}');
+    await handler.handleTurn(turn("测试消息"));
+    expect(deps.brain.turn).not.toHaveBeenCalled();
+    expect(deps.outbound.sendMessage).toHaveBeenCalledTimes(1);
+    const sent = deps.outbound.sendMessage.mock.calls[0][0].text;
+    expect(sent).not.toBe(DAEMON_TERMINAL_FALLBACK);
+    expect(sent).not.toContain("我看看");                        // ack 不当终态回复
+    expect(events.some((e) => e.type === "business_turn_admitted")).toBe(false);
+    expect(events.find((e) => e.type === "triage")?.guard).toBe("light_interaction");
+    expect(store.transcript(session.id).map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it('"测试一下删除任务":写意图照常进慢机,brain.turn=1', async () => {
+    const handler = mkHandler('{"action":"quick_reply","text":"好的"}');   // 快机再想直回也拦
+    await handler.handleTurn(turn("测试一下删除任务"));
+    expect(deps.brain.turn).toHaveBeenCalledTimes(1);
+    expect(events.some((e) => e.type === "business_turn_admitted")).toBe(true);
+  });
+
+  it('"帮我查一下会议记录":正常升级慢机不受反向护栏影响', async () => {
+    const handler = mkHandler('{"action":"escalate","brief":"查会议记录","ack":"我查下哈"}');
+    await handler.handleTurn(turn("帮我查一下会议记录"));
     expect(deps.brain.turn).toHaveBeenCalledTimes(1);
   });
 });

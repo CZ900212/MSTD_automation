@@ -1,12 +1,24 @@
 import { describe, it, expect, vi } from "vitest";
-import { createTriage, RECAP_INTENT, ADVICE_INTENT, estimateTokens, budgetWindow } from "../server/models/triage.mjs";
+import { readFileSync } from "node:fs";
+import { createTriage, RECAP_INTENT, ADVICE_INTENT, matchLightReply, estimateTokens, budgetWindow } from "../server/models/triage.mjs";
 
 const mkCaller = (text) => ({ call: vi.fn(async () => ({ text, model: "v4-flash", usage: null })) });
 const store = { recent: () => [] };
 const session = { id: "s1", version: 0 };
-const items = [{ content: "你好", senderOpenId: "ou_a", senderName: "张三", ts: 1 }];
+// 注意:不能用"你好"这类轻交互整句当共享夹具——会被轻交互终止路由确定性收口,
+// 遮蔽下面所有"escalate 应保留"的用例。
+const items = [{ content: "帮我看下这份报告", senderOpenId: "ou_a", senderName: "张三", ts: 1 }];
+
+// meta（provider/sourceAction/guard）是显式普通属性；形状锁断言剥掉它单独测
+const bare = ({ meta, ...verdict }) => verdict;
 
 describe("triage 四选一", () => {
+  it("结构锁：升级策略由有序 ESCALATION_RULES 驱动", () => {
+    const src = readFileSync(new URL("../server/models/triage.mjs", import.meta.url), "utf8");
+    expect(src).toMatch(/const ESCALATION_RULES = \[/);
+    expect(src).toMatch(/for \(const rule of ESCALATION_RULES\)/);
+  });
+
   it("解析 quick_reply / no_reply / escalate / steer 四种 JSON", async () => {
     for (const [payload, expected] of [
       ['{"action":"quick_reply","text":"收到"}', { action: "quick_reply", text: "收到" }],
@@ -53,10 +65,21 @@ describe("triage 四选一", () => {
     expect(userMsg).toContain("[我]: 早上好");
   });
 
-  it("非法 JSON → 默认 escalate 不猜", async () => {
-    const t = createTriage({ caller: mkCaller("我觉得应该回复他"), store });
-    const out = await t.triage({ session, items, mode: "addressed" });
-    expect(out.action).toBe("escalate");
+  it("严格解析只接受单一完整 JSON 或唯一 JSON fence；其余 fail closed 升级", async () => {
+    for (const text of [
+      "我觉得应该回复他",
+      '说明 {"action":"no_reply"}',
+      '{"action":"no_reply"} {"action":"quick_reply","text":"x"}',
+      '前言\n```json\n{"action":"no_reply"}\n```\n后记',
+      '```json\n{"action":"no_reply"}\n```\n```json\n{"action":"quick_reply","text":"x"}\n```',
+      '{"action":"no_reply","unexpected":true}',
+    ]) {
+      const out = await createTriage({ caller: mkCaller(text), store }).triage({ session, items, mode: "addressed" });
+      expect(out).toMatchObject({ action: "escalate", brief: "分诊输出不可解析，升级处理" });
+    }
+    const fenced = await createTriage({ caller: mkCaller(' \n```json\n{"action":"no_reply"}\n```\n'), store })
+      .triage({ session, items, mode: "addressed" });
+    expect(fenced.action).toBe("no_reply");
   });
 
   it("quick_reply 超 200 字或含写意图 → 代码兜底强制 escalate", async () => {
@@ -69,10 +92,19 @@ describe("triage 四选一", () => {
     expect((await t2.triage({ session, items, mode: "addressed" })).action).toBe("escalate");
   });
 
+  it.each(['{"action":"no_reply"}', '{"action":"quick_reply","text":"好的"}'])(
+    "addressed 写请求不会被快机 %s 丢弃或假确认",
+    async (payload) => {
+      const out = await createTriage({ caller: mkCaller(payload), store })
+        .triage({ session, items: [{ content: "请创建一个任务" }], mode: "addressed" });
+      expect(out).toMatchObject({ action: "escalate" });
+    },
+  );
+
   // §5.2 审卷补杀:200/201 边界锁死 QUICK_REPLY_MAX 不许收紧/放宽
   it("quick_reply 恰 200 字原样保留,201 字升级", async () => {
     const t200 = createTriage({ caller: mkCaller('{"action":"quick_reply","text":"' + "长".repeat(200) + '"}'), store });
-    expect(await t200.triage({ session, items, mode: "addressed" }))
+    expect(bare(await t200.triage({ session, items, mode: "addressed" })))
       .toEqual({ action: "quick_reply", text: "长".repeat(200) });
     const t201 = createTriage({ caller: mkCaller('{"action":"quick_reply","text":"' + "长".repeat(201) + '"}'), store });
     expect((await t201.triage({ session, items, mode: "addressed" })).action).toBe("escalate");
@@ -122,7 +154,8 @@ describe("triage 四选一", () => {
     expect(sys).toContain("必须升级");
     expect(sys).toContain('绝不提及"分诊/前台/模型/系统架构"');
     expect(sys).toContain("自我介绍、身份类问题一律 escalate");
-    expect(sys).toContain("拿不准就 escalate");
+    expect(sys).toContain("快机不做任何判断");
+    expect(sys).toContain("除基础算术外全部 escalate");
     expect(sys).toContain("不要客服腔");
     expect(sys).toContain("mode=ambient(旁听)时保持更高沉默倾向");
     expect(sys).toContain("任何写操作意图绝不 quick_reply");
@@ -159,33 +192,35 @@ describe("C4 recap guard 行为边界(§5.2 审卷补杀)", () => {
   });
 
   it("模型自主 escalate/steer 带 recap 词:brief/note 原样保留;escalate 补默认 ack(快机先应答)", async () => {
-    expect(await run('{"action":"escalate","brief":"SENTINEL_BRIEF"}', recapItems))
+    expect(bare(await run('{"action":"escalate","brief":"SENTINEL_BRIEF"}', recapItems)))
       .toEqual({ action: "escalate", brief: "SENTINEL_BRIEF", ack: "收到,我看看哈" });
-    expect(await run('{"action":"steer","note":"SENTINEL_NOTE"}', recapItems))
+    expect(bare(await run('{"action":"steer","note":"SENTINEL_NOTE"}', recapItems)))
       .toEqual({ action: "steer", note: "SENTINEL_NOTE" });
   });
 
   it("模型自带 ack 原样保留,不被默认值覆盖", async () => {
-    expect(await run('{"action":"escalate","brief":"B","ack":"这个我捋一下哈"}', recapItems))
+    expect(bare(await run('{"action":"escalate","brief":"B","ack":"这个我捋一下哈"}', recapItems)))
       .toEqual({ action: "escalate", brief: "B", ack: "这个我捋一下哈" });
   });
 
   it("非法 JSON+recap items:parse 兜底 brief 原样,recap 不得先于 parse 短路", async () => {
-    expect(await run("我觉得该回复", recapItems))
+    expect(bare(await run("我觉得该回复", recapItems)))
       .toEqual({ action: "escalate", brief: "分诊输出不可解析，升级处理", ack: "收到,我看看哈" });
   });
 
   it("多 item 仅中间命中:整批按序拼文进 brief(前缀+slice 精确)", async () => {
     const items3 = [{ content: "早" }, { content: "帮忙总结一下" }, { content: "谢谢" }];
     const joined = "早\n帮忙总结一下\n谢谢";
-    expect(await run('{"action":"no_reply"}', items3))
+    expect(bare(await run('{"action":"no_reply"}', items3)))
       .toEqual({ action: "escalate", brief: `复述/总结类请求(需完整上下文):${joined.slice(0, 100)}`, ack: "收到,我看看哈" });
   });
 
-  it("ambient 豁免同样盖住 quick_reply;recap 只扫 items 不扫 verdict.text", async () => {
-    expect(await run('{"action":"quick_reply","text":"好"}', [{ content: "谁来复述下" }], "ambient"))
-      .toEqual({ action: "quick_reply", text: "好" });
-    expect(await run('{"action":"quick_reply","text":"我总结一下哈"}', [{ content: "早上好" }]))
+  it("ambient 不把旁听 recap 强改为回应；若快机已决定回答，事实边界仍强制升级", async () => {
+    expect(bare(await run('{"action":"no_reply"}', [{ content: "谁来复述下" }], "ambient")))
+      .toEqual({ action: "no_reply" });
+    expect((await run('{"action":"quick_reply","text":"好"}', [{ content: "谁来复述下" }], "ambient")).action)
+      .toBe("escalate");
+    expect(bare(await run('{"action":"quick_reply","text":"我总结一下哈"}', [{ content: "早上好" }])))
       .toEqual({ action: "quick_reply", text: "我总结一下哈" });
   });
 
@@ -194,7 +229,7 @@ describe("C4 recap guard 行为边界(§5.2 审卷补杀)", () => {
   });
 
   it("ambient 下模型自主 escalate 保留:不强插≠不许插", async () => {
-    expect(await run('{"action":"escalate","brief":"值得升级"}', [{ content: "谁来复述下会议?" }], "ambient"))
+    expect(bare(await run('{"action":"escalate","brief":"值得升级"}', [{ content: "谁来复述下会议?" }], "ambient")))
       .toEqual({ action: "escalate", brief: "值得升级", ack: "收到,我看看哈" });
   });
 });
@@ -220,37 +255,135 @@ describe("C4 RECAP_INTENT 正则契约(§5.2 审卷补杀)", () => {
   });
 });
 
-// 判断+解释类(ADVICE_INTENT)强制切慢机:quick_reply 结构上只能发一条,
-// SOUL"观点/理由分两条发"的规矩只有中枢(reply 可多次调用)能执行
-describe("判断+解释类强制切慢机(ADVICE_INTENT)", () => {
-  const mk = (text) => ({ call: vi.fn(async () => ({ text })) });
-  it.each(["怎么选", "选哪", "哪个好", "哪种合适", "你怎么看", "怎么看待", "你觉得", "倾向", "建议", "优劣", "利弊", "对比", "该不该", "要不要", "值不值"])(
-    "ADVICE_INTENT 分支独立触发:%s", async (w) => {
+// Phase 6:meta 是显式普通属性(provider/sourceAction/guard)——事件与调试台的观测契约
+describe("triage meta 内容契约", () => {
+  const mk = (text) => ({ call: vi.fn(async () => ({ text, model: "v4-flash" })) });
+
+  it("模型判定被采纳:provider/sourceAction 如实,guard=null,meta 可枚举", async () => {
+    const v = await createTriage({ caller: mk('{"action":"no_reply"}'), store })
+      .triage({ session, items: [{ content: "哈哈" }], mode: "ambient" });
+    expect(v.meta).toEqual({ provider: "v4-flash", sourceAction: "no_reply", guard: null });
+    expect(Object.keys(v)).toContain("meta");
+  });
+
+  it("代码改判:sourceAction 保留模型原判,guard 给出理由", async () => {
+    const v = await createTriage({ caller: mk('{"action":"quick_reply","text":"明天交付没问题"}'), store })
+      .triage({ session, items: [{ content: "你觉得这个方案靠谱吗" }], mode: "addressed" });
+    expect(v.action).toBe("escalate");
+    expect(v.meta).toEqual({ provider: "v4-flash", sourceAction: "quick_reply", guard: "advice_intent" });
+  });
+
+  it("caller 未带 model 时 provider=null;verdict 本体不携带 guard 中间字段", async () => {
+    const v = await createTriage({ caller: { call: vi.fn(async () => ({ text: '{"action":"no_reply"}' })) }, store })
+      .triage({ session, items: [{ content: "哈哈" }], mode: "ambient" });
+    expect(v.meta.provider).toBeNull();
+    expect(v).not.toHaveProperty("guard");
+  });
+});
+
+// 2026-07-14 反向护栏:轻交互整句是确定性终止路由,快机对这类输入没有升级权限。
+// 起因真机事故:"测试消息"被快机误判 escalate→慢机启动→没走 reply 工具→daemon fallback 出站。
+describe("轻交互终止路由(反向护栏)", () => {
+  const mk = (text) => ({ call: vi.fn(async () => ({ text, model: "v4-flash" })) });
+  const run = (payload, content, mode = "addressed") =>
+    createTriage({ caller: mk(payload), store }).triage({ session, items: [{ content }], mode });
+
+  it.each(["测试消息", "测试", "ping", "在吗", "能收到吗", "[@我] 测试消息", "在吗?", "测试消息。"])(
+    "模型误 escalate 也强制收口为 quick_reply:%s", async (content) => {
+      const v = await run('{"action":"escalate","brief":"用户在测试","ack":"收到,我看看哈"}', content);
+      expect(v.action).toBe("quick_reply");
+      expect(v.text).toBeTruthy();
+      expect(v.text).not.toContain("我看看");        // ack 那种"永不兑现的承诺"不许当终态回复
+      expect(v.meta.guard).toBe("light_interaction");
+    },
+  );
+
+  it("addressed 点名轻交互,no_reply 装聋也收口为 quick_reply", async () => {
+    const v = await run('{"action":"no_reply"}', "在吗");
+    expect(v).toMatchObject({ action: "quick_reply" });
+  });
+
+  it("模型自己的合规 quick_reply 文案保留(语气更贴 SOUL),越界则换模板", async () => {
+    expect(bare(await run('{"action":"quick_reply","text":"能收到~有事直接说"}', "测试消息")))
+      .toEqual({ action: "quick_reply", text: "能收到~有事直接说" });
+    const writey = await run('{"action":"quick_reply","text":"收到,我马上删除任务"}', "测试消息");
+    expect(writey.action).toBe("quick_reply");
+    expect(writey.text).not.toContain("删除");
+  });
+
+  it("快机输出不可解析时,轻交互输入不再 fail-closed 升级,直接模板收口", async () => {
+    expect((await run("我觉得该回复", "测试消息")).action).toBe("quick_reply");
+  });
+
+  it('"测试一下删除任务"不是整句命中,写意图照走慢机', async () => {
+    const v = await run('{"action":"quick_reply","text":"好的"}', "测试一下删除任务");
+    expect(v.action).toBe("escalate");
+    expect(v.brief).toContain("写操作");
+  });
+
+  it("ambient 豁免:旁听群里的'在吗'不是对助手说的,保持模型判定", async () => {
+    expect(bare(await run('{"action":"no_reply"}', "在吗", "ambient"))).toEqual({ action: "no_reply" });
+    expect((await run('{"action":"escalate","brief":"值得升级"}', "在吗", "ambient")).action).toBe("escalate");
+  });
+
+  it("混批不收口:整批任一条是实质消息即放弃轻交互路由", async () => {
+    const v = await createTriage({ caller: mk('{"action":"escalate","brief":"B"}'), store })
+      .triage({ session, items: [{ content: "在吗" }, { content: "帮我删除任务X" }], mode: "addressed" });
+    expect(v.action).toBe("escalate");
+  });
+
+  it("matchLightReply 契约:整句精确匹配,去 [@我] 与首尾标点,按最后一条选模板", () => {
+    expect(matchLightReply([{ content: "测试消息" }])).toBe("能收到,一切正常");
+    expect(matchLightReply([{ content: " [@我] 在吗？~ " }])).toBe("在的,直接说就行");
+    expect(matchLightReply([{ content: "你好" }, { content: "在吗" }])).toBe("在的,直接说就行");
+    expect(matchLightReply([{ content: "测试一下删除任务" }])).toBeNull();
+    expect(matchLightReply([{ content: "在吗,顺便帮我查个事" }])).toBeNull();
+    expect(matchLightReply([])).toBeNull();
+  });
+});
+
+// 用户定案：快机不做判断；事实问答/核查除基础算术外也必须切慢机。
+describe("判断与事实问题强制慢机(ADVICE_INTENT)", () => {
+  const mk = (text) => ({ call: vi.fn(async () => ({ text, model: "v4-flash" })) });
+
+  it.each(["怎么选", "选哪", "哪个好", "哪种合适", "你怎么看", "倾向", "建议"])(
+    "即使模型给 quick_reply，判断题仍强制 escalate:%s", async (w) => {
       const adviceItems = [{ senderName: "李四", content: `pino 和 winston ${w}` }];
-      const v = await createTriage({ caller: mk('{"action":"quick_reply","text":"用pino"}'), store })
+      const v = await createTriage({ caller: mk('{"action":"quick_reply","text":"我会选 pino。"}'), store })
         .triage({ session, items: adviceItems, mode: "addressed" });
       expect(v.action).toBe("escalate");
-      expect(v.brief).toContain("判断/建议");
+      expect(v.brief).toContain("判断或建议");
+      expect(v.ack).toBeTruthy();
     }
   );
 
-  it("只拦 quick_reply:no_reply 原样保留(旁听不强插);ambient 的 quick_reply 同样改道", async () => {
+  it.each(["法国首都是什么？", "这个消息属实吗", "帮我核实一下发布日期", "现在几点?"])(
+    "事实回答或核查强制 escalate:%s", async (content) => {
+      const v = await createTriage({ caller: mk('{"action":"quick_reply","text":"这是事实答案。"}'), store })
+        .triage({ session, items: [{ content }], mode: "addressed" });
+      expect(v.action).toBe("escalate");
+      expect(v.brief).toContain("事实回答或核查");
+    }
+  );
+
+  it.each(["1+1等于几", "12 × 3 是多少？", "请问 8/2?"])(
+    "基础算术仍允许 quick_reply:%s", async (content) => {
+      const v = await createTriage({ caller: mk('{"action":"quick_reply","text":"4"}'), store })
+        .triage({ session, items: [{ content }], mode: "addressed" });
+      expect(v.action).toBe("quick_reply");
+    }
+  );
+
+  it("模型自主 no_reply/escalate 不被 guard 改写", async () => {
     const adviceItems = [{ senderName: "李四", content: "咱们该用哪个好?" }];
-    const v1 = await createTriage({ caller: mk('{"action":"no_reply"}'), store })
-      .triage({ session, items: adviceItems, mode: "ambient" });
-    expect(v1.action).toBe("no_reply");
-    const v2 = await createTriage({ caller: mk('{"action":"quick_reply","text":"pino"}'), store })
-      .triage({ session, items: adviceItems, mode: "ambient" });
-    expect(v2.action).toBe("escalate");
+    expect((await createTriage({ caller: mk('{"action":"no_reply"}'), store })
+      .triage({ session, items: adviceItems, mode: "ambient" })).action).toBe("no_reply");
+    expect((await createTriage({ caller: mk('{"action":"escalate","brief":"选型问题"}'), store })
+      .triage({ session, items: adviceItems, mode: "addressed" })).brief).toBe("选型问题");
   });
 
-  it("模型自主 escalate 带建议词:sentinel 原样保留,不被改写", async () => {
-    const v = await createTriage({ caller: mk('{"action":"escalate","brief":"选型问题"}'), store })
-      .triage({ session, items: [{ senderName: "李四", content: "哪个好" }], mode: "addressed" });
-    expect(v.brief).toBe("选型问题");
-  });
-
-  it("普通消息不误伤", () => {
+  it("关键词分类不误伤普通消息", () => {
+    expect(ADVICE_INTENT.test("你倾向哪个")).toBe(true);
     expect(ADVICE_INTENT.test("好的,收到")).toBe(false);
     expect(ADVICE_INTENT.test("会议改到下午三点")).toBe(false);
     expect(ADVICE_INTENT.test("帮我把文档发给张三")).toBe(false);

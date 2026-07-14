@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { canonicalizeActions, buildAgentAction } from "../server/safety/action-dsl.mjs";
 import { recordActions, actionsToExecute } from "../server/safety/action-store.mjs";
-import { executeApprovedAction, reconcileAction } from "../server/execute/execute-action.mjs";
+import { executeApprovedAction, reconcileAction, isTaskCompleteResponse } from "../server/execute/execute-action.mjs";
+import todoFixture from "./fixtures/task-detail-todo.json" with { type: "json" };
+import doneFixture from "./fixtures/task-detail-done.json" with { type: "json" };
 import { createHeartbeatStore } from "../server/ticker/heartbeat-store.mjs";
 
 let db;
-const testTarget = { allowOpenIds: new Set(["ou_test1"]), allowTasklist: "tl_test" };
+const testTarget = { allowOpenIds: new Set(["ou_test1"]), allowTaskGuids: new Set(["guid-test"]) };
 
 beforeEach(() => {
   db = openDb(); migrate(db);
@@ -20,6 +23,11 @@ beforeEach(() => {
 function row() { return actionsToExecute(db, "job1")[0]; }
 
 describe("executeApprovedAction", () => {
+  it("结构锁：任务通知依赖校验由命名 helper 持有", () => {
+    const src = readFileSync(new URL("../server/execute/execute-action.mjs", import.meta.url), "utf8");
+    expect(src).toMatch(/function validateTaskNotificationDependency\(/);
+  });
+
   it("dry-runs then executes, records succeeded + idempotency key present", async () => {
     const seen = [];
     const runLark = vi.fn(async (argv) => { seen.push(argv); return { exitCode: 0, stdout: JSON.stringify({ task_id: "t1" }), stderr: "" }; });
@@ -31,6 +39,18 @@ describe("executeApprovedAction", () => {
     expect(seen[1]).toContain("--idempotency-key");
     expect(seen[1]).toContain(r.idempotency_key);
     expect(seen[1]).not.toContain("--dry-run");
+  });
+
+  it("complete_task 先 dry-run 后真写，且 argv 无伪造幂等参数", async () => {
+    const action = buildAgentAction({ jobId: "job1", kind: "complete_task", payload: { task_guid: "guid-test" }, ordinal: 9 });
+    recordActions(db, "job1", [action]);
+    const stored = db.prepare("SELECT * FROM job_actions WHERE job_id='job1' AND kind='complete_task'").get();
+    const runLark = vi.fn(async () => ({ exitCode: 0, stdout: "{}", stderr: "" }));
+    const out = await executeApprovedAction(db, { actionId: stored.id, approvedHash: stored.payload_hash, runLark, testTarget });
+    expect(out).toMatchObject({ ok: true, status: "succeeded" });
+    expect(runLark.mock.calls[0][0]).toEqual(["task", "+complete", "--as", "user", "--task-id", "guid-test", "--dry-run"]);
+    expect(runLark.mock.calls[1][0]).toEqual(["task", "+complete", "--as", "user", "--task-id", "guid-test"]);
+    expect(runLark.mock.calls.flat(2)).not.toContain("--idempotency-key");
   });
 
   it("rejects on hash drift without ever calling lark", async () => {
@@ -225,12 +245,116 @@ describe("executeApprovedAction schedule_reminder（Task 4B）", () => {
   });
 });
 
+describe("notify_task_assignee dependency", () => {
+  function seedNotificationJob() {
+    db.prepare("INSERT INTO orch_jobs (id, template_id, status, created_at, updated_at) VALUES ('notify-job','meeting_to_task','executing',1,1)").run();
+    const actions = canonicalizeActions({
+      jobId: "notify-job",
+      notificationMode: "card",
+      items: [{ owner_name: "张三", task: "完成询价", due: "2026-07-15", suggested_open_id: "ou_test1", confidence: "high" }],
+    });
+    recordActions(db, "notify-job", actions);
+    const rows = db.prepare("SELECT * FROM job_actions WHERE job_id='notify-job' ORDER BY ordinal").all();
+    return { task: rows[0], notice: rows[1] };
+  }
+
+  it("does not call lark until the linked task succeeds", async () => {
+    const { notice } = seedNotificationJob();
+    const runLark = vi.fn();
+    const out = await executeApprovedAction(db, {
+      actionId: notice.id, approvedHash: notice.payload_hash, runLark, testTarget,
+    });
+    expect(out).toMatchObject({ ok: false, reason: "dependency_not_succeeded" });
+    expect(runLark).not.toHaveBeenCalled();
+  });
+
+  it("sends after task success and preserves the notification idempotency key", async () => {
+    const { task, notice } = seedNotificationJob();
+    db.prepare("UPDATE job_actions SET status='succeeded' WHERE id=?").run(task.id);
+    const runLark = vi.fn(async () => ({ exitCode: 0, stdout: "{}", stderr: "" }));
+    const out = await executeApprovedAction(db, {
+      actionId: notice.id, approvedHash: notice.payload_hash, runLark, testTarget,
+    });
+    expect(out).toMatchObject({ ok: true, status: "succeeded" });
+    expect(runLark).toHaveBeenCalledTimes(2);
+    expect(runLark.mock.calls[1][0]).toContain(notice.idempotency_key);
+  });
+
+  it("fails closed when the notification recipient differs from the final task assignee", async () => {
+    const { task, notice } = seedNotificationJob();
+    const taskPayload = JSON.parse(task.canonical_payload_json);
+    taskPayload.assignee_open_id = "ou_other";
+    db.prepare("UPDATE job_actions SET status='succeeded', canonical_payload_json=? WHERE id=?")
+      .run(JSON.stringify(taskPayload), task.id);
+    const runLark = vi.fn();
+    const out = await executeApprovedAction(db, {
+      actionId: notice.id, approvedHash: notice.payload_hash, runLark, testTarget,
+    });
+    expect(out).toMatchObject({ ok: false, reason: "dependency_not_succeeded" });
+    expect(runLark).not.toHaveBeenCalled();
+  });
+
+  it("a notification retry never re-runs its already-succeeded task", async () => {
+    const { task, notice } = seedNotificationJob();
+    db.prepare("UPDATE job_actions SET status='succeeded' WHERE id=?").run(task.id);
+    const firstRun = vi.fn()
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "dry", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "send failed" });
+    await executeApprovedAction(db, {
+      actionId: notice.id, approvedHash: notice.payload_hash, runLark: firstRun, testTarget,
+    });
+    const retryable = actionsToExecute(db, "notify-job");
+    expect(retryable.map((a) => a.id)).toEqual([notice.id]);
+
+    const retryRun = vi.fn(async () => ({ exitCode: 0, stdout: "{}", stderr: "" }));
+    await executeApprovedAction(db, {
+      actionId: notice.id, approvedHash: notice.payload_hash, runLark: retryRun, testTarget,
+    });
+    expect(db.prepare("SELECT status FROM job_actions WHERE id=?").get(task.id).status).toBe("succeeded");
+    expect(retryRun).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("reconcileAction", () => {
-  it("marks succeeded if the fingerprint is found externally", async () => {
+  it("marks succeeded if the task fingerprint is found externally", async () => {
     const r = row();
     db.prepare("UPDATE job_actions SET status='executing' WHERE id=?").run(r.id);
     const runLark = vi.fn(async () => ({ exitCode: 0, stdout: JSON.stringify({ items: [{ idempotency_key: r.idempotency_key, task_id: "t9" }] }), stderr: "" }));
     const out = await reconcileAction(db, { action: { ...r, status: "executing" }, runLark });
     expect(out.reconciled).toBe(true);
   });
+
+  it("complete_task 只按同一 GUID 的已验证完成态对账", async () => {
+    expect(isTaskCompleteResponse(JSON.stringify(todoFixture), "task-guid-fixture")).toBe(false);
+    expect(isTaskCompleteResponse(JSON.stringify(doneFixture), "task-guid-fixture")).toBe(true);
+    expect(isTaskCompleteResponse(JSON.stringify(doneFixture), "other-guid")).toBe(false);
+
+    const action = {
+      id: "a-complete", kind: "complete_task", status: "executing",
+      canonical_payload_json: JSON.stringify({ task_guid: "task-guid-fixture" }),
+    };
+    db.prepare(
+      `INSERT INTO orch_jobs (id, template_id, status, params_json, created_at, updated_at)
+       VALUES ('j-complete', 'agent_write', 'executing', '{}', 1, 1)`
+    ).run();
+    db.prepare(
+      `INSERT INTO job_actions (id, job_id, action_key, kind, canonical_payload_json, payload_hash, idempotency_key, status, ordinal, ts)
+       VALUES (?, 'j-complete', 'k-complete', 'complete_task', ?, 'h', 'i', 'executing', 0, 1)`
+    ).run(action.id, action.canonical_payload_json);
+    const runLark = vi.fn(async () => ({ exitCode: 0, stdout: JSON.stringify(doneFixture), stderr: "" }));
+    expect(await reconcileAction(db, { action, runLark })).toEqual({ reconciled: true });
+    expect(runLark).toHaveBeenCalledWith(["task", "tasks", "get", "--task-guid", "task-guid-fixture", "--as", "user"]);
+  });
+
+  it.each(["notify_task_assignee", "send_dm", "send_group_msg", "create_event"])(
+    "%s never queries the task list",
+    async (kind) => {
+      const runLark = vi.fn();
+      const out = await reconcileAction(db, {
+        action: { id: `a-${kind}`, kind, idempotency_key: `k-${kind}` }, runLark,
+      });
+      expect(out).toEqual({ reconciled: false, unsupported: true });
+      expect(runLark).not.toHaveBeenCalled();
+    }
+  );
 });

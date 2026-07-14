@@ -3,6 +3,35 @@ import { sessionSecret, sessionTtlSeconds } from "./http/session.mjs";
 import { maxConcurrentPi } from "./jobs/semaphore.mjs";
 import { buildBotNames } from "./gateway/normalize.mjs";
 
+const NOTIFICATION_MODES = new Set(["card", "feishu_system", "none"]);
+const CONTEXT_ENVELOPE_MODES = new Set(["enforce", "shadow"]);
+
+function enumEnv(env, key, fallback, allowed, { trim = false } = {}) {
+  if (!(key in env)) return fallback;
+  const raw = String(env[key] ?? "");
+  const value = trim ? raw.trim() : raw;
+  if (!allowed.has(value)) throw new Error(`${key} 非法: ${value || "（空）"}`);
+  return value;
+}
+
+function intEnv(env, key, fallback) {
+  if (!(key in env)) return fallback;
+  const raw = String(env[key] ?? "");
+  const parsed = Number(raw);
+  if (!raw || !Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${key} 非法: ${raw || "（空）"}`);
+  }
+  return parsed;
+}
+
+export function meetingTaskNotificationMode(env = process.env) {
+  return enumEnv(env, "MSTD_MEETING_TASK_NOTIFICATION_MODE", "card", NOTIFICATION_MODES, { trim: true });
+}
+
+function contextEnvelopeMode(env) {
+  return enumEnv(env, "MSTD_CONTEXT_ENVELOPE_MODE", "enforce", CONTEXT_ENVELOPE_MODES);
+}
+
 export function loadServerConfig(env = process.env) {
   return {
     port: Number(env.PORT ?? 8787),
@@ -13,7 +42,9 @@ export function loadServerConfig(env = process.env) {
     enableTrigger: String(env.MSTD_ENABLE_TRIGGER ?? "") === "1",
     backfill: String(env.MSTD_BACKFILL ?? "") === "1",
     alertOpenId: String(env.MSTD_ALERT_OPEN_ID ?? "").trim(),
+    privateDataOwnerOpenId: String(env.MSTD_PRIVATE_DATA_OWNER_OPEN_ID ?? "").trim(),
     minutesBroadcastChat: String(env.MSTD_MINUTES_BROADCAST_CHAT ?? "").trim(),   // 妙记派发执行后播报的群 chat_id
+    meetingTaskNotificationMode: meetingTaskNotificationMode(env),
     feishu: resolveFeishuConfig(env),
     pi: {
       provider: env.PI_PROVIDER ?? "cz-gpt",
@@ -28,5 +59,12 @@ export function loadServerConfig(env = process.env) {
     adminOpenIds: new Set(String(env.MSTD_ADMIN_OPEN_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean)),
     dailyTokenBudget: Number(env.MSTD_DAILY_TOKEN_BUDGET ?? 2_000_000),
     sessionTokenBudget: Number(env.MSTD_SESSION_TOKEN_BUDGET ?? 300_000),
+    contextBudgetBytes: intEnv(env, "MSTD_CONTEXT_BUDGET_BYTES", 48 * 1024),
+    contextEnvelopeMode: contextEnvelopeMode(env),
+    // Dreaming is report-only in every deployed process. MSTD_DREAMING_MODE cannot open a model-driven write path.
+    dreamingMode: "shadow",
+    debounceAddressedMs: Number(env.MSTD_DEBOUNCE_ADDRESSED_MS ?? 600),
+    debounceAmbientMs: Number(env.MSTD_DEBOUNCE_AMBIENT_MS ?? 1500),
+    debounceMaxMs: Number(env.MSTD_DEBOUNCE_MAX_MS ?? 3000),
   };
 }

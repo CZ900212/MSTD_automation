@@ -1,7 +1,14 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { loadServerConfig } from "../server/config.mjs";
 
 describe("loadServerConfig", () => {
+  it("结构锁：带默认值的枚举和整数 env 由通用 helper 解析", () => {
+    const src = readFileSync(new URL("../server/config.mjs", import.meta.url), "utf8");
+    expect(src).toMatch(/function enumEnv\(/);
+    expect(src).toMatch(/function intEnv\(/);
+  });
+
   it("aggregates env knobs with sane defaults", () => {
     const c = loadServerConfig({ MSTD_SESSION_SECRET: "s", PORT: "9000" });
     expect(c.port).toBe(9000);
@@ -12,6 +19,9 @@ describe("loadServerConfig", () => {
     expect(c.enableTrigger).toBe(false);
     expect(c.backfill).toBe(false);
     expect(c.alertOpenId).toBe("");
+    expect(c.meetingTaskNotificationMode).toBe("card");
+    expect(c.contextEnvelopeMode).toBe("enforce");
+    expect(c.dreamingMode).toBe("shadow");
     expect(c.pi.provider).toBe("cz-gpt");
     expect(c.pi.model).toBe("gpt-5.6-sol");
     expect(c.feishu).toHaveProperty("authorizeUrl");
@@ -24,6 +34,8 @@ describe("loadServerConfig", () => {
       MSTD_ENABLE_TRIGGER: "1",
       MSTD_BACKFILL: "1",
       MSTD_ALERT_OPEN_ID: " ou_alert ",
+      MSTD_MEETING_TASK_NOTIFICATION_MODE: "feishu_system",
+      MSTD_CONTEXT_ENVELOPE_MODE: "shadow",
       PI_MODEL: "gpt-5.6-sol-mini",
     });
     expect(c.maxConcurrentPi).toBe(3);
@@ -31,7 +43,40 @@ describe("loadServerConfig", () => {
     expect(c.enableTrigger).toBe(true);
     expect(c.backfill).toBe(true);
     expect(c.alertOpenId).toBe("ou_alert");
+    expect(c.meetingTaskNotificationMode).toBe("feishu_system");
+    expect(c.contextEnvelopeMode).toBe("shadow");
     expect(c.pi.model).toBe("gpt-5.6-sol-mini");
+    expect(c.dreamingMode).toBe("shadow");
+  });
+
+  it("rejects unknown meeting notification mode", () => {
+    expect(() => loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_MEETING_TASK_NOTIFICATION_MODE: "both",
+    })).toThrow(/MSTD_MEETING_TASK_NOTIFICATION_MODE/);
+  });
+
+  it.each(["Enforce", "disabled", "", " enforce "])("rejects unsafe context envelope mode %j", (mode) => {
+    expect(() => loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_CONTEXT_ENVELOPE_MODE: mode,
+    })).toThrow(/MSTD_CONTEXT_ENVELOPE_MODE/);
+  });
+
+  it.each(["", "0", "-1", "1.5", "abc", "Infinity"])(
+    "rejects invalid context byte budget %j at the config boundary",
+    (value) => {
+      expect(() => loadServerConfig({
+        MSTD_SESSION_SECRET: "s",
+        MSTD_CONTEXT_BUDGET_BYTES: value,
+      })).toThrow(/MSTD_CONTEXT_BUDGET_BYTES/);
+    },
+  );
+
+  it("accepts a positive safe-integer context byte budget", () => {
+    expect(loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_CONTEXT_BUDGET_BYTES: "8192",
+    }).contextBudgetBytes).toBe(8192);
   });
 });
-

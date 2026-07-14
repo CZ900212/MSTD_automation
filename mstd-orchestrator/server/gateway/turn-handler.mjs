@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { parseSessionKey } from "../sessions/session-key.mjs";
-import { formatHistoryLine, whoLabel } from "../sessions/history-format.mjs";
-import { NUDGE_NOTE } from "../memory/compact.mjs";
-import { hasRichMarkdown } from "./md-detect.mjs";
-import { buildMarkdownMessageCard } from "../cards/templates.mjs";
+import { whoLabel } from "../sessions/history-format.mjs";
+import { NUDGE_MAINTENANCE_BRIEF } from "../memory/compact.mjs";
+import { createActiveTurnRegistry } from "../sessions/active-turn.mjs";
+import { createReplyPipeline } from "./reply-pipeline.mjs";
 
 // 群窗口时间戳:北京时间 HH:MM
 const HHMM = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
 
 // 回合执行器：triage 四选一 → quick_reply 直出 / no_reply 落 observed / steer 注入 / escalate 走 brain。
 // 结构性强制：brain 的 finalText 永不出站；5.5 只能经 reply 工具（handleReply）表达。
+// 物理出站与渲染统一在 reply-pipeline；这里只保留入站回合流转与 business turn 终态化。
 
 const BUDGET_REFUSAL = "今天的对话额度已用完，暂时无法继续处理。请稍后再试或联系管理员调整额度。";
+export const DAEMON_TERMINAL_FALLBACK = "这次处理没能生成可安全发送的正式答复，请稍后重试。";
 
 export function createTurnHandler({
   triage,
@@ -27,10 +28,28 @@ export function createTurnHandler({
   limiter = null,             // F2 接缝：群主动发言限额器（ambient 专用）
   db = null,                  // F5 接缝：观察期 observe_log 落库
   grants = null,              // C0.4 接缝：reply.target 投递授权表（缺省 fail-closed：只许本会话）
+  replyEgress = null,         // Batch C：常驻 Pi 生命周期绑定的 server-owned provenance/epoch
+  verbatimGuard = null,       // Batch C：逐字引用守卫（群禁止/私聊预算，比对已读源 shingle）
+  activeTurns = null,         // daemon-issued business turn identity + formal reply receipt
+  activeBrainTurns = null,    // 当前 Pi execution 的 daemon turnId/purpose 绑定
   caller = null,              // 供 renderReply 使用（renderReply 已柯里化时可为 null）
+  replyPipeline = null,       // 5d：出站流水线；index.mjs 装配期先建 pipeline 再建 turnHandler
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
 } = {}) {
+  const pipeline = replyPipeline ?? createReplyPipeline({
+    outbound, store, budget, renderReply, caller, soul, snapshotFn,
+    grants, replyEgress, verbatimGuard, activeBrainTurns, onEvent, log,
+  });
+  const { deliverText, deliverTerminal, handleReply, renderAutomationReply, deliverTrusted } = pipeline;
+  const receipts = activeTurns ?? createActiveTurnRegistry().receipts;
+
+  async function sendAndRecord(sessionKey, sessionId, text) {
+    const { messageId } = await deliverText(sessionKey, text);
+    store.append(sessionId, { role: "assistant", content: text, platformMessageId: messageId, ts: Date.now() });
+    return { messageId };
+  }
+
   function appendItems(sessionId, items, { observed = false } = {}) {
     for (const it of items) {
       store.append(sessionId, {
@@ -49,32 +68,74 @@ export function createTurnHandler({
     return items.map((it) => `[${it.senderName ?? it.senderOpenId ?? "用户"}]: ${it.content}`).join("\n");
   }
 
-  // C6 唯一文本出口:命中富 Markdown → 消息卡(markdown 组件),否则纯 text。
-  // budget refusal/quick_reply/正式 handleReply/deliverTrusted 四条路径都只许走这里。
-  async function deliverText(sessionKey, text, { idempotencyKey = randomUUID() } = {}) {
-    const parsed = parseSessionKey(sessionKey);
-    // debug 会话（web 调试台）：不真发 lark，落库即"出站"（前端轮询 transcript 显示）
-    if (parsed.kind === "debug") return { messageId: null };
-    const targetArg = parsed.kind === "p2p" ? { openId: parsed.openId }
-      : parsed.kind === "group" ? { chatId: parsed.chatId } : null;
-    if (!targetArg) throw new Error(`会话不可出站: ${sessionKey}`);
-    if (hasRichMarkdown(text)) {
-      return outbound.sendCard({ ...targetArg, cardJson: buildMarkdownMessageCard({ md: text }), idempotencyKey });
+  function beginBusinessTurn(sessionKey) {
+    const turn = receipts.begin({ sessionKey, purpose: "business", expectsReply: true });
+    onEvent({ type: "business_turn_admitted", sessionKey, turnId: turn.turnId, purpose: turn.purpose });
+    return turn;
+  }
+
+  async function terminalizeBusinessTurn(turn, session, turnLifecycle = null) {
+    const current = receipts.resolve(turn.sessionKey);
+    if (current?.turnId === turn.turnId && current.state === "terminal") return current;
+    if (turnLifecycle?.closing?.finalReceipt) {
+      const receipt = receipts.resolve(turn.sessionKey);
+      if (receipt?.turnId === turn.turnId && receipt.state === "terminal") return receipt;
+      throw new Error("brain 已记录 final delivery，但 business receipt 未终态化");
     }
-    // 空行即拆分(用户定案 2026-07-12):纯文本消息里绝不带空行——按空段切成多条顺序发。
-    // 卡片豁免(上面已 return):markdown 的空行是结构必需。幂等 key 按段派生,重试安全。
-    // 注意:全空白文本原样交给 outbound 判错(text 必填),不在这里吞。
-    const segs = String(text).split(/\n[ \t]*\n+/).map((s) => s.trim()).filter(Boolean);
-    const parts = segs.length ? segs : [text];
-    let last = null;
-    for (let i = 0; i < parts.length; i++) {
-      last = await outbound.sendMessage({
-        ...targetArg,
-        text: parts[i],
-        idempotencyKey: parts.length === 1 ? idempotencyKey : `${idempotencyKey}-p${i}`,
+    const daemonRef = turnLifecycle && activeBrainTurns
+      ? { sessionKey: turnLifecycle.sessionKey, turnId: turnLifecycle.turnId, lease: turnLifecycle.lease }
+      : null;
+    const { messageId, receipt, recordedOk } = await deliverTerminal({
+      deliverKey: turn.sessionKey,
+      sessionId: session.id,
+      text: DAEMON_TERMINAL_FALLBACK,
+      source: "daemon_terminal_fallback",
+      daemonRef,
+      idempotencyKey: `turn:${turn.turnId}:terminal`,
+    });
+    if (daemonRef && !recordedOk) {
+      onEvent({
+        type: "brain_turn_delivery_record_failed",
+        sessionKey: turn.sessionKey,
+        turnId: turn.turnId,
+        source: "daemon_terminal_fallback",
+        messageId,
       });
     }
-    return last;
+    if (receipt) return receipt;
+    // 注册表没有联动终态化（brain 无 lifecycle / 降级拓扑）：直接终态化 receipt 并发事件，
+    // handleTurn 返回值契约 {turnId, receipt} 不变。
+    const completed = receipts.complete(turn, { outcome: "daemon_fallback_sent", messageId });
+    if (!completed.ok) {
+      throw new Error(`daemon fallback 回执提交失败: ${completed.code}`);
+    }
+    onEvent({
+      type: "business_turn_terminal",
+      sessionKey: turn.sessionKey,
+      turnId: turn.turnId,
+      outcome: "daemon_fallback_sent",
+      messageId,
+    });
+    return completed.receipt;
+  }
+
+  function finalizeBrainLifecycle(turnLifecycle) {
+    if (!turnLifecycle || !activeBrainTurns) return null;
+    return activeBrainTurns.finalizeTurn(turnLifecycle.sessionKey, turnLifecycle.lease);
+  }
+
+  function emitBrainOutcome(turnOutcome, { sessionKey, turnId, missing = "reply_missing" }) {
+    if (!turnOutcome) return;
+    onEvent({
+      type: "brain_turn_outcome",
+      sessionKey,
+      turnId: turnOutcome.turnId ?? turnId,
+      purpose: turnOutcome.purpose,
+      outcome: turnOutcome.finalReceipt?.source ?? missing,
+      stage: turnOutcome.finalReceipt?.stage ?? null,
+      provider: turnOutcome.provider,
+      replyCounts: turnOutcome.replyCounts,
+    });
   }
 
   async function handleTurn(turn) {
@@ -86,8 +147,7 @@ export function createTurnHandler({
 
     if (!budget.allow(sessionKey).ok) {
       appendItems(session.id, items);
-      const { messageId } = await deliverText(sessionKey, BUDGET_REFUSAL);
-      store.append(session.id, { role: "assistant", content: BUDGET_REFUSAL, platformMessageId: messageId, ts: Date.now() });
+      await sendAndRecord(sessionKey, session.id, BUDGET_REFUSAL);
       return;
     }
 
@@ -99,8 +159,18 @@ export function createTurnHandler({
     }
 
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
+    const triageStartedAt = Date.now();
     const verdict = await triage.triage({ session, items, mode, snapshot, brainBusy: brain.isBusy(sessionKey) });
-    onEvent({ type: "triage", sessionKey, verdict });
+    onEvent({
+      type: "triage",
+      sessionKey,
+      verdict,
+      action: verdict.action,
+      sourceAction: verdict.meta?.sourceAction ?? verdict.action,
+      provider: verdict.meta?.provider ?? null,
+      guard: verdict.meta?.guard ?? null,
+      latencyMs: Date.now() - triageStartedAt,
+    });
 
     // ambient 放行出站前记账（quick_reply/escalate 都算一次主动发言）
     if (mode === "ambient" && limiter && session.chat_id && (verdict.action === "quick_reply" || verdict.action === "escalate")) {
@@ -145,99 +215,120 @@ export function createTurnHandler({
     appendItems(session.id, items);
 
     if (verdict.action === "quick_reply") {
-      const { messageId } = await deliverText(sessionKey, verdict.text);
-      store.append(session.id, { role: "assistant", content: verdict.text, platformMessageId: messageId, ts: Date.now() });
+      await sendAndRecord(sessionKey, session.id, verdict.text);
       journal?.recordTurn({ sessionKey, sessionTitle: session.title, items, replyText: verdict.text });
       return;
     }
 
-    // escalate（或 steer 但中枢已空闲 → 当 escalate 跑）
-    // 快机先应答(用户定案 2026-07-12):慢机跟进前,快机先发一句接话,用户不用干等 20s
+    // escalate（或 steer 但中枢已空闲 → 当 escalate 跑）进入 daemon-owned business turn。
+    // ACK 只是该 turn 的非终态 effect；只有正式 reply / 安全 fallback / daemon fallback 才能收口。
+    const businessTurn = beginBusinessTurn(sessionKey);
     if (verdict.ack?.trim()) {
       try {
         const ackText = verdict.ack.trim();
-        const { messageId } = await deliverText(sessionKey, ackText);
-        store.append(session.id, { role: "assistant", content: ackText, platformMessageId: messageId, ts: Date.now() });
+        const { messageId } = await sendAndRecord(sessionKey, session.id, ackText);
+        receipts.recordAck(businessTurn, { messageId });
+        onEvent({ type: "business_turn_ack", sessionKey, turnId: businessTurn.turnId, messageId, terminal: false });
       } catch (e) {
         log(`[turn] ack 出站失败 session=${sessionKey}: ${e?.message ?? e}`); // ack 失败不阻断慢机
       }
     }
-    let brief = verdict.brief ?? verdict.note ?? renderContext(items);
+    const brief = verdict.brief ?? verdict.note ?? renderContext(items);
     let context = renderContext(items);
     if (windowBlock) context = `[群内最近消息-截至本批之前]\n${windowBlock}\n[/群内最近消息]\n\n${context}`;
+    let receipt = null;
+    let turnLifecycle = null;
+    let turnOutcome = null;
+    let brainError = null;
     try {
-      if (compactor) await compactor.maybeCompact({ session, sessionKey, brain, snapshot });
-      // C3.5:先 peek 注入提醒,回合成功后才 claim——brain 失败不消费水位,提醒下回合重试
-      const wantNudge = store.peekMemoryNudge(session.id);
-      if (wantNudge) brief += `\n\n${NUDGE_NOTE}`;
-      const result = await brain.turn({ session, sessionKey, brief, context, snapshot });
-      if (wantNudge) store.claimMemoryNudge(session.id);
-      for (const e of result.events ?? []) onEvent({ type: "brain_event", sessionKey, event: e });
-      // finalText 只落库为内部记录（role=tool），绝不出站
+      const result = await brain.turn({
+        session,
+        sessionKey,
+        turnId: businessTurn.turnId,
+        purpose: "business",
+        brief,
+        context,
+        snapshot,
+        initiatorOpenId: turn.initiatorOpenId ?? null,
+      });
+      turnLifecycle = result.turnLifecycle ?? null;
+      for (const e of result.events ?? []) onEvent({ type: "brain_event", sessionKey, turnId: businessTurn.turnId, event: e });
+      // finalText 只落库为内部记录（role=tool），绝不出站或充当终态回执。
       if (result.finalText) {
-        store.append(session.id, { role: "tool", content: `[中枢内部结论] ${result.finalText.slice(0, 2000)}`, ts: Date.now() });
+        try {
+          store.append(session.id, { role: "tool", content: `[中枢内部结论] ${result.finalText.slice(0, 2000)}`, ts: Date.now() });
+        } catch (error) {
+          log(`[turn] 中枢内部结论落库失败 session=${sessionKey}: ${error?.message ?? error}`);
+        }
       }
+      receipt = await terminalizeBusinessTurn(businessTurn, session, turnLifecycle);
       journal?.recordTurn({ sessionKey, sessionTitle: session.title, items, replyText: "" });
     } catch (e) {
+      brainError = e;
+      turnLifecycle = e?.turnLifecycle ?? turnLifecycle;
       log(`[turn] brain 回合失败 session=${sessionKey}: ${e?.message ?? e}`);
-      onEvent({ type: "brain_error", sessionKey, error: String(e?.message ?? e) });
+      onEvent({ type: "brain_error", sessionKey, turnId: businessTurn.turnId, error: String(e?.message ?? e) });
+      try {
+        receipt = await terminalizeBusinessTurn(businessTurn, session, turnLifecycle);
+      } catch (terminalizeError) {
+        log(`[turn] 终态化失败 session=${sessionKey}: ${terminalizeError?.message ?? terminalizeError}`);
+        onEvent({
+          type: "business_turn_terminalize_failed",
+          sessionKey,
+          turnId: businessTurn.turnId,
+          error: String(terminalizeError?.message ?? terminalizeError),
+        });
+      }
+    } finally {
+      turnOutcome = finalizeBrainLifecycle(turnLifecycle);
+      emitBrainOutcome(turnOutcome, {
+        sessionKey,
+        turnId: businessTurn.turnId,
+        missing: brainError ? "error_without_reply" : "reply_missing",
+      });
+      // 无论是否终态化成功都必须释放槽位：没有任何重试消费者，留 active 即永久卡死本会话
+      // （后续消息在 begin() 同步抛错并被 actor 队列静默吞掉）。
+      if (receipt?.state !== "terminal") {
+        onEvent({ type: "business_turn_abandoned", sessionKey, turnId: businessTurn.turnId });
+      }
+      receipts.clear(businessTurn);
     }
-  }
 
-  // 5.5 reply 工具经内部 HTTP 到这里：渲染（Opus respond 链）→ 出站/回卡片文案 → 落库 → 记账
-  async function handleReply({ sessionKey, kind = "message", brief, tone, target }) {
-    if (!brief?.trim()) return { ok: false, error: "brief 必填" };
-    // C0.4：render 之前先裁决投递目标——未 grant 的跨会话 target 一律拒绝,零渲染零出站
-    const deliverKey = target ?? sessionKey;
-    if (deliverKey !== sessionKey && !grants?.allowed(sessionKey, deliverKey)) {
-      onEvent({ type: "reply_target_rejected", sessionKey, target: deliverKey });
-      return { ok: false, error: `reply.target 越权：本会话未被授权向 ${deliverKey} 投递（跨会话请走 propose_actions 确认流）` };
-    }
-    const session = store.getOrCreate(sessionKey);
-    // C3.2:近期语义用 store.recent(transcript 取最早 n 条),历史行走统一 helper;
-    // 排除 system——压缩摘要不得以 [用户] 身份泄入 reply 上下文
-    const recent = store.recent(session.id, { limit: 20, roles: ["user", "assistant", "tool"] })
-      .map(formatHistoryLine).join("\n");
-    const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
-    // Task 10 C4:投递场景由 deliverKey(裁决后的真实去向)决定,群短平快/私聊展开
-    let deliverKind = "p2p";
-    try { if (parseSessionKey(deliverKey).kind === "group") deliverKind = "group"; } catch { /* debug 等按 p2p */ }
-    const rendered = await renderReply({
-      caller, soul: snapshot?.soul ?? soul, context: recent, brief, kind, tone, deliverKind,
-    });
-    if (rendered.usage) budget.record(sessionKey, rendered.usage);
-    if (kind === "card_copy") return { ok: true, text: rendered.text };
-
-    const { messageId } = await deliverText(deliverKey, rendered.text);
-    store.append(session.id, { role: "assistant", content: rendered.text, platformMessageId: messageId, ts: Date.now() });
-    // C3.4 跨目标回写:目标会话自己的窗口里必须有这条投递(带 meta,不许造 chat_id=null 的群 session)。
-    // 只 append assistant 记录,不触发 ambient limiter——跨会话授权已由 grants 承担。
-    if (deliverKey !== sessionKey) {
-      const p = parseSessionKey(deliverKey);
-      if (p.kind === "group" || p.kind === "p2p") {
-        const targetSession = store.getOrCreate(deliverKey, { kind: p.kind, chatId: p.kind === "group" ? p.chatId : null });
-        store.append(targetSession.id, { role: "assistant", content: rendered.text, platformMessageId: messageId, ts: Date.now() });
+    // 记忆维护与业务 turn 完全分离：业务已终态并解除 receipt 后，另起静默 maintenance turn。
+    const nudgePoint = store.peekMemoryNudge(session.id);
+    if (nudgePoint) {
+      try {
+        await brain.turn({
+          session,
+          sessionKey,
+          turnId: randomUUID(),
+          purpose: "memory_maintenance",
+          brief: NUDGE_MAINTENANCE_BRIEF,
+          snapshot,
+        });
+        store.claimMemoryNudge(session.id, { point: nudgePoint });
+      } catch (e) {
+        log(`[turn] memory maintenance 失败 session=${sessionKey}: ${e?.message ?? e}`);
+        onEvent({ type: "memory_maintenance_error", sessionKey, error: String(e?.message ?? e) });
       }
     }
-    onEvent({ type: "reply_sent", sessionKey, messageId });
-    return { ok: true, text: rendered.text, message_id: messageId };
-  }
-
-  // daemon-only 受信直投（heartbeat 等确定性提醒）：不经 LLM 渲染,文案固定 `提醒：${text}`,
-  // 出站后回写目标会话 transcript。只在进程内被 daemon 调用,绝不挂到内部 HTTP 通道。
-  async function deliverTrusted({ deliverKey, text, idempotencyKey }) {
-    if (!text?.trim()) return { ok: false, error: "text 必填" };
-    const parsed = parseSessionKey(deliverKey);
-    if (parsed.kind !== "p2p" && parsed.kind !== "group" && parsed.kind !== "debug") {
-      return { ok: false, error: `不可投递的会话: ${deliverKey}` };
+    if (compactor) {
+      try {
+        await compactor.maybeCompact({ session, sessionKey, brain, snapshot });
+      } catch (e) {
+        log(`[turn] compact 失败 session=${sessionKey}: ${e?.message ?? e}`);
+        onEvent({ type: "compact_error", sessionKey, error: String(e?.message ?? e) });
+      }
     }
-    const message = `提醒：${text}`;
-    const session = store.getOrCreate(deliverKey, { kind: parsed.kind, chatId: parsed.chatId ?? null });
-    const { messageId } = await deliverText(deliverKey, message, { idempotencyKey });
-    store.append(session.id, { role: "assistant", content: message, platformMessageId: messageId, ts: Date.now() });
-    onEvent({ type: "trusted_delivered", sessionKey: deliverKey, messageId });
-    return { ok: true, message_id: messageId };
+    // 批次 C taint→recycle：resident 本回合（epoch）看过席位私有数据，业务回合收口后
+    // 立即回收进程，防止后续回合凭跨回合记忆外泄。新 spawn 领新 epoch，taint 自动失效。
+    // 源 shingle 保留（server-owned 已读记录）：重生 Pi 经重放拿到旧内容照样受逐字守卫约束。
+    if (replyEgress?.isTainted?.(sessionKey)) {
+      const reasons = replyEgress.taintReasons?.(sessionKey) ?? [];
+      onEvent({ type: "resident_taint_recycle", sessionKey, reasons });
+      brain.recycle?.(sessionKey);
+    }
+    return { turnId: businessTurn.turnId, receipt };
   }
-
-  return { handleTurn, handleReply, deliverTrusted };
+  return { handleTurn, handleReply, renderAutomationReply, deliverTrusted };
 }

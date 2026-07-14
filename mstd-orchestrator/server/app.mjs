@@ -14,9 +14,16 @@ export function createApp(deps) {
   app.use(express.json({ limit: "8mb" }));
 
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  // Readiness includes the Lark identity boundary. A process without a configured
+  // profile remains live but is deliberately not ready for Feishu-dependent work.
+  app.get("/api/ready", (_req, res) => {
+    const lark = deps.larkHealth?.last ?? { ok: false, ready: false, ts: 0, detail: "未启用（无 larkProfile）" };
+    const ready = lark.ready === true;
+    res.status(ready ? 200 : 503).json({ ok: ready, ready, lark });
+  });
   // 免登录：与 /api/health 同段
   app.get("/api/health/lark", (_req, res) => {
-    const h = deps.larkHealth?.last ?? { ok: null, ts: 0, detail: "未启用（无 larkProfile）" };
+    const h = deps.larkHealth?.last ?? { ok: null, ready: false, ts: 0, detail: "未启用（无 larkProfile）" };
     res.json(h);
   });
 
@@ -36,7 +43,7 @@ export function createApp(deps) {
     mountJobRoutes(app, {
       db: deps.db, config: deps.config, startPi: deps.startPi,
       semaphore: deps.semaphore, bus: deps.bus, buffer: deps.buffer, registry: deps.registry,
-      extensions: deps.extensions, piCwd: deps.piCwd, now,
+      capabilityProfile: deps.capabilityProfile, piCwd: deps.piCwd, now,
       launcher: deps.launcher,
     });
   }

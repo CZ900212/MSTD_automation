@@ -1,22 +1,31 @@
 import { buildWriteArgs } from "../safety/write-args.mjs";
-import { buildAgentAction } from "../safety/action-dsl.mjs";
+import { buildAgentAction, validateStoredProvenance } from "../safety/action-dsl.mjs";
 import { markStatus } from "../safety/action-store.mjs";
 import { assertTestTarget } from "./write-target.mjs";
 import { canonicalDeliverableKey } from "../sessions/session-key.mjs";
 
 export function loadApprovedHashes(db, jobId) {
-  // 同一毫秒多条 approve（重试）时以 rowid 最新为准，不能随机取旧 hash
+  // 同一毫秒多条 approve（重试）时以 rowid 最新为准，不能随机取旧 hash。
   const row = db.prepare(
-    `SELECT approved_action_keys_json FROM decisions WHERE job_id = ? AND decision = 'approve' ORDER BY ts DESC, rowid DESC LIMIT 1`
+    `SELECT approved_action_keys_json, provenance_hash_at_decision FROM decisions WHERE job_id = ? AND decision = 'approve' ORDER BY ts DESC, rowid DESC LIMIT 1`
   ).get(jobId);
   const map = new Map();
   if (!row || !row.approved_action_keys_json) return map;
   try {
     for (const e of JSON.parse(row.approved_action_keys_json)) {
-      if (e && e.action_key) map.set(e.action_key, e.payload_hash);
+      if (e && e.action_key) map.set(e.action_key, { payloadHash: e.payload_hash, provenanceHash: row.provenance_hash_at_decision ?? null });
     }
   } catch { /* 空 map = 无批准记录 */ }
   return map;
+}
+
+function validateTaskNotificationDependency(db, { action, payload }) {
+  const source = db.prepare("SELECT * FROM job_actions WHERE job_id = ? AND action_key = ?")
+    .get(action.job_id, payload.source_task_action_key);
+  let sourcePayload = null;
+  try { sourcePayload = source ? JSON.parse(source.canonical_payload_json) : null; } catch { sourcePayload = null; }
+  return Boolean(source && source.kind === "create_task" && source.status === "succeeded"
+    && sourcePayload?.assignee_open_id === payload.to_open_id);
 }
 
 export async function executeApprovedAction(db, { actionId, approvedHash, runLark, testTarget, heartbeat = null, now = Date.now() }) {
@@ -26,14 +35,22 @@ export async function executeApprovedAction(db, { actionId, approvedHash, runLar
 
   const payload = JSON.parse(action.canonical_payload_json);
 
-  // Task 4B：批准 hash 缺失即 fail-closed——禁止拿当前 row hash 冒充批准值
-  if (approvedHash == null) {
+  // Task 4B/D：批准 payload 或 decision-time provenance 缺失即 fail-closed。
+  const approved = typeof approvedHash === "object" && approvedHash !== null
+    ? approvedHash
+    : { payloadHash: approvedHash, provenanceHash: null }; // 兼容直接 executor 测试的旧调用
+  if (approved.payloadHash == null) {
     markStatus(db, action.id, "failed", JSON.stringify({ error: "not_approved", now }));
     return { ok: false, reason: "not_approved", status: "failed" };
   }
-  if (action.payload_hash !== approvedHash) {
+  if (action.payload_hash !== approved.payloadHash) {
     markStatus(db, action.id, "failed", JSON.stringify({ error: "hash_mismatch", now }));
     return { ok: false, reason: "hash_mismatch", status: "failed" };
+  }
+  if (action.provenance_hash !== approved.provenanceHash
+    || !validateStoredProvenance({ manifestJson: action.provenance_manifest_json, provenanceHash: action.provenance_hash })) {
+    markStatus(db, action.id, "failed", JSON.stringify({ error: "provenance_mismatch", now }));
+    return { ok: false, reason: "provenance_mismatch", status: "failed" };
   }
 
   try {
@@ -46,6 +63,11 @@ export async function executeApprovedAction(db, { actionId, approvedHash, runLar
   // schedule_reminder 是本地 DB 写：走专用 heartbeat adapter，不构造 lark argv
   if (action.kind === "schedule_reminder") {
     return executeScheduleReminder(db, { action, payload, heartbeat });
+  }
+
+  if (action.kind === "notify_task_assignee" && !validateTaskNotificationDependency(db, { action, payload })) {
+    markStatus(db, action.id, "failed", JSON.stringify({ error: "dependency_not_succeeded" }));
+    return { ok: false, reason: "dependency_not_succeeded", status: "failed" };
   }
 
   let argv;
@@ -112,6 +134,21 @@ function executeScheduleReminder(db, { action, payload, heartbeat }) {
   return { ok: false, reason: "heartbeat_add_failed", status: "failed" };
 }
 
+export function isTaskCompleteResponse(stdout, expectedGuid) {
+  try {
+    const parsed = JSON.parse(stdout || "{}");
+    const task = parsed?.data?.task;
+    return parsed?.ok === true
+      && task?.guid === expectedGuid
+      && task?.status === "done"
+      && task?.agent_task_status === 4
+      && typeof task?.completed_at === "string"
+      && task.completed_at !== "0";
+  } catch {
+    return false;
+  }
+}
+
 export async function reconcileAction(db, { action, runLark }) {
   // schedule_reminder 是本地 DB 写：指纹 = heartbeat_items.source_action_id，绝不打 lark
   if (action.kind === "schedule_reminder") {
@@ -121,6 +158,21 @@ export async function reconcileAction(db, { action, runLark }) {
       return { reconciled: true };
     }
     return { reconciled: false };
+  }
+  if (action.kind === "complete_task") {
+    let payload;
+    try { payload = JSON.parse(action.canonical_payload_json); } catch { return { reconciled: false }; }
+    const taskGuid = payload?.task_guid;
+    if (typeof taskGuid !== "string" || !taskGuid) return { reconciled: false };
+    const res = await runLark(["task", "tasks", "get", "--task-guid", taskGuid, "--as", "user"]);
+    if (res.exitCode === 0 && isTaskCompleteResponse(res.stdout, taskGuid)) {
+      markStatus(db, action.id, "succeeded", JSON.stringify({ reconciled: true, task_guid: taskGuid }));
+      return { reconciled: true };
+    }
+    return { reconciled: false };
+  }
+  if (action.kind !== "create_task") {
+    return { reconciled: false, unsupported: true };
   }
   const res = await runLark(["task", "+list", "--as", "user"]);
   let found = false;
