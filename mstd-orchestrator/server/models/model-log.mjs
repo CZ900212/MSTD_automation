@@ -6,7 +6,29 @@ const DETAIL_MAX = 500;
 
 const asDetail = (evt) => {
   const err = evt.error != null ? String(evt.error?.message ?? evt.error) : null;
-  const parts = [evt.what, evt.phase, evt.detail, err].filter(Boolean);
+  const triage = evt.type === "triage"
+    ? `action=${evt.action} source=${evt.sourceAction} provider=${evt.provider ?? "unknown"} guard=${evt.guard ?? "none"} latency_ms=${evt.latencyMs}`
+    : null;
+  const dispatcher = String(evt.type ?? "").startsWith("dispatcher_")
+    ? [
+      evt.action ? `action=${evt.action}` : null,
+      evt.reason_code ? `reason_code=${String(evt.reason_code).slice(0, 80)}` : null,
+      evt.provider ? `provider=${String(evt.provider).slice(0, 60)}` : null,
+      evt.latencyMs != null ? `latency_ms=${evt.latencyMs}` : null,
+      evt.mode ? `mode=${String(evt.mode).slice(0, 20)}` : null,
+    ].filter(Boolean).join(" ")
+    : null;
+  const lifecycle = [
+    evt.turnId ? `turn_id=${String(evt.turnId).slice(0, 200)}` : null,
+    evt.purpose ? `purpose=${String(evt.purpose).slice(0, 40)}` : null,
+    evt.stage ? `stage=${String(evt.stage).slice(0, 20)}` : null,
+    evt.outcome ? `outcome=${String(evt.outcome).slice(0, 60)}` : null,
+    evt.provider && !dispatcher ? `provider=${String(evt.provider).slice(0, 60)}` : null,
+    evt.source ? `source=${String(evt.source).slice(0, 60)}` : null,
+    evt.messageId ? `message_id=${String(evt.messageId).slice(0, 100)}` : null,
+    evt.replyCounts ? `reply_counts=${JSON.stringify(evt.replyCounts).slice(0, 160)}` : null,
+  ].filter(Boolean);
+  const parts = [evt.what, evt.phase, evt.detail, triage, dispatcher, ...lifecycle, err].filter(Boolean);
   return parts.length ? parts.join(" ").slice(0, DETAIL_MAX) : null;
 };
 
