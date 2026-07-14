@@ -27,6 +27,20 @@ function renderItems(items) {
     .join("\n");
 }
 
+function truncateUtf8(value, maxBytes) {
+  const text = String(value ?? "");
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  let out = "";
+  let bytes = 0;
+  for (const point of text) {
+    const size = Buffer.byteLength(point, "utf8");
+    if (bytes + size > maxBytes) break;
+    out += point;
+    bytes += size;
+  }
+  return out;
+}
+
 /** Newest-first select, then chronological render; respect line and byte caps. */
 export function selectRecentTranscript(rows, {
   maxLines = 20,
@@ -53,20 +67,26 @@ export function selectRecentTranscript(rows, {
     if (picked.length >= maxLines) break;
     const line = `${row.role}: ${row.content}`;
     const size = Buffer.byteLength(line, "utf8");
-    if (picked.length > 0 && bytes + size > maxBytes) break;
-    picked.push(row);
-    bytes += size;
+    const separatorBytes = picked.length > 0 ? 1 : 0;
+    if (bytes + separatorBytes + size > maxBytes) {
+      if (picked.length > 0) break;
+      const fitted = truncateUtf8(line, maxBytes);
+      if (fitted) picked.push({ ...row, renderedLine: fitted });
+      break;
+    }
+    picked.push({ ...row, renderedLine: line });
+    bytes += separatorBytes + size;
     if (bytes >= maxBytes) break;
   }
   // Chronological for the model.
   picked.sort((a, b) => (a.ts - b.ts) || 0);
-  return picked.map((r) => `${r.role}: ${r.content}`);
+  return picked.map((r) => r.renderedLine);
 }
 
 /** Bound active task candidates for the prompt (opaque id + title/summary/status only). */
 export function renderTaskCandidates(candidates, { maxItems = 8, maxBytes = 2048 } = {}) {
   const out = [];
-  let bytes = 0;
+  let bytes = 2; // JSON array brackets
   for (const c of candidates ?? []) {
     if (out.length >= maxItems) break;
     const id = String(c.id ?? c.taskId ?? "").trim();
@@ -78,9 +98,10 @@ export function renderTaskCandidates(candidates, { maxItems = 8, maxBytes = 2048
       status: String(c.status ?? "active").slice(0, 32),
     });
     const size = Buffer.byteLength(line, "utf8");
-    if (out.length > 0 && bytes + size > maxBytes) break;
+    const separatorBytes = out.length > 0 ? 1 : 0;
+    if (bytes + separatorBytes + size > maxBytes) break;
     out.push(JSON.parse(line));
-    bytes += size;
+    bytes += separatorBytes + size;
   }
   return out;
 }

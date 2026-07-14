@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { whoLabel } from "../sessions/history-format.mjs";
+import { formatHistoryLine, whoLabel } from "../sessions/history-format.mjs";
 import { NUDGE_MAINTENANCE_BRIEF } from "../memory/compact.mjs";
 import { createActiveTurnRegistry } from "../sessions/active-turn.mjs";
 import { createReplyPipeline } from "./reply-pipeline.mjs";
@@ -75,6 +75,12 @@ export function createTurnHandler({
 
   function renderContext(items) {
     return items.map((it) => `[${it.senderName ?? it.senderOpenId ?? "用户"}]: ${it.content}`).join("\n");
+  }
+
+  function recentConversationBeforeTurn(sessionId) {
+    return store.promptRecent(sessionId, { limit: 20, roles: ["user", "assistant"] })
+      .map(formatHistoryLine)
+      .join("\n");
   }
 
   function beginBusinessTurn(sessionKey, emitEvent = onEvent) {
@@ -168,6 +174,7 @@ export function createTurnHandler({
     }
 
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
+    const recentConversation = recentConversationBeforeTurn(session.id);
     // Append first so source message ids exist for dispatch batch identity.
     appendItems(session.id, items, { observed: mode === "ambient" });
     const sourceRows = store.promptRecent(session.id, { limit: items.length, roles: ["user"] });
@@ -179,6 +186,7 @@ export function createTurnHandler({
       mode,
       snapshot,
       soul: snapshot?.soul ?? soul,
+      recentConversation,
     });
 
     if (answer.action === "no_reply") {
@@ -246,6 +254,7 @@ export function createTurnHandler({
     if (!responder) return;
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
     const recentRows = store.promptRecent(session.id, { limit: 200, roles: ["user", "assistant"] });
+    const recentConversation = recentConversationBeforeTurn(session.id);
     const activeTaskCandidates = taskStore?.activeSummaries?.(session.id) ?? [];
     void (async () => {
       const answer = await responder.answerTurn({
@@ -254,6 +263,7 @@ export function createTurnHandler({
         mode,
         snapshot,
         soul: snapshot?.soul ?? soul,
+        recentConversation,
       });
       emitEvent({
         type: "shadow_responder",

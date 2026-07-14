@@ -180,4 +180,46 @@ describe("turn-handler active architecture", () => {
     expect(out.action).toBe("reply");
     expect(out.messageId).toBe("om_2");
   });
+
+  it("gives the responder bounded conversation preceding the current batch", async () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const taskStore = createReasoningTaskStore(db);
+    const sessionKey = "feishu:p2p:ou_context";
+    const session = store.getOrCreate(sessionKey, { kind: "p2p" });
+    store.append(session.id, { role: "user", senderName: "甲", content: "会议原定周三", ts: 1 });
+    store.append(session.id, { role: "assistant", content: "记下了", ts: 2 });
+    const responder = { answerTurn: vi.fn(async () => ({ action: "reply", text: "已改周五" })) };
+    const handler = createTurnHandler({
+      architectureMode: "active",
+      triage: { triage: vi.fn() },
+      brain: { turn: vi.fn(), isBusy: () => false, steer: vi.fn(), recycle: vi.fn() },
+      responder,
+      taskStore,
+      coordinator: { schedule: vi.fn() },
+      store,
+      budget: { allow: () => ({ ok: true }), record: vi.fn() },
+      replyPipeline: {
+        deliverText: vi.fn(async () => ({ messageId: "om_context" })),
+        deliverTerminal: vi.fn(),
+        handleReply: vi.fn(),
+        renderAutomationReply: vi.fn(),
+        deliverTrusted: vi.fn(),
+      },
+    });
+
+    await handler.handleTurn({
+      kind: "message",
+      session,
+      sessionKey,
+      mode: "p2p",
+      items: [{ content: "对，改成周五", senderOpenId: "ou_context", ts: 3 }],
+    });
+
+    expect(responder.answerTurn).toHaveBeenCalledWith(expect.objectContaining({
+      recentConversation: expect.stringContaining("会议原定周三"),
+    }));
+    expect(responder.answerTurn.mock.calls[0][0].recentConversation).not.toContain("对，改成周五");
+  });
 });

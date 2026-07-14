@@ -78,7 +78,7 @@ export function createReinjector({
     if (ok && (!derived || !SAFE_SENSITIVITY.has(derived.sensitivity))) {
       return Promise.resolve({ status: "controlled", reason: !derived ? "missing_derived_result" : "sensitive_result", provenance });
     }
-    return actors.enqueue(sessionKey, async () => {
+    const prepared = actors.enqueue(sessionKey, () => {
       const session = store.getOrCreate(sessionKey);
       const drift = (session.version ?? 0) - sessionVersion;
       const stale = drift > versionThreshold;
@@ -87,6 +87,9 @@ export function createReinjector({
           ? `后台任务(${jobId})已完成，但会话话题可能已翻篇（期间隔了 ${drift} 个回合）。若结果仍有价值就简短播报，否则静默（不调用 reply）。`
           : `后台任务(${jobId})已完成，请向用户播报结果要点。`)
         : `后台任务(${jobId})执行失败（${error ?? "未知原因"}），请酌情告知用户并给出建议。`;
+      return { session, brief };
+    });
+    return Promise.resolve(prepared).then(async ({ session, brief }) => {
       try {
         await brain.turn({
           session,

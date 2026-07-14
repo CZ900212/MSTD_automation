@@ -118,6 +118,19 @@ describe("bounded transcript + candidates", () => {
     expect(lines.some((l) => l.includes("tool"))).toBe(false);
   });
 
+  it("strictly caps a single oversized newest line and oversized first candidate", () => {
+    const lines = selectRecentTranscript([
+      { role: "user", content: "中".repeat(100), ts: 1 },
+    ], { maxLines: 20, maxBytes: 32 });
+    expect(lines).toHaveLength(1);
+    expect(Buffer.byteLength(lines.join("\n"), "utf8")).toBeLessThanOrEqual(32);
+
+    const candidates = renderTaskCandidates([
+      { id: "task-long", title: "中".repeat(80), summary: "文".repeat(200), status: "active" },
+    ], { maxItems: 8, maxBytes: 32 });
+    expect(Buffer.byteLength(JSON.stringify(candidates), "utf8")).toBeLessThanOrEqual(32);
+  });
+
   it("renders only opaque id/title/summary/status for candidates", () => {
     const rendered = renderTaskCandidates([
       { id: "t1", title: "改会议", summary: "周四→?", status: "active", secret: "nope", residentKey: "r1" },
