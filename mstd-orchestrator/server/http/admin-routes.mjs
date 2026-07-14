@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore, debugTurn = null, dreaming = null, log = console.error }) {
+export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore, debugTurn = null, dreaming = null, modelLog = null, log = console.error }) {
   const isAdmin = (req) => {
     const openId = req.user?.feishu_open_id;
     return !!openId && (config.adminOpenIds?.has?.(openId) ?? false);
@@ -94,10 +94,15 @@ export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore
     res.json({ jobs });
   }));
 
-  // 模型链路可观测：降级/重试/预算命中/出站重试流水（model_log，只读）
+  // 模型链路可观测：降级/重试/预算命中/出站重试/dispatcher 流水（model_log，只读）
   app.get("/api/admin/model-log", guard((req, res) => {
     const kind = req.query.kind ? String(req.query.kind) : null;
+    const taskId = req.query.taskId ? String(req.query.taskId) : null;
+    const decision = req.query.decision ? String(req.query.decision) : null;
     const limit = Math.min(Number(req.query.limit) || 200, 500);
+    if (typeof modelLog?.list === "function") {
+      return res.json({ entries: modelLog.list({ kind, taskId, decision, limit }) });
+    }
     const entries = kind
       ? db.prepare("SELECT * FROM model_log WHERE kind = ? ORDER BY ts DESC LIMIT ?").all(kind, limit)
       : db.prepare("SELECT * FROM model_log ORDER BY ts DESC LIMIT ?").all(limit);

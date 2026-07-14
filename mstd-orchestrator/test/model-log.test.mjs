@@ -86,6 +86,8 @@ describe("model_log（模型链路可观测落库）", () => {
       reason_code: "needs_tools",
       latencyMs: 42,
       provider: "v4-flash",
+      taskId: "task-1",
+      dispatchId: "disp-1",
     });
     mlog.record({
       type: "dispatcher_fallback",
@@ -100,10 +102,33 @@ describe("model_log（模型链路可观测落库）", () => {
     expect(decision).toMatchObject({
       session_key: "feishu:p2p:ou_x",
       chain: "dispatcher",
+      task_id: "task-1",
+      dispatch_id: "disp-1",
+      decision: "spawn_new",
+      reason_code: "needs_tools",
+      latency_ms: 42,
     });
     expect(decision.detail).toContain("action=spawn_new");
     expect(decision.detail).toContain("reason_code=needs_tools");
     expect(decision.detail).toContain("latency_ms=42");
     expect(fallback.detail).toContain("reason_code=dispatcher_fallback_spawn");
+    expect(mlog.list({ taskId: "task-1" })).toHaveLength(1);
+    expect(mlog.list({ decision: "spawn_new" })).toHaveLength(1);
+  });
+
+  it("event sequence covers first reply, dispatch, task start, handoff", () => {
+    for (const evt of [
+      { type: "responder_sent", sessionKey: "s", action: "reply", dispatchId: "d1", latencyMs: 10 },
+      { type: "dispatcher_decision", sessionKey: "s", action: "spawn_new", reason_code: "needs_tools", dispatchId: "d1", taskId: "t1" },
+      { type: "task_created", sessionKey: "s", taskId: "t1" },
+      { type: "reasoner_started", sessionKey: "s", taskId: "t1", runId: "r1" },
+      { type: "handoff_sent", sessionKey: "s", taskId: "t1", runId: "r1" },
+    ]) mlog.record(evt);
+    const kinds = mlog.list({ taskId: "t1" }).map((r) => r.kind).reverse();
+    // list is newest-first; reverse for chronological among filtered rows that have task_id
+    expect(mlog.list().map((r) => r.kind)).toEqual(expect.arrayContaining([
+      "responder_sent", "dispatcher_decision", "task_created", "reasoner_started", "handoff_sent",
+    ]));
+    expect(kinds).toEqual(expect.arrayContaining(["dispatcher_decision", "task_created", "reasoner_started", "handoff_sent"]));
   });
 });

@@ -4,25 +4,39 @@
 
 ## 架构一图流
 
+> **2026-07-14 起**：目标路径是 **Responder–Dispatcher–Reasoner**（见 `../docs/plans/2026-07-14-responder-dispatcher-reasoner-architecture.md` 与 `../project.md`）。旧「V4 分诊 / 一会话一 resident / Opus 出口」描述已 **superseded**，仅在 `MSTD_AGENT_ARCHITECTURE_MODE=legacy` 下保留作回滚。
+
+### 目标路径（`active`）
+
 ```
-飞书事件（lark-cli event consume，每 EventKey 一个子进程，扁平 NDJSON）
-  → gateway/inbox 归一化 + MD5 去重 → debounce 3s → admit（disabled/mention_only/ambient/observe_only）
-  → 预算闸 → 主动限额器 → DeepSeek V4 Flash non-thinking 分诊（fast 链）
-  → ↘ 直答（fast 链渲染）
-    ↘ 升级 GPT-5.6 Sol medium Pi 中枢（reason 链；池化、闲置回收、steer 注入）
-        · 出站唯一通道 = reply 工具 → daemon /internal/reply → DeepSeek V4 Pro non-thinking（respond 首选）渲染 → outbound
-        · 写意图 → propose-actions → buildAgentAction 规范化+hash → 卡片确认（approval token 绑发起人）
-          → 操作人/令牌/hash 三校验 → executeApprovedAction（dry-run→写→幂等）→ 终态卡 + 回注会话
-  记忆：SOUL / ORG / journal / groups/<chat_id> / users/<open_id>（隔离铁律：群A绝不进群B）
-  ticker 单轮询分频：cron / heartbeat(5min) / dreaming(03:30) / 会话过期 / lark 健康 / 周一信噪报
+飞书事件 → inbox → debounce → admit → actor（仅保护 transcript/outbox，不占住 reasoner 生命周期）
+  → Responder（唯一用户可见出口；reply|no_reply）
+  → 耐久 dispatch：reply 先 pending_send 再物理发送，再 pending_review；no_reply 直接 pending_review
+  → Dispatcher（独立第三方评审；不说“助手请求升级”）
+  → ↘ no_reasoning
+    ↘ attach_existing / spawn_new → task-scoped Pi reasoner（同会话多 task 可并发；全局 MSTD_MAX_CONCURRENT_PI + MSTD_MAX_REASONERS_PER_SESSION）
+        · reasoner 经 reply 工具把事实/决定交给 responder.renderHandoff → egress → outbound
+        · 写意图仍走 propose-actions 卡片确认与确定性安全闸
+  记忆：SOUL / ORG / journal / groups/<chat_id> / users/<open_id>
 ```
 
-三条模型链（每级重试 5×10s 再降级）：
+### 回滚 / 灰度
+
+| 模式 | 行为 |
+|---|---|
+| `legacy`（默认） | 现有 triage/fast-slow 路径，输出契约不变 |
+| `shadow` | 计算 responder/dispatcher 结果，不改物理出站、不启 task reasoner |
+| `active` | Responder 优先前台 + 独立 dispatcher + task-scoped reasoner |
+
+回滚：将 `MSTD_AGENT_ARCHITECTURE_MODE=legacy` 并重启。迁移 additive，不删 task/dispatch 历史。
+
+### 模型链
+
 | 链 | 用途 | 顺序 |
 |---|---|---|
-| fast | 分诊/直答/journal 摘要 | DeepSeek V4 Flash non-thinking → opus-4.6 → gpt-5.5 |
-| reason | Pi 中枢编排推理 | gpt-5.6-sol (medium) → opus-4.8 → DeepSeek V4 Pro non-thinking |
-| respond | 对外中文出口 | DeepSeek V4 Pro non-thinking → gpt-5.6-sol (medium) |
+| dispatcher / fast | 独立评审 / legacy 分诊 | DeepSeek V4 Flash non-thinking → gpt-5.5 |
+| reason | task reasoner Pi | gpt-5.6-sol (medium) → DeepSeek V4 Pro non-thinking |
+| responder / respond | 用户可见出口 + handoff 渲染 | DeepSeek V4 Pro non-thinking → gpt-5.6-sol (medium) |
 
 ## 目录
 

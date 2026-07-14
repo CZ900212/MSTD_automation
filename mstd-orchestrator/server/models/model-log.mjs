@@ -33,29 +33,74 @@ const asDetail = (evt) => {
 };
 
 export function createModelLog(db, { now = Date.now, log = console.error } = {}) {
-  const insert = db.prepare(
-    "INSERT INTO model_log (id, kind, chain, from_key, to_key, session_key, attempt, detail, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  );
+  // Prefer extended schema when migration 020 is applied; fall back for older DBs in tests.
+  const hasTaskCols = (() => {
+    try {
+      const cols = db.prepare("PRAGMA table_info(model_log)").all().map((c) => c.name);
+      return cols.includes("task_id");
+    } catch {
+      return false;
+    }
+  })();
+
+  const insert = hasTaskCols
+    ? db.prepare(
+      `INSERT INTO model_log
+        (id, kind, chain, from_key, to_key, session_key, attempt, detail, ts,
+         task_id, dispatch_id, run_id, decision, reason_code, latency_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    : db.prepare(
+      "INSERT INTO model_log (id, kind, chain, from_key, to_key, session_key, attempt, detail, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
 
   function record(evt) {
     try {
-      insert.run(
-        randomUUID(),
-        evt.type,
-        evt.chain ?? null,
-        evt.from ?? evt.model ?? null,
-        evt.to ?? null,
-        evt.sessionKey ?? null,
-        evt.attempt ?? null,
-        asDetail(evt),
-        now()
-      );
+      if (hasTaskCols) {
+        insert.run(
+          randomUUID(),
+          evt.type,
+          evt.chain ?? null,
+          evt.from ?? evt.model ?? null,
+          evt.to ?? null,
+          evt.sessionKey ?? null,
+          evt.attempt ?? null,
+          asDetail(evt),
+          now(),
+          evt.taskId ?? null,
+          evt.dispatchId ?? null,
+          evt.runId ?? null,
+          evt.decision ?? evt.action ?? null,
+          evt.reason_code ?? evt.reasonCode ?? null,
+          evt.latencyMs ?? null,
+        );
+      } else {
+        insert.run(
+          randomUUID(),
+          evt.type,
+          evt.chain ?? null,
+          evt.from ?? evt.model ?? null,
+          evt.to ?? null,
+          evt.sessionKey ?? null,
+          evt.attempt ?? null,
+          asDetail(evt),
+          now(),
+        );
+      }
     } catch (e) {
       log(`[model-log] 落库失败（忽略）: ${e?.message ?? e}`);
     }
   }
 
-  function list({ kind = null, limit = 200 } = {}) {
+  function list({ kind = null, limit = 200, taskId = null, decision = null } = {}) {
+    if (taskId && hasTaskCols) {
+      return kind
+        ? db.prepare("SELECT * FROM model_log WHERE kind = ? AND task_id = ? ORDER BY ts DESC LIMIT ?").all(kind, taskId, limit)
+        : db.prepare("SELECT * FROM model_log WHERE task_id = ? ORDER BY ts DESC LIMIT ?").all(taskId, limit);
+    }
+    if (decision && hasTaskCols) {
+      return db.prepare("SELECT * FROM model_log WHERE decision = ? ORDER BY ts DESC LIMIT ?").all(decision, limit);
+    }
     return kind
       ? db.prepare("SELECT * FROM model_log WHERE kind = ? ORDER BY ts DESC LIMIT ?").all(kind, limit)
       : db.prepare("SELECT * FROM model_log ORDER BY ts DESC LIMIT ?").all(limit);

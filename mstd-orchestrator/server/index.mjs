@@ -542,6 +542,7 @@ if (config.enableAgent && config.botOpenId) {
     agentStore,
     cronStore,
     dreaming,
+    modelLog,
     debugTurn: createDebugTurn({ actors, agentStore, handleTurn: turnHandler.handleTurn }),
   };
 
