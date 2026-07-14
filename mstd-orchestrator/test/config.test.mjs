@@ -137,4 +137,16 @@ describe("loadServerConfig", () => {
       })).toThrow(/MSTD_DISPATCH_CONTEXT_BYTES/);
     },
   );
+
+  it("defaults max reasoners per session to 3 and rejects unsafe values", () => {
+    expect(loadServerConfig({ MSTD_SESSION_SECRET: "s" }).maxReasonersPerSession).toBe(3);
+    expect(loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_MAX_REASONERS_PER_SESSION: "5",
+    }).maxReasonersPerSession).toBe(5);
+    expect(() => loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_MAX_REASONERS_PER_SESSION: "0",
+    })).toThrow(/MSTD_MAX_REASONERS_PER_SESSION/);
+  });
 });

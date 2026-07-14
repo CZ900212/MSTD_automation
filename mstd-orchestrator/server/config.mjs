@@ -54,6 +54,8 @@ export function loadServerConfig(env = process.env) {
     agentArchitectureMode: agentArchitectureMode(env),
     dispatchContextLines: intEnv(env, "MSTD_DISPATCH_CONTEXT_LINES", 20),
     dispatchContextBytes: intEnv(env, "MSTD_DISPATCH_CONTEXT_BYTES", 8192),
+    // Fairness cap for concurrent task reasoners inside one conversation (global Pi lease still applies).
+    maxReasonersPerSession: intEnv(env, "MSTD_MAX_REASONERS_PER_SESSION", 3),
     feishu: resolveFeishuConfig(env),
     pi: {
       provider: env.PI_PROVIDER ?? "cz-gpt",
