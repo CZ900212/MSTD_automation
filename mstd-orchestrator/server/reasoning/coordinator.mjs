@@ -98,9 +98,10 @@ export function createReasoningCoordinator({
 
   async function closeReasonerLifecycle({ session, sessionKey, task, lifecycle }) {
     if (!lifecycle) return null;
+    const currentTask = taskStore.getTask(task.id) ?? task;
     const executionKey = lifecycle.executionKey ?? taskExecutionKey(task.id);
     const hadFinalReply = Boolean(lifecycle.closing?.finalReceipt);
-    if (!hadFinalReply && task.closure_mode === "required") {
+    if (!hadFinalReply && currentTask.closure_mode === "required") {
       if (typeof deliverTerminal !== "function") {
         throw new Error("coordinator: required closure 缺少 deliverTerminal");
       }
@@ -253,6 +254,7 @@ export function createReasoningCoordinator({
         emit({ type: "dispatcher_invalid", sessionKey, error: "fabricated_or_cross_session_task" });
         throw new Error("coordinator: attach 拒绝跨会话或不存在的 task");
       }
+      const updatedTask = taskStore.mergeClosureMode(task.id, decision.closure ?? "silent_ok");
       for (const mid of sourceMessageIds) {
         taskStore.attachMessage({ taskId: task.id, messageId: mid, relation: "steer" });
       }
@@ -266,7 +268,7 @@ export function createReasoningCoordinator({
       await startReasoner({
         session,
         sessionKey,
-        task,
+        task: updatedTask,
         brief: decision.brief,
         messageIds: sourceMessageIds,
       });

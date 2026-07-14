@@ -95,6 +95,7 @@ describe("reasoning coordinator", () => {
     expect(out).toMatchObject({ action: "attach_existing", steered: true });
     expect(brain.steer).toHaveBeenCalledWith("feishu:p2p:ou_a", "用户改周五", { taskId: task.id });
     expect(brain.turn).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id).closure_mode).toBe("required");
   });
 
   it("idle existing task starts a new run without creating another task", async () => {
@@ -178,6 +179,56 @@ describe("reasoning coordinator", () => {
       text: expect.stringContaining("没能生成"),
     }));
     expect(activeBrainTurns.resolve("feishu:p2p:ou_a", { taskId: out.taskId, executionKey: `task:${out.taskId}` })).toBeNull();
+  });
+
+  it("a required follow-up attached during a running silent task upgrades its terminal closure", async () => {
+    const gate = Promise.withResolvers();
+    const activeBrainTurns = createActiveTurnRegistry().brainTurns;
+    const outbound = {
+      sendMessage: vi.fn(async () => ({ messageId: "om_upgraded" })),
+      sendCard: vi.fn(async () => ({ messageId: "om_upgraded_card" })),
+    };
+    const pipeline = createReplyPipeline({
+      outbound,
+      store: sessions,
+      budget: { record: vi.fn() },
+      renderReply: vi.fn(),
+      activeBrainTurns,
+    });
+    brain.turn = vi.fn(async ({ sessionKey, taskId }) => {
+      await gate.promise;
+      const executionKey = `task:${taskId}`;
+      const turnId = `turn:${taskId}`;
+      const lease = activeBrainTurns.activate({ sessionKey, taskId, executionKey, turnId, purpose: "business" });
+      activeBrainTurns.bindResident(sessionKey, lease, 1, { taskId, executionKey });
+      const closing = await activeBrainTurns.closeAdmissions(sessionKey, lease, { taskId, executionKey });
+      return { turnLifecycle: { sessionKey, taskId, turnId, lease, closing } };
+    });
+    const c = makeCoordinator({ activeBrainTurns, deliverTerminal: pipeline.deliverTerminal });
+    const spawned = await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: { action: "spawn_new", title: "后台复核", brief: "先看一下", closure: "silent_ok", reason_code: "review" },
+    });
+    await vi.waitFor(() => expect(brain.turn).toHaveBeenCalledTimes(1));
+    brain.isBusy = vi.fn(({ taskId }) => taskId === spawned.taskId);
+
+    await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: {
+        action: "attach_existing",
+        task_id: spawned.taskId,
+        brief: "用户要求处理完必须告知",
+        closure: "required",
+        reason_code: "promise",
+      },
+    });
+    gate.resolve();
+
+    await vi.waitFor(() => expect(taskStore.getTask(spawned.taskId).status).toBe("completed"));
+    expect(outbound.sendMessage).toHaveBeenCalledTimes(1);
+    expect(taskStore.getTask(spawned.taskId).closure_mode).toBe("required");
   });
 
   it("silent_ok closes without a message and recycles only its tainted task resident", async () => {

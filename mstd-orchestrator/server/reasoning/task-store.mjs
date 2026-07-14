@@ -43,6 +43,15 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
         END
     WHERE id = ?
   `);
+  const mergeTaskClosure = db.prepare(`
+    UPDATE reasoning_tasks
+    SET closure_mode = CASE
+          WHEN closure_mode = 'required' OR ? = 'required' THEN 'required'
+          ELSE 'silent_ok'
+        END,
+        updated_at = ?
+    WHERE id = ?
+  `);
   const linkMsg = db.prepare(`
     INSERT OR IGNORE INTO reasoning_task_messages (task_id, message_id, relation, created_at)
     VALUES (?, ?, ?, ?)
@@ -142,6 +151,18 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
     const ts = now();
     const r = updateTask.run(status ?? null, summary, title, ts, status ?? null, ts, taskId);
     if (!r.changes) throw new Error("transitionTask: task 不存在");
+    return getTask.get(taskId);
+  }
+
+  // Closure is monotonic for an active task: once any attached turn promises a
+  // follow-up, later silent_ok reviews must not erase that obligation.
+  function mergeClosureMode(taskId, closureMode = "silent_ok") {
+    if (!taskId) throw new Error("mergeClosureMode: taskId 必填");
+    if (!["required", "silent_ok"].includes(closureMode)) {
+      throw new Error("mergeClosureMode: closureMode 非法");
+    }
+    const r = mergeTaskClosure.run(closureMode, now(), taskId);
+    if (!r.changes) throw new Error("mergeClosureMode: task 不存在");
     return getTask.get(taskId);
   }
 
@@ -349,6 +370,7 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
     createTask,
     attachMessage,
     transitionTask,
+    mergeClosureMode,
     activeSummaries,
     listMessages,
     dispatchSourceItems,
