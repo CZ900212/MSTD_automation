@@ -148,11 +148,24 @@ describe("peekMemoryNudge / claimMemoryNudge 分离（Task 7 审核修正）", (
 
   it("peek 为真但不推进水位;claim 后 peek 变假", () => {
     for (let i = 0; i < 11; i++) store.append(s.id, { role: "user", content: `u${i}`, ts: i + 1 });
-    expect(store.peekMemoryNudge(s.id)).toBe(true);
-    expect(store.peekMemoryNudge(s.id)).toBe(true);            // peek 幂等,不消费
+    expect(store.peekMemoryNudge(s.id)).toBe(10);
+    expect(store.peekMemoryNudge(s.id)).toBe(10);            // peek 幂等,不消费
     expect(store.claimMemoryNudge(s.id)).toBe(true);
     expect(store.peekMemoryNudge(s.id)).toBe(false);
     expect(store.claimMemoryNudge(s.id)).toBe(false);
+  });
+
+  it("captures an exact point so messages arriving during maintenance remain pending", () => {
+    for (let i = 0; i < 10; i++) store.append(s.id, { role: "user", content: `u${i}`, ts: i + 1 });
+    const point = store.peekMemoryNudge(s.id);
+    expect(point).toBe(10);
+
+    for (let i = 10; i < 20; i++) store.append(s.id, { role: "user", content: `u${i}`, ts: i + 1 });
+    expect(store.claimMemoryNudge(s.id, { point })).toBe(true);
+    expect(db.prepare("SELECT memory_nudge_watermark w FROM agent_sessions WHERE id = ?").get(s.id).w).toBe(10);
+    expect(store.peekMemoryNudge(s.id)).toBe(20);
+    expect(store.claimMemoryNudge(s.id, { point })).toBe(false);
+    expect(store.claimMemoryNudge(s.id, { point: 20 })).toBe(true);
   });
 
   it("9 条 peek 为假", () => {

@@ -79,18 +79,20 @@ describe("turn-handler（triage→brain→reply 全链）", () => {
     expect(deps.budget.record).toHaveBeenCalled();
   });
 
-  // Task 6：handleReply 的 context 走 store.recent——真"最近"且 tool 行标 [内部记录]
-  it("handleReply context 取最近消息且 tool 行不冒充用户", async () => {
+  // P0：handleReply 只读 prompt allowlist；tool-internal 不得进入渲染上下文。
+  it("handleReply context 取最近 eligible 消息且排除 tool-internal", async () => {
     for (let i = 1; i <= 25; i++) store.append(session.id, { role: "user", senderName: "张三", content: `m${i}`, ts: i });
-    store.append(session.id, { role: "tool", content: "内部X", ts: 100 });
+    store.append(session.id, {
+      role: "tool", content: "内部X", ts: 100,
+      policy: { replayable: false, promptEligible: false, memoryEligible: false, securityLabel: "internal", provenance: "tool_internal" },
+    });
     store.append(session.id, { role: "system", content: "〔压缩摘要〕内部结论", ts: 101 });   // 窗口内的 system 行
-    const recentSpy = vi.spyOn(store, "recent");
+    const recentSpy = vi.spyOn(store, "promptRecent");
     await handler.handleReply({ sessionKey: "feishu:p2p:ou_a", kind: "message", brief: "回一下" });
     // 精确 roles 契约：不许"先取全角色再 JS 过滤"的等价改写悄悄回退
     expect(recentSpy).toHaveBeenCalledWith(session.id, { limit: 20, roles: ["user", "assistant", "tool"] });
     const ctx = deps.renderReply.mock.calls[0][0].context;
-    expect(ctx).toContain("[内部记录]: 内部X");
-    expect(ctx).not.toContain("[用户]: 内部X");
+    expect(ctx).not.toContain("内部X");
     expect(ctx).toContain("[张三]: m25");            // 近期语义：必须包含最新消息,不是最旧 20 条
     expect(ctx).not.toContain("压缩摘要");            // system 摘要不得冒充任何人泄入 reply 上下文
   });

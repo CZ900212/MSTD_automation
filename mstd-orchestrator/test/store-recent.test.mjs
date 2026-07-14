@@ -122,12 +122,12 @@ describe("C3 store.recent / replaySet", () => {
     expect(store.replaySet(s.id, { limit: 2 }).messages.map((m) => m.content)).toEqual(["r4", "r5"]);
   });
 
-  it("recent 不含软删行;tool 角色包含在 replaySet.messages", () => {
+  it("recent 审计查询保留 tool；replaySet 排除 tool-internal", () => {
     const m = store.append(s.id, { role: "user", content: "将被删", ts: 1 });
     store.append(s.id, { role: "tool", content: "工具输出", ts: 2 });
     store.softDelete(m.id);
     expect(store.recent(s.id, { limit: 10 }).map((x) => x.content)).toEqual(["工具输出"]);
-    expect(store.replaySet(s.id).messages.map((x) => x.content)).toEqual(["工具输出"]);
+    expect(store.replaySet(s.id).messages.map((x) => x.content)).toEqual([]);
   });
 });
 
