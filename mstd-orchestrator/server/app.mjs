@@ -6,12 +6,15 @@ import { mountAuthRoutes } from "./auth/routes.mjs";
 import { mountJobRoutes } from "./jobs/routes.mjs";
 import { mountInternalRoutes } from "./http/internal-routes.mjs";
 import { mountAdminRoutes } from "./http/admin-routes.mjs";
+import { mountSimulatorRoutes } from "./http/simulator-routes.mjs";
 
 // createApp(deps)：deps 随任务推进逐步补齐；骨架需 deps.db + deps.config.sessionSecret。
 export function createApp(deps) {
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: "8mb" }));
+  // Express needs this for correct req.ip when not behind proxy; we still reject X-Forwarded-For on C routes.
+  app.set("trust proxy", false);
 
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   // Readiness includes the Lark identity boundary. A process without a configured
@@ -29,6 +32,18 @@ export function createApp(deps) {
 
   // 内部通道在 bearerAuth 之前挂载（自带独立 token 校验）
   if (deps.internal) mountInternalRoutes(app, deps.internal);
+
+  // C 模式合成入口：默认不挂载；仅 simulator.ingressEnabled 时暴露，且自带 HMAC + loopback
+  if (deps.simulator?.ingressEnabled && deps.ingestNormalized) {
+    mountSimulatorRoutes(app, {
+      db: deps.db,
+      simulator: deps.simulator,
+      ingestNormalized: deps.ingestNormalized,
+      botOpenId: deps.config?.botOpenId ?? "",
+      botNames: deps.config?.botNames ?? [],
+      log: deps.log ?? console.error,
+    });
+  }
 
   const now = deps.now ?? (() => Date.now());
   const verify = (token) => verifySessionToken(token, { secret: deps.config.sessionSecret, now: now() });

@@ -1,0 +1,35 @@
+version: 1
+id: smoke-routing
+mode: scripted
+route_label_version: v1
+description: Minimal C-mode smoke — light address + silence control
+limits:
+  max_turns: 20
+  max_duration_ms: 600000
+  messages_per_minute: 12
+actors:
+  - id: lin_xi
+    name: 林夕
+    profile_env: MSTD_SIM_BOT_PRODUCT_PROFILE
+  - id: zhou_yan
+    name: 周岩
+    profile_env: MSTD_SIM_BOT_ENGINEER_PROFILE
+  - id: he_miao
+    name: 何淼
+    profile_env: MSTD_SIM_BOT_OPS_PROFILE
+turns:
+  - id: light-001
+    actor: lin_xi
+    text: "@小达 在吗"
+    after_ms: 0
+    expect:
+      route: quick_reply
+      outbound_min: 1
+      terminal_within_ms: 30000
+  - id: silence-001
+    actor: he_miao
+    text: "今天天气不错啊哈哈"
+    after_ms: 500
+    expect:
+      route: observed
+      outbound_max: 0

@@ -41,20 +41,36 @@ pi-ext/           # Pi 薄壳工具：persona(系统提示词整体替换)/reply
 agent-memory/     # 五层记忆文件（gitignore;独立 git 仓;SOUL.md 人格,缺失/为空时 agent 拒绝启动）
 agent-workspace/  # 中枢 Pi 的 bash/文件工具工作目录(piCwd 迁出源码树;gitignore;MSTD_AGENT_WORKSPACE 可覆盖)
 scripts/          # e2e-serial.sh:五套真机 E2E 串行 JSON 门禁(发布仪式)
+simulator/        # 三机器人导演：剧本 YAML / A·B·C 投递 / 阅卷 / P0 probe
+server/simulator/ # C 模式 HMAC 认证 + fail-closed 配置
+server/gateway/turn-trace.mjs  # 可阅卷 decision_* 回合追踪（中性命名，兼容 triage/responder）
+```
+
+## 三机器人仿真评测
+
+默认关闭。用于在测试群用三位演员（林夕/周岩/何淼）评测路由、延迟与安全。详见
+`../docs/superpowers/runbooks/feishu-multi-bot-simulator.md`。
+
+```bash
+npm run sim:probe    # P0：bot 可见性（A 模式前置）
+npm run sim:test     # 本地单元/契约
+npm run sim:run -- --scenario simulator/scenarios/01-routing-core.yaml --transport synthetic
+MSTD_E2E=1 npm run sim:e2e -- --transport synthetic
 ```
 
 ## 部署 / 运行
 
 ```bash
 cd mstd-orchestrator
-cp .env.example .env && chmod 600 .env   # 填 key；密钥红线：只进 .env，不进代码/日志/Git
-set -a; . ./.env; set +a
-node server/index.mjs                    # 缺关键 env 会 fail-fast 打印全清单
+cp .env.example .env && chmod 600 .env   # 首次：填 key；密钥红线：只进 .env，不进代码/日志/Git
+npm run dev                              # 一键启动（--env-file 自动加载 .env + --watch 热重启）
+# 生产等价：set -a; . ./.env; set +a && npm start
+# 缺关键 env 会 fail-fast 打印全清单；端口被占（已有 daemon）会在任何 consumer 拉起前拒绝启动第二实例
 # web 调试台：cd ../mstd-ui && npx vite  # 六 tab：工作台/看板/会话/调试台/记忆/调试对话
 #   /api 代理默认 http://localhost:8787，daemon 不在本机时用 MSTD_API_URL 覆盖
 ```
 
-启动要求（`MSTD_ENABLE_AGENT=1` 时 fail-fast 强制）：`MSTD_BOT_OPEN_ID` / `MSTD_BOT_NAME` / `LARK_PROFILE` / 三模型 key / `MSTD_SESSION_SECRET`，且 `agent-memory/SOUL.md` 必须存在且非空（空人格拒绝启动）。写闸 `MSTD_ENABLE_WRITE=1` 时必须给 `MSTD_TEST_OPEN_IDS` 或 `MSTD_TEST_CHAT_IDS`（白名单 fail-closed，空=全拒）。全部开关见 `.env.example`。改名过渡期旧名放 `MSTD_BOT_ALIASES`（双名命中点名）。静态 `MSTD_INTERNAL_TOKEN` 已废弃——内部通道 token 按 Pi 进程签发/吊销，不可手填。
+启动要求（`MSTD_ENABLE_AGENT=1` 时 fail-fast 强制）：`MSTD_BOT_OPEN_ID` / `MSTD_BOT_NAME` / `LARK_PROFILE` / 三模型 key / `MSTD_SESSION_SECRET`，且 `agent-memory/SOUL.md` 必须存在且非空（空人格拒绝启动）。写闸 `MSTD_ENABLE_WRITE=1` 时必须给 `MSTD_TEST_OPEN_IDS`、`MSTD_TEST_CHAT_IDS` 或 `MSTD_TEST_TASK_GUIDS`（白名单 fail-closed，空=全拒；任务 GUID 仅用于可丢弃测试任务，无通配符）。席位私有邮件/妙记只对 `MSTD_PRIVATE_DATA_OWNER_OPEN_ID` 对应用户的私聊开放；`MSTD_ALERT_OPEN_ID` 仅接收运维告警，不授予数据读取权。全部开关见 `.env.example`。改名过渡期旧名放 `MSTD_BOT_ALIASES`（双名命中点名）。静态 `MSTD_INTERNAL_TOKEN` 已废弃——内部通道 token 按 Pi 进程签发/吊销，不可手填。
 
 **人格生效延迟**：SOUL/persona 提示词每个 Pi 进程只在拉起时读一次——改 SOUL.md 后，正在服务的会话要等该 Pi 回收（闲置默认 10min）后下次拉起才生效；急切换就重启 daemon。
 
@@ -64,13 +80,15 @@ node server/index.mjs                    # 缺关键 env 会 fail-fast 打印全
 
 - **模型永远不可信**：写动作形状由服务端 `buildAgentAction` canonical 化 + hash；卡片 JSON 结构模型碰不到；记忆写入过注入扫描。
 - **四道锁**：意图校验 → canonical+hash → approval token（绑发起人、TTL 30min、一次性）→ 操作人/令牌/hash 三校验后才执行；执行带 dry-run 与幂等 key（sha256 32hex，飞书 client_token 限长）。
-- **写目标白名单**：`server/execute/write-target.mjs` fail-closed；测试期只允许 test org 白名单目标。
+- **写目标白名单**：`server/execute/write-target.mjs` fail-closed；测试期只允许 test org 白名单目标。`complete_task` 只接受精确命中 `MSTD_TEST_TASK_GUIDS` 的飞书全局任务 GUID。
+- **会议任务通知**：`MSTD_MEETING_TASK_NOTIFICATION_MODE=card` 时，确认卡只选择一次负责人；任务创建成功后才向同一 `MSTD_TEST_OPEN_IDS` 用户发送固定“任务通知”私聊卡。通知失败不会重建已成功任务，重试只补发通知。验证飞书任务系统通知体验后可切为 `feishu_system`（只建任务、零机器人私聊），或以 `none` 回退关闭；模式切换只影响新建 job，历史 job 按已落库 actions 收口。
 - 改动 `server/safety/` `server/execute/` 后必须全量回归：`npx vitest run`。
 
 ## 测试
 
 ```bash
 npx vitest run                      # 全量单测（不出网;必须在 mstd-orchestrator 目录跑,仓库根会扫出 ui/bid-browse 假失败）
+npm run policy:eval                 # 可重复本地 synthetic 安全/可用性评测；只代表 fixture，真机评测仍 pending
 bash scripts/e2e-serial.sh          # 发布仪式:五套真机 E2E 串行 + JSON 统计门禁(passed>0 且无 failed/pending/todo,skip 假绿现形)
 cd ../mstd-ui && npx vitest run     # UI 测试
 ```
@@ -87,6 +105,8 @@ cd ../mstd-ui && npx vitest run     # UI 测试
 - 新群接入 SOP、写闸逐步放开、dreaming shadow→apply 切换、告警响应：见 `../docs/superpowers/runbooks/agent-rollout.md`。
 - 观察期：群策略 `observe_only` 判定照跑只落 `observe_log` 不出站，周一 09:00 DM 管理员信噪报告。
 - 模型链路可观测：降级/重试/全链耗尽/预算命中/出站重试落 `model_log` 表（caller/brain/outbound 的 onEvent + budget onExceed，落库 fail-safe 不反噬主链路）；调试台看板「模型链路事件」或 `GET /api/admin/model-log?kind=` 查询。
+- 安全/可用性评测：`test/fixtures/policy-eval-v1.json` 是版本化 synthetic corpus，`npm run policy:eval` 输出正常只读硬拒绝率、不必要 step-up 率、安全 fallback 率、case mismatch 数、`sensitive_bytes_out` 与本地 p95 延迟。门禁会从 `expected/result` 重算每个 case，字段缺失、伪造 `pass`、敌意 case 未 hard reject 均 fail-closed；通过仅表示 synthetic fixture gate，真机/生产评测明确为 pending。`prompt-guard-shadow` 是可注入、可选的 shadow adapter，缺 classifier 只报 `skipped`，不下载模型、不装 Python 依赖、绝不参与 hard block（中文亦未校准）。
+- 外部上下文统一经 `mstd.context-envelope.v1`：生产默认 `MSTD_CONTEXT_ENVELOPE_MODE=enforce`，HMAC 绑定内容、来源、scope、敏感级别和 parent provenance；非 canonical 数组、accessor/Proxy、签名或 hash 漂移在 Pi 拉起前拒绝。仅迁移诊断可显式 `shadow`，其验证/遥测不得改变 legacy context 正文。
 - lark-cli 真机硬约束（单事件/stdin 保活/扁平 NDJSON/mentions 缺失靠 botName 文本匹配）：见 spec §Phase A。
 - SQLite 方言例外（Postgres 迁移时需替换）：FTS5 全文检索（另换全文索引方案）；`store.recent`
   同 ts 用 rowid 定序（uuid 主键排序随机，Postgres 用自增序列替代 rowid）。

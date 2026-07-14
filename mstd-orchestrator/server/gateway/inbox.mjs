@@ -3,6 +3,8 @@ import { normalizeIncoming } from "./normalize.mjs";
 
 export function createInbox(db, { botOpenId, botName = "", botNames = null, normalizer = normalizeIncoming, log = console.error }) {
   const names = botNames ?? (botName ? [botName] : []);
+  const inboxCols = new Set(db.prepare("PRAGMA table_info(inbox_events)").all().map((c) => c.name));
+  const hasPlatformCols = inboxCols.has("platform_message_id");
 
   // C2：mention 检测与文本替换同源（normalize.mjs 单趟 replace）。
   // normalizer 异常时 content 回退原文，mentionsBot 只信结构化 bot open_id——
@@ -42,7 +44,10 @@ export function createInbox(db, { botOpenId, botName = "", botNames = null, norm
         chatType: m.chat_type,                    // p2p | group
         senderOpenId: raw.event.sender.sender_id?.open_id ?? null,
         senderType: raw.event.sender.sender_type ?? "user",   // user | app（bot 消息无 open_id）
+        senderAppId: raw.event.sender.sender_id?.app_id ?? raw.event.sender?.app_id ?? null,
         senderName: raw.event.sender.sender_id?.name ?? null,
+        platformMessageId: m.message_id ?? null,
+        source: "feishu",
         content,
         rawContent: text,
         mentionsBot,
@@ -73,7 +78,10 @@ export function createInbox(db, { botOpenId, botName = "", botNames = null, norm
         chatType: raw.chat_type,
         senderOpenId: raw.sender_id ?? null,
         senderType: raw.sender_type ?? (raw.sender_id ? "user" : "app"),
+        senderAppId: raw.sender_app_id ?? raw.app_id ?? null,
         senderName: raw.sender_name ?? null,
+        platformMessageId: raw.message_id ?? null,
+        source: raw.source === "simulator" ? "simulator" : "feishu",
         content,
         rawContent: text,
         mentionsBot,
@@ -90,10 +98,12 @@ export function createInbox(db, { botOpenId, botName = "", botNames = null, norm
     return null;
   }
 
-  // 去重指纹用规范化前原文：不同原文（纯文本 @ vs 结构化 @）规范化后可能塌缩成同一
-  // token，不能因此误判重复丢消息；raw 语义与 C2 改造前逐字节一致
+  // 去重指纹用规范化前原文 + 发送方身份：
+  // - 身份键优先 open_id，否则 app_id（bot），再否则空串
+  // - 不同 bot 同正文不得互判重；不同原文规范化塌缩后也不得误丢
+  const senderIdentity = (evt) => evt.senderOpenId ?? evt.senderAppId ?? "";
   const md5 = (evt) => createHash("md5")
-    .update(`${evt.chatId ?? ""}|${evt.senderOpenId ?? ""}|${evt.rawContent ?? evt.content ?? ""}`).digest("hex");
+    .update(`${evt.chatId ?? ""}|${senderIdentity(evt)}|${evt.rawContent ?? evt.content ?? ""}`).digest("hex");
 
   function isDuplicate(evt, now = Date.now()) {
     if (db.prepare("SELECT 1 FROM inbox_events WHERE event_id = ?").get(evt.eventId)) return true;
@@ -103,16 +113,40 @@ export function createInbox(db, { botOpenId, botName = "", botNames = null, norm
     ).get(evt.chatId, md5(evt), now - 60_000);
   }
 
-  function markSeen(evt, now = Date.now()) {
-    db.prepare(
-      "INSERT INTO inbox_events (event_id, chat_id, content_md5, raw_content, ts) VALUES (?, ?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING"
-    ).run(
-      evt.eventId,
-      evt.chatId ?? null,
-      evt.kind === "message" ? md5(evt) : null,
-      evt.kind === "message" ? evt.rawContent ?? null : null,
-      now
-    );
+  function markSeen(evt, now = Date.now(), { sensitive = false } = {}) {
+    const raw = evt.kind === "message" ? evt.rawContent ?? "" : "";
+    const rawSha256 = evt.kind === "message"
+      ? createHash("sha256").update(raw).digest("hex")
+      : null;
+    if (hasPlatformCols) {
+      db.prepare(
+        `INSERT INTO inbox_events (event_id, chat_id, content_md5, raw_content, raw_sha256, ts,
+           platform_message_id, sender_app_id, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING`
+      ).run(
+        evt.eventId,
+        evt.chatId ?? null,
+        evt.kind === "message" ? md5(evt) : null,
+        evt.kind === "message" && !sensitive ? evt.rawContent ?? null : null,
+        rawSha256,
+        now,
+        evt.platformMessageId ?? null,
+        evt.senderAppId ?? null,
+        evt.source ?? "feishu"
+      );
+    } else {
+      db.prepare(
+        `INSERT INTO inbox_events (event_id, chat_id, content_md5, raw_content, raw_sha256, ts)
+         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING`
+      ).run(
+        evt.eventId,
+        evt.chatId ?? null,
+        evt.kind === "message" ? md5(evt) : null,
+        evt.kind === "message" && !sensitive ? evt.rawContent ?? null : null,
+        rawSha256,
+        now
+      );
+    }
   }
 
   function recordVerdict(eventId, verdict) {

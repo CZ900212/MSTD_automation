@@ -4,6 +4,14 @@
 
 **Goal:** 建立“导演脚本 + 3 个真机器人身份 + 自动阅卷”测试系统，持续评测小达的飞书真机链路、路由准确率、响应性能和安全边界。
 
+> **Review amendments (2026-07-14 审核合入):**
+> 1. `gateway_turn_trace` 使用中性列名 `decision_*` + `pipeline`，不绑死 triage 词汇。
+> 2. 迁移编号实施时取下一个空号（本仓落地为 018）；与应答机计划互不抢号。
+> 3. `senderType=simulator` 按 user 语义走 mention/群 policy；场景与 admit 测试覆盖 @/未@。
+> 4. `observeAgentEvent` 对 modelLog/turnTrace 分别 try/catch。
+> 5. C 入口拒绝 `X-Forwarded-For`；演员 bot 仅 `im:message:send`、不配事件权限。
+> 6. 全局顺序：模拟器 1–3 → C 基线 → 应答机迁移 shadow 用场景库 → v2 标签切换。
+
 **Architecture:** 导演运行在 `mstd-orchestrator` 进程之外，负责剧本、人格、限速和停止条件；投递层按 P0 探路结果选择 A（真 bot）为真机主力、C（受限合成事件）为日常回归、B（user token）为兜底。小达仍复用唯一事件 consumer、现有 gateway/session actor/审批链和 SQLite 可观测数据，不启动第二个 consumer，不绕过写确认。
 
 **Tech Stack:** Node.js 22、ESM、lark-cli、Express、better-sqlite3、Vitest、YAML、现有 MSTD gateway/model_log/Action DSL/确认卡链路。

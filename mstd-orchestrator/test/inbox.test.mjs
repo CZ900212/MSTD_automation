@@ -40,6 +40,7 @@ describe("inbox", () => {
     expect(evt).toMatchObject({
       eventId: "93f54e90", kind: "message", chatId: "oc_11b7", chatType: "p2p",
       senderOpenId: "ou_aca75", senderType: "user", content: "事件形状探测",
+      platformMessageId: "om_x1", source: "feishu",
       mentionsBot: false, ts: 1783594347617,
     });
     const group = inbox.normalize({
@@ -67,6 +68,54 @@ describe("inbox", () => {
     const e2 = inbox.normalize(rawMsg({ eventId: "ev2" }));
     expect(inbox.isDuplicate(e2, 30_000)).toBe(true);                      // 同内容 60s 窗口
     expect(inbox.isDuplicate(inbox.normalize(rawMsg({ eventId: "ev3" })), 120_000)).toBe(false);
+  });
+
+  it("官方信封贯穿 platformMessageId 与 senderAppId", () => {
+    const inbox = createInbox(freshDb(), { botOpenId: "ou_bot" });
+    const evt = inbox.normalize({
+      header: { event_id: "ev_app", event_type: "im.message.receive_v1" },
+      event: {
+        sender: {
+          sender_type: "app",
+          sender_id: { app_id: "cli_sim_product", name: "林夕" },
+        },
+        message: {
+          message_id: "om_actor_1",
+          chat_id: "oc_1", chat_type: "group", message_type: "text",
+          content: JSON.stringify({ text: "你好" }),
+          mentions: [],
+          create_time: "1720000000000",
+        },
+      },
+    });
+    expect(evt).toMatchObject({
+      platformMessageId: "om_actor_1",
+      senderType: "app",
+      senderAppId: "cli_sim_product",
+      source: "feishu",
+    });
+  });
+
+  it("同正文不同 senderAppId 不互判重", () => {
+    const db = freshDb();
+    const inbox = createInbox(db, { botOpenId: "ou_bot" });
+    const a = {
+      eventId: "ea", kind: "message", chatId: "oc_1",
+      senderOpenId: null, senderAppId: "cli_a",
+      rawContent: "同样的话", content: "同样的话",
+    };
+    const b = {
+      eventId: "eb", kind: "message", chatId: "oc_1",
+      senderOpenId: null, senderAppId: "cli_b",
+      rawContent: "同样的话", content: "同样的话",
+    };
+    expect(inbox.isDuplicate(a, 1000)).toBe(false);
+    inbox.markSeen(a, 1000);
+    expect(inbox.isDuplicate(b, 2000)).toBe(false);
+    inbox.markSeen(b, 2000);
+    const apps = db.prepare("SELECT sender_app_id FROM inbox_events ORDER BY event_id").all()
+      .map((r) => r.sender_app_id);
+    expect(apps).toEqual(["cli_a", "cli_b"]);
   });
 });
 

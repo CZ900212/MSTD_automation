@@ -22,6 +22,50 @@ describe("admit", () => {
     // 真机形状：bot 消息 sender_type=app 且无 open_id
     expect(admit.admit(evt({ senderOpenId: null, senderType: "app" }))).toEqual({ ok: false, reason: "self_echo" });
   });
+
+  it("simulator 白名单：仅启用+测试群+受信 app 放行；simulator 类型按 user 语义", () => {
+    const sim = {
+      enabled: true,
+      chatIds: new Set(["oc_test"]),
+      actors: new Map([["cli_sim_product", "lin_xi"]]),
+    };
+    const admitSim = createAdmit(db, { botOpenId: "ou_bot", simulator: sim });
+
+    // 未知 app
+    expect(admitSim.admit(evt({
+      senderOpenId: null, senderType: "app", senderAppId: "cli_unknown", chatId: "oc_test", mentionsBot: true,
+    }))).toEqual({ ok: false, reason: "self_echo" });
+
+    // 白名单 app 但非测试群
+    expect(admitSim.admit(evt({
+      senderOpenId: null, senderType: "app", senderAppId: "cli_sim_product", chatId: "oc_other", mentionsBot: true,
+    }))).toEqual({ ok: false, reason: "self_echo" });
+
+    // 白名单 + 测试群 + @ → addressed
+    expect(admitSim.admit(evt({
+      senderOpenId: null, senderType: "app", senderAppId: "cli_sim_product", chatId: "oc_test", mentionsBot: true,
+    }))).toEqual({ ok: true, mode: "addressed" });
+
+    // 白名单 + 测试群 + 未 @ → observe
+    expect(admitSim.admit(evt({
+      senderOpenId: null, senderType: "app", senderAppId: "cli_sim_product", chatId: "oc_test", mentionsBot: false,
+    }))).toEqual({ ok: false, reason: "bot_not_mentioned_observe" });
+
+    // C 模式 senderType=simulator：@ 小达 → addressed
+    expect(admitSim.admit(evt({
+      senderOpenId: "sim_lin_xi", senderType: "simulator", chatId: "oc_test", mentionsBot: true, content: "@小达 在吗",
+    }))).toEqual({ ok: true, mode: "addressed" });
+
+    // C 模式未 @ → 按群 policy
+    expect(admitSim.admit(evt({
+      senderOpenId: "sim_zhou_yan", senderType: "simulator", chatId: "oc_test", mentionsBot: false,
+    }))).toEqual({ ok: false, reason: "bot_not_mentioned_observe" });
+
+    // simulator 类型但不在白名单群
+    expect(admitSim.admit(evt({
+      senderOpenId: "sim_lin_xi", senderType: "simulator", chatId: "oc_other", mentionsBot: true,
+    }))).toEqual({ ok: false, reason: "simulator_chat_not_allowed" });
+  });
   it("群默认 mention_only：@ 了 addressed，没 @ 存 observed", () => {
     expect(admit.admit(evt({ mentionsBot: true }))).toEqual({ ok: true, mode: "addressed" });
     expect(admit.admit(evt())).toEqual({ ok: false, reason: "bot_not_mentioned_observe" });

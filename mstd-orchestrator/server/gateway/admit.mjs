@@ -1,10 +1,39 @@
-export function createAdmit(db, { botOpenId }) {
+export function createAdmit(db, { botOpenId, simulator = null } = {}) {
   const getPolicy = db.prepare("SELECT policy FROM group_policies WHERE chat_id = ?");
+
+  function isTrustedSimulatorApp(evt) {
+    if (!simulator?.enabled) return false;
+    if (evt.senderType !== "app") return false;
+    if (!evt.senderAppId) return false;
+    if (!simulator.chatIds?.has?.(evt.chatId)) return false;
+    return simulator.actors?.has?.(evt.senderAppId) === true;
+  }
+
+  /**
+   * senderType=simulator is server-synthesized C-mode traffic.
+   * Treat as user semantics for mention/group policy (never self_echo).
+   */
+  function isSimulatorSynthetic(evt) {
+    return evt.senderType === "simulator";
+  }
+
   function admit(evt) {
     if (evt.kind !== "message") return { ok: false, reason: "unknown_kind" };
-    // bot 自身消息 sender_type=app 且无 open_id（真机验证），两条判据都挡
-    if (evt.senderType === "app") return { ok: false, reason: "self_echo" };
+
+    // bot 自身消息 sender_type=app 且无 open_id（真机验证），默认挡；
+    // 仅当 simulator 启用 + 白名单 app + 测试群 才放行真 bot 演员。
+    if (evt.senderType === "app" && !isTrustedSimulatorApp(evt)) {
+      return { ok: false, reason: "self_echo" };
+    }
     if (evt.senderOpenId === botOpenId) return { ok: false, reason: "self_echo" };
+
+    // C 模式合成消息：必须落在 simulator chat 白名单（防配置漂移）
+    if (isSimulatorSynthetic(evt)) {
+      if (!simulator?.enabled || !simulator.chatIds?.has?.(evt.chatId)) {
+        return { ok: false, reason: "simulator_chat_not_allowed" };
+      }
+    }
+
     if (!evt.content?.trim()) return { ok: false, reason: "empty_content" };
     if (evt.chatType === "p2p") return { ok: true, mode: "addressed" };
 

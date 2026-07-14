@@ -65,6 +65,8 @@ import { createVerbatimGuard } from "./safety/verbatim-guard.mjs";
 import { createLarkReadEgressSource } from "./safety/lark-read-egress-source.mjs";
 import { createProactiveLimiter } from "./gateway/rate-limit.mjs";
 import { createObserveReport } from "./gateway/observe-report.mjs";
+import { createTurnTrace } from "./gateway/turn-trace.mjs";
+import { loadSimulatorConfig } from "./simulator/config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // 注意：loadServerConfig 里的 sessionSecret() 缺配时会往 process.env 写临时密钥，先记录原始状态
@@ -188,6 +190,8 @@ if (config.enableTrigger && config.larkProfile) {
 
 let internal = null;
 let adminDeps = null;
+let gatewayHandle = null;
+let simulatorConfigForApp = null;
 if (config.enableAgent && config.botOpenId) {
   // C1:SOUL fail-fast——只 stat 不读(内容由每个 Pi 进程的 persona hook 读一次)
   const soulPath = join(process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory"), "SOUL.md");
@@ -216,7 +220,19 @@ if (config.enableAgent && config.botOpenId) {
   const activeTurnInitiators = activeTurnRegistry.initiators;
   const actors = createActorPool();
   const modelLog = createModelLog(db);   // 模型链路可观测：降级/重试/预算命中落库，调试台消费
-  const caller = createModelCaller({ env: process.env, onEvent: modelLog.record });
+  const turnTrace = createTurnTrace(db, {
+    pipeline: config.agentArchitectureMode === "legacy" ? "legacy" : "responder",
+  });
+  // 统一事件 sink：任一 sink 抛错不得影响另一个，也不得打断业务链路
+  const observeAgentEvent = (event) => {
+    try { modelLog.record(event); } catch (e) {
+      console.error(`[mstd] modelLog.record failed: ${e?.message ?? e}`);
+    }
+    try { turnTrace.record(event); } catch (e) {
+      console.error(`[mstd] turnTrace.record failed: ${e?.message ?? e}`);
+    }
+  };
+  const caller = createModelCaller({ env: process.env, onEvent: observeAgentEvent });
   const agentStore = createSessionStore(db);
   const alert = config.alertOpenId && bootLark ? makeDmAlert({ runLark: bootLark, openId: config.alertOpenId }) : null;
   const budget = createBudget(db, {
@@ -259,7 +275,7 @@ if (config.enableAgent && config.botOpenId) {
       // lark_read 会话域门禁：席位私有 op（邮件/妙记）只对独立配置的数据 owner 私聊放行
       ...(config.privateDataOwnerOpenId ? { MSTD_PRIVATE_DATA_OWNER_OPEN_ID: config.privateDataOwnerOpenId } : {}),
     },
-    onEvent: modelLog.record,
+    onEvent: observeAgentEvent,
     tokens: sessionTokens,
     activeTurnInitiators,
     activeBrainTurns,
@@ -268,7 +284,7 @@ if (config.enableAgent && config.botOpenId) {
     contextMode: config.contextEnvelopeMode,
     contextSigner,
   });
-  const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: modelLog.record });
+  const outbound = createOutbound({ runLark: makeRunLark({ profile: config.larkProfile }), onEvent: observeAgentEvent });
   // C0.4：reply.target 投递授权表（默认只许本会话;cron 执行窗口临时 grant）
   const deliverGrants = createDeliverGrants();
   // 5d：先建出站流水线（渲染→egress→唯一物理出口），再建入站回合执行器
@@ -283,7 +299,7 @@ if (config.enableAgent && config.botOpenId) {
     replyEgress,
     verbatimGuard,
     activeBrainTurns,
-    onEvent: modelLog.record,
+    onEvent: observeAgentEvent,
   });
   const turnHandler = createTurnHandler({
     triage,
@@ -301,7 +317,7 @@ if (config.enableAgent && config.botOpenId) {
     limiter: createProactiveLimiter(db),
     db,
     onEvent: (e) => {
-      modelLog.record(e);
+      observeAgentEvent(e);
       if (e.type === "triage") {
         console.error(`[agent] triage session=${e.sessionKey} action=${e.action} source=${e.sourceAction} provider=${e.provider} guard=${e.guard ?? "none"} latency_ms=${e.latencyMs}`);
       }
@@ -368,14 +384,22 @@ if (config.enableAgent && config.botOpenId) {
     egressSource: createLarkReadEgressSource({
       verbatimGuard,
       replyEgress,
-      onEvent: modelLog.record,
+      onEvent: observeAgentEvent,
     }),
   };
-  wireGateway({
+  try {
+    simulatorConfigForApp = loadSimulatorConfig(process.env, config);
+  } catch (e) {
+    console.error(`[mstd] 致命：simulator 配置非法——${e?.message ?? e}`);
+    process.exit(1);
+  }
+  gatewayHandle = wireGateway({
     db,
-    config: { ...config, larkCliPath: DEFAULT_LARK_CLI },
+    config: { ...config, larkCliPath: DEFAULT_LARK_CLI, simulator: simulatorConfigForApp },
     spawnFn: spawn,
     actors,
+    turnTrace,
+    simulator: simulatorConfigForApp,
     handleTurn: (turn) => {
       console.error(`[agent] turn kind=${turn.kind} session=${turn.sessionKey ?? "-"} mode=${turn.mode ?? "-"} items=${turn.items?.length ?? 0}`);
       if (turn.kind === "card_action") {
@@ -491,6 +515,8 @@ const app = createApp({
   piCwd: ROOT,
   launcher,
   larkHealth,
+  simulator: simulatorConfigForApp,
+  ingestNormalized: gatewayHandle?.ingestNormalized ?? null,
 });
 
 const port = config.port;

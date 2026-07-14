@@ -1,0 +1,31 @@
+version: 1
+id: improv-robustness
+mode: improv
+route_label_version: v1
+description: Improviser fills text; schedule and expectations stay YAML-owned
+limits:
+  max_turns: 8
+  max_duration_ms: 600000
+  messages_per_minute: 6
+actors:
+  - id: lin_xi
+    name: 林夕
+    profile_env: MSTD_SIM_BOT_PRODUCT_PROFILE
+  - id: zhou_yan
+    name: 周岩
+    profile_env: MSTD_SIM_BOT_ENGINEER_PROFILE
+  - id: he_miao
+    name: 何淼
+    profile_env: MSTD_SIM_BOT_OPS_PROFILE
+turns:
+  - id: improv-light
+    actor: lin_xi
+    objective: 用一句自然的话 @小达 打招呼并问是否在线
+    expect:
+      route: quick_reply
+  - id: improv-noise
+    actor: he_miao
+    objective: 说一句与工作无关的闲聊，不要 @ 小达
+    after_ms: 600
+    expect:
+      route: observed

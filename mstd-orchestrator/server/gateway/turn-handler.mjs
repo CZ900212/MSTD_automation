@@ -37,6 +37,9 @@ export function createTurnHandler({
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
 } = {}) {
+  if (typeof store?.promptRecent !== "function") {
+    throw new Error("createTurnHandler: store.promptRecent 安全接口必填");
+  }
   const pipeline = replyPipeline ?? createReplyPipeline({
     outbound, store, budget, renderReply, caller, soul, snapshotFn,
     grants, replyEgress, verbatimGuard, activeBrainTurns, onEvent, log,
@@ -68,9 +71,9 @@ export function createTurnHandler({
     return items.map((it) => `[${it.senderName ?? it.senderOpenId ?? "用户"}]: ${it.content}`).join("\n");
   }
 
-  function beginBusinessTurn(sessionKey) {
+  function beginBusinessTurn(sessionKey, emitEvent = onEvent) {
     const turn = receipts.begin({ sessionKey, purpose: "business", expectsReply: true });
-    onEvent({ type: "business_turn_admitted", sessionKey, turnId: turn.turnId, purpose: turn.purpose });
+    emitEvent({ type: "business_turn_admitted", sessionKey, turnId: turn.turnId, purpose: turn.purpose });
     return turn;
   }
 
@@ -139,10 +142,18 @@ export function createTurnHandler({
   }
 
   async function handleTurn(turn) {
-    const { kind, session, sessionKey, items, mode } = turn;
+    const { kind, session, sessionKey, items, mode, traceId = null } = turn;
+    // Bind traceId for this turn so model_log + turn_trace share the same key.
+    const emitEvent = (event) => {
+      if (traceId && event && typeof event === "object" && !event.traceId) {
+        onEvent({ ...event, traceId });
+      } else {
+        onEvent(event);
+      }
+    };
     if (kind !== "message") {
       // card_action / minutes：Phase D/E 接缝
-      return onEvent({ type: "unhandled_kind", kind, turn });
+      return emitEvent({ type: "unhandled_kind", kind, turn });
     }
 
     if (!budget.allow(sessionKey).ok) {
@@ -154,14 +165,14 @@ export function createTurnHandler({
     // 门控第 0 层（规则）：ambient 先过限额，不过直接 observed 落库（零模型成本）
     if (mode === "ambient" && limiter && session.chat_id && !limiter.allow(session.chat_id, Date.now())) {
       appendItems(session.id, items, { observed: true });
-      onEvent({ type: "rate_limited", sessionKey });
+      emitEvent({ type: "rate_limited", sessionKey });
       return;
     }
 
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
     const triageStartedAt = Date.now();
     const verdict = await triage.triage({ session, items, mode, snapshot, brainBusy: brain.isBusy(sessionKey) });
-    onEvent({
+    emitEvent({
       type: "triage",
       sessionKey,
       verdict,
@@ -184,12 +195,13 @@ export function createTurnHandler({
         db.prepare("INSERT INTO observe_log (id, chat_id, action, text, ts) VALUES (?, ?, ?, ?, ?)")
           .run(randomUUID(), session.chat_id, verdict.action, verdict.text ?? verdict.brief ?? null, Date.now());
       }
-      onEvent({ type: "observe_only", sessionKey, verdict });
+      emitEvent({ type: "observe_only", sessionKey, verdict });
       return;
     }
 
     if (verdict.action === "no_reply") {
       appendItems(session.id, items, { observed: true });
+      emitEvent({ type: "no_reply", sessionKey, action: "no_reply" });
       return;
     }
 
@@ -205,7 +217,7 @@ export function createTurnHandler({
     let windowBlock = "";
     if ((verdict.action === "escalate" || verdict.action === "steer")
       && mode === "addressed" && sessionKey.startsWith("feishu:group:")) {
-      const win = store.recent(session.id, { limit: 30, roles: ["user", "assistant"] });
+      const win = store.promptRecent(session.id, { limit: 30, roles: ["user", "assistant"] });
       if (win.length) {
         windowBlock = win.map((m) =>
           `${HHMM.format(new Date(m.ts))} [${whoLabel(m, { fallback: "群成员" })}]: ${m.content}`
@@ -215,20 +227,21 @@ export function createTurnHandler({
     appendItems(session.id, items);
 
     if (verdict.action === "quick_reply") {
-      await sendAndRecord(sessionKey, session.id, verdict.text);
+      const { messageId } = await sendAndRecord(sessionKey, session.id, verdict.text);
       journal?.recordTurn({ sessionKey, sessionTitle: session.title, items, replyText: verdict.text });
+      emitEvent({ type: "quick_reply_sent", sessionKey, messageId, action: "quick_reply" });
       return;
     }
 
     // escalate（或 steer 但中枢已空闲 → 当 escalate 跑）进入 daemon-owned business turn。
     // ACK 只是该 turn 的非终态 effect；只有正式 reply / 安全 fallback / daemon fallback 才能收口。
-    const businessTurn = beginBusinessTurn(sessionKey);
+    const businessTurn = beginBusinessTurn(sessionKey, emitEvent);
     if (verdict.ack?.trim()) {
       try {
         const ackText = verdict.ack.trim();
         const { messageId } = await sendAndRecord(sessionKey, session.id, ackText);
         receipts.recordAck(businessTurn, { messageId });
-        onEvent({ type: "business_turn_ack", sessionKey, turnId: businessTurn.turnId, messageId, terminal: false });
+        emitEvent({ type: "business_turn_ack", sessionKey, turnId: businessTurn.turnId, messageId, terminal: false });
       } catch (e) {
         log(`[turn] ack 出站失败 session=${sessionKey}: ${e?.message ?? e}`); // ack 失败不阻断慢机
       }
@@ -252,11 +265,22 @@ export function createTurnHandler({
         initiatorOpenId: turn.initiatorOpenId ?? null,
       });
       turnLifecycle = result.turnLifecycle ?? null;
-      for (const e of result.events ?? []) onEvent({ type: "brain_event", sessionKey, turnId: businessTurn.turnId, event: e });
+      for (const e of result.events ?? []) emitEvent({ type: "brain_event", sessionKey, turnId: businessTurn.turnId, event: e });
       // finalText 只落库为内部记录（role=tool），绝不出站或充当终态回执。
       if (result.finalText) {
         try {
-          store.append(session.id, { role: "tool", content: `[中枢内部结论] ${result.finalText.slice(0, 2000)}`, ts: Date.now() });
+          store.append(session.id, {
+            role: "tool",
+            content: `[中枢内部结论] ${result.finalText.slice(0, 2000)}`,
+            ts: Date.now(),
+            policy: {
+              replayable: false,
+              promptEligible: false,
+              memoryEligible: false,
+              securityLabel: "internal",
+              provenance: "tool_internal",
+            },
+          });
         } catch (error) {
           log(`[turn] 中枢内部结论落库失败 session=${sessionKey}: ${error?.message ?? error}`);
         }
@@ -267,12 +291,12 @@ export function createTurnHandler({
       brainError = e;
       turnLifecycle = e?.turnLifecycle ?? turnLifecycle;
       log(`[turn] brain 回合失败 session=${sessionKey}: ${e?.message ?? e}`);
-      onEvent({ type: "brain_error", sessionKey, turnId: businessTurn.turnId, error: String(e?.message ?? e) });
+      emitEvent({ type: "brain_error", sessionKey, turnId: businessTurn.turnId, error: String(e?.message ?? e) });
       try {
         receipt = await terminalizeBusinessTurn(businessTurn, session, turnLifecycle);
       } catch (terminalizeError) {
         log(`[turn] 终态化失败 session=${sessionKey}: ${terminalizeError?.message ?? terminalizeError}`);
-        onEvent({
+        emitEvent({
           type: "business_turn_terminalize_failed",
           sessionKey,
           turnId: businessTurn.turnId,
@@ -289,7 +313,7 @@ export function createTurnHandler({
       // 无论是否终态化成功都必须释放槽位：没有任何重试消费者，留 active 即永久卡死本会话
       // （后续消息在 begin() 同步抛错并被 actor 队列静默吞掉）。
       if (receipt?.state !== "terminal") {
-        onEvent({ type: "business_turn_abandoned", sessionKey, turnId: businessTurn.turnId });
+        emitEvent({ type: "business_turn_abandoned", sessionKey, turnId: businessTurn.turnId });
       }
       receipts.clear(businessTurn);
     }
@@ -309,7 +333,7 @@ export function createTurnHandler({
         store.claimMemoryNudge(session.id, { point: nudgePoint });
       } catch (e) {
         log(`[turn] memory maintenance 失败 session=${sessionKey}: ${e?.message ?? e}`);
-        onEvent({ type: "memory_maintenance_error", sessionKey, error: String(e?.message ?? e) });
+        emitEvent({ type: "memory_maintenance_error", sessionKey, error: String(e?.message ?? e) });
       }
     }
     if (compactor) {
@@ -317,7 +341,7 @@ export function createTurnHandler({
         await compactor.maybeCompact({ session, sessionKey, brain, snapshot });
       } catch (e) {
         log(`[turn] compact 失败 session=${sessionKey}: ${e?.message ?? e}`);
-        onEvent({ type: "compact_error", sessionKey, error: String(e?.message ?? e) });
+        emitEvent({ type: "compact_error", sessionKey, error: String(e?.message ?? e) });
       }
     }
     // 批次 C taint→recycle：resident 本回合（epoch）看过席位私有数据，业务回合收口后
@@ -325,7 +349,7 @@ export function createTurnHandler({
     // 源 shingle 保留（server-owned 已读记录）：重生 Pi 经重放拿到旧内容照样受逐字守卫约束。
     if (replyEgress?.isTainted?.(sessionKey)) {
       const reasons = replyEgress.taintReasons?.(sessionKey) ?? [];
-      onEvent({ type: "resident_taint_recycle", sessionKey, reasons });
+      emitEvent({ type: "resident_taint_recycle", sessionKey, reasons });
       brain.recycle?.(sessionKey);
     }
     return { turnId: businessTurn.turnId, receipt };

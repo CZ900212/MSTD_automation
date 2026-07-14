@@ -1,0 +1,95 @@
+import { describe, it, expect } from "vitest";
+import { openDb, migrate } from "../server/db/index.mjs";
+import { createTurnTrace } from "../server/gateway/turn-trace.mjs";
+
+describe("createTurnTrace", () => {
+  it("freezes input IDs and updates decision/ack/terminal on same row", () => {
+    const db = openDb();
+    migrate(db);
+    let t = 1000;
+    const trace = createTurnTrace(db, { now: () => t });
+    const { traceId } = trace.beginBatch({
+      sessionKey: "feishu:group:oc_1",
+      mode: "addressed",
+      source: "simulator",
+      items: [
+        { eventId: "e1", platformMessageId: "om_1", ts: 900 },
+        { eventId: "e2", platformMessageId: "om_2", ts: 950 },
+      ],
+      flushedAt: 1000,
+    });
+    trace.linkInboxEvents(traceId, ["e1", "e2"]);
+
+    const row0 = trace.byTraceId(traceId);
+    expect(row0.inputEventIds).toEqual(["e1", "e2"]);
+    expect(row0.inputMessageIds).toEqual(["om_1", "om_2"]);
+    expect(row0.pipeline).toBe("legacy");
+
+    t = 1120;
+    trace.record({
+      type: "triage",
+      traceId,
+      action: "escalate",
+      sourceAction: "escalate",
+      guard: null,
+      provider: "deepseek",
+      latencyMs: 120,
+    });
+    expect(trace.byTraceId(traceId).decision_action).toBe("escalate");
+    expect(trace.byTraceId(traceId).decision_latency_ms).toBe(120);
+
+    t = 1200;
+    trace.record({ type: "business_turn_admitted", traceId, turnId: "turn-1" });
+    t = 1250;
+    trace.record({ type: "business_turn_ack", turnId: "turn-1", messageId: "om_ack" });
+    t = 2000;
+    trace.record({
+      type: "business_turn_terminal",
+      turnId: "turn-1",
+      messageId: "om_final",
+      outcome: "formal_reply_sent",
+    });
+
+    const final = trace.byTraceId(traceId);
+    expect(final.business_turn_id).toBe("turn-1");
+    expect(final.ack_message_id).toBe("om_ack");
+    expect(final.terminal_message_id).toBe("om_final");
+    expect(final.terminal_outcome).toBe("formal_reply_sent");
+    expect(final.status).toBe("terminal");
+
+    // Idempotent: second terminal does not overwrite message id
+    t = 3000;
+    trace.record({
+      type: "business_turn_terminal",
+      turnId: "turn-1",
+      messageId: "om_other",
+      outcome: "other",
+    });
+    expect(trace.byTraceId(traceId).terminal_message_id).toBe("om_final");
+
+    expect(trace.byMessageId("om_1")?.trace_id).toBe(traceId);
+  });
+
+  it("records quick_reply and no_reply terminal statuses", () => {
+    const db = openDb();
+    migrate(db);
+    const trace = createTurnTrace(db);
+    const { traceId } = trace.beginBatch({
+      sessionKey: "feishu:p2p:ou_a",
+      mode: "addressed",
+      items: [{ eventId: "q1", platformMessageId: "om_q", ts: 1 }],
+    });
+    trace.record({ type: "triage", traceId, action: "quick_reply", latencyMs: 10 });
+    trace.record({ type: "quick_reply_sent", traceId, messageId: "om_r" });
+    expect(trace.byTraceId(traceId).status).toBe("quick_reply");
+    expect(trace.byTraceId(traceId).terminal_message_id).toBe("om_r");
+
+    const { traceId: t2 } = trace.beginBatch({
+      sessionKey: "feishu:group:oc_x",
+      mode: "ambient",
+      items: [{ eventId: "n1", platformMessageId: "om_n", ts: 2 }],
+    });
+    trace.record({ type: "no_reply", traceId: t2 });
+    expect(trace.byTraceId(t2).status).toBe("no_reply");
+  });
+});
