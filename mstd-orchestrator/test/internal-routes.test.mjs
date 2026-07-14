@@ -203,9 +203,7 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
         ? { sessionKey: "feishu:p2p:ou_me", taskId: "task-real", residentKey: "resident-real", residentEpoch: 3 }
         : null,
     };
-    const app = express();
-    app.use(express.json());
-    mountInternalRoutes(app, {
+    const app = makeApp({
       tokens,
       handleReply: async (args) => { calls.push(args); return { ok: true }; },
       egressSource: {
