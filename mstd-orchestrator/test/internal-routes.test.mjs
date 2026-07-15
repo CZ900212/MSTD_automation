@@ -196,19 +196,46 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
     expect(seen[0]).toMatchObject({ sessionKey: "feishu:p2p:ou_me" });
   });
 
-  it("ignores forged body task_id/resident_key and uses token binding only", async () => {
+  it("ignores forged body task/run/resident identity and uses token binding only", async () => {
     const calls = [];
     const tokens = {
       resolveBinding: (t) => t === "tok"
-        ? { sessionKey: "feishu:p2p:ou_me", taskId: "task-real", residentKey: "resident-real", residentEpoch: 3 }
+        ? {
+          sessionKey: "feishu:p2p:ou_me",
+          taskId: "task-real",
+          runId: "run-real",
+          dispatchId: "dispatch-real",
+          residentKey: "resident-real",
+          residentEpoch: 3,
+          executionKey: "task:task-real",
+          turnId: "t1",
+          turnLease: "l1",
+        }
         : null,
     };
     const app = makeApp({
       tokens,
+      sessionVersionFor: (sessionKey) => sessionKey === "feishu:p2p:ou_me" ? 12 : null,
       handleReply: async (args) => { calls.push(args); return { ok: true }; },
       egressSource: {
         record: (args) => { calls.push(args); return { ok: true, shingles: 0, sensitivity: "restricted" }; },
       },
+      activeTurnInitiators: {
+        resolveAuthorized: (args) => {
+          calls.push({ authorized: args });
+          return args.runId === "run-real" ? "ou_real" : null;
+        },
+      },
+      activeBrainTurns: {
+        resolve: (_sessionKey, args) => ({
+          state: "active",
+          turnId: "t1",
+          residentEpoch: 3,
+          taskId: args.taskId,
+          runId: args.runId,
+        }),
+      },
+      proposeActions: (args) => { calls.push(args); return { ok: true, jobId: "proposal-1" }; },
       spawnBackground: (args) => { calls.push(args); return "job-1"; },
     });
     await request(app).post("/internal/reply")
@@ -216,20 +243,37 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
       .send({
         brief: "x",
         task_id: "forged-task",
+        run_id: "forged-run",
+        dispatch_id: "forged-dispatch",
         resident_key: "forged-resident",
-        turn_id: "t1",
-        turn_lease: "l1",
+        turn_id: "forged-turn",
+        turn_lease: "forged-lease",
       });
     await request(app).post("/internal/egress/source")
       .set("Authorization", "Bearer tok")
       .send({ op: "mail_list", text: "secret", resident_key: "forged", task_id: "forged" });
+    await request(app).post("/internal/propose-actions")
+      .set("Authorization", "Bearer tok")
+      .send({
+        title: "写",
+        intents: [],
+        task_id: "forged",
+        run_id: "forged",
+        dispatch_id: "forged",
+        turn_id: "t1",
+        turn_lease: "l1",
+      });
     await request(app).post("/internal/background")
       .set("Authorization", "Bearer tok")
-      .send({ kind: "x", brief: "y", task_id: "forged" });
+      .send({ kind: "x", brief: "y", task_id: "forged", run_id: "forged", turn_id: "t1", turn_lease: "l1" });
     expect(calls).toEqual(expect.arrayContaining([
-      expect.objectContaining({ taskId: "task-real", residentKey: "resident-real" }),
+      expect.objectContaining({
+        taskId: "task-real", runId: "run-real", dispatchId: "dispatch-real",
+        residentKey: "resident-real", turnId: "t1", turnLease: "l1",
+      }),
       expect.objectContaining({ taskId: "task-real", residentKey: "resident-real", op: "mail_list" }),
-      expect.objectContaining({ taskId: "task-real", kind: "x" }),
+      expect.objectContaining({ taskId: "task-real", originRunId: "run-real", dispatchId: "dispatch-real", sessionVersion: 12, initiatorOpenId: "ou_real" }),
+      expect.objectContaining({ taskId: "task-real", originRunId: "run-real", dispatchId: "dispatch-real", sessionVersion: 12, kind: "x" }),
     ]));
     expect(JSON.stringify(calls)).not.toContain("forged");
   });
@@ -280,6 +324,7 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
     const calls = { reply: [], memory: [], propose: [], background: [], heartbeat: [], search: [] };
     const app = makeApp({
       tokens: reg,
+      sessionVersionFor: () => 0,
       activeTurnInitiators: {
         resolveAuthorized: ({ sessionKey, turnId, lease, residentEpoch }) =>
           sessionKey === "feishu:p2p:ou_me"
@@ -343,7 +388,13 @@ describe("C0.3 内部通道会话绑定鉴权", () => {
     const tok = reg.issue("feishu:group:oc_g");
     const proposeActions = vi.fn(async () => ({ ok: true, jobId: "j", messageId: "m" }));
     const active = { resolveAuthorized: vi.fn(() => null) };
-    const app = makeApp({ tokens: reg, activeTurnInitiators: active, proposeActions, handleReply: async () => ({ ok: true }) });
+    const app = makeApp({
+      tokens: reg,
+      sessionVersionFor: () => 0,
+      activeTurnInitiators: active,
+      proposeActions,
+      handleReply: async () => ({ ok: true }),
+    });
     const denied = await request(app).post("/internal/propose-actions")
       .set("Authorization", `Bearer ${tok}`)
       .send({ initiatorOpenId: "ou_forged", title: "x", intents: [], turn_id: "turn-1", turn_lease: "lease-1" });

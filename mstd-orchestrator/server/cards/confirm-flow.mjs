@@ -16,6 +16,7 @@ import { parseSessionKey } from "../sessions/session-key.mjs";
 const KIND_LABEL = {
   create_task: "建任务", send_dm: "发私信", notify_task_assignee: "通知负责人",
   create_event: "建日程", send_group_msg: "发群消息", schedule_reminder: "定时提醒", complete_task: "完成任务",
+  update_document: "更新文档",
 };
 
 export function createConfirmFlow({
@@ -42,7 +43,18 @@ export function createConfirmFlow({
   });
 
   // ---------- D3 发卡 ----------
-  async function startConfirmFlow({ sessionKey, intents, initiatorOpenId, title = "操作确认", deliverTo = null, provenanceManifest = null }) {
+  async function startConfirmFlow({
+    sessionKey,
+    sessionVersion = 0,
+    taskId = null,
+    originRunId = null,
+    dispatchId = null,
+    intents,
+    initiatorOpenId,
+    title = "操作确认",
+    deliverTo = null,
+    provenanceManifest = null,
+  }) {
     let prototypeActions;
     let provenance;
     try {
@@ -62,7 +74,15 @@ export function createConfirmFlow({
     const job = createJob(db, {
       templateId: "agent_write",
       title,
-      paramsJson: JSON.stringify({ sessionKey, initiatorOpenId, sourceTarget }),
+      paramsJson: JSON.stringify({
+        sessionKey,
+        sessionVersion,
+        taskId,
+        originRunId,
+        dispatchId,
+        initiatorOpenId,
+        sourceTarget,
+      }),
       status: "awaiting_confirm",
     }, now());
     // action_key 用真实 jobId 重算（绑定 job）
@@ -345,6 +365,19 @@ export function createConfirmFlow({
     return { allOk, resultsMd };
   }
 
+  function jobOrigin(jobId, fallbackSessionKey = null) {
+    const row = db.prepare("SELECT params_json FROM orch_jobs WHERE id = ?").get(jobId);
+    let meta = {};
+    try { meta = JSON.parse(row?.params_json ?? "{}"); } catch { /* fail closed below */ }
+    return {
+      sessionKey: meta.sessionKey ?? fallbackSessionKey,
+      sessionVersion: Number.isSafeInteger(meta.sessionVersion) ? meta.sessionVersion : 0,
+      taskId: meta.taskId ?? null,
+      originRunId: meta.originRunId ?? null,
+      dispatchId: meta.dispatchId ?? null,
+    };
+  }
+
   // 启动早期 action/job 对账完成后，只负责修复卡片与回注；不在这里重跑任何写动作。
   async function recoverFinalizedExecutingCards() {
     const cards = db.prepare(
@@ -374,7 +407,7 @@ export function createConfirmFlow({
       }));
       onExecuted({
         jobId: cardRow.job_id,
-        sessionKey: cardRow.session_key,
+        ...jobOrigin(cardRow.job_id, cardRow.session_key),
         resultsMd,
         ok: allOk,
       });
@@ -423,7 +456,7 @@ export function createConfirmFlow({
     await safeUpdateCard(messageId, buildStatusCard({ state, resultsMd, retryTokenRef }));
     db.prepare("UPDATE orch_jobs SET status = ?, updated_at = ? WHERE id = ?")
       .run(allOk ? "done" : "partial_failed", now(), jobId);
-    onExecuted({ jobId, sessionKey, resultsMd, ok: allOk });
+    onExecuted({ jobId, ...jobOrigin(jobId, sessionKey), resultsMd, ok: allOk });
     return { ok: allOk, resultsMd };
   }
 

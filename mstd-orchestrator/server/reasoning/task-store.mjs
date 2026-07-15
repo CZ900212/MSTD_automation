@@ -43,6 +43,21 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
         END
     WHERE id = ?
   `);
+  const updateActiveTask = db.prepare(`
+    UPDATE reasoning_tasks
+    SET summary = COALESCE(?, summary),
+        title = COALESCE(?, title),
+        updated_at = ?
+    WHERE id = ? AND status = 'active'
+  `);
+  const terminalizeActiveTask = db.prepare(`
+    UPDATE reasoning_tasks
+    SET status = ?,
+        summary = COALESCE(?, summary),
+        updated_at = ?,
+        completed_at = ?
+    WHERE id = ? AND status = 'active'
+  `);
   const mergeTaskClosure = db.prepare(`
     UPDATE reasoning_tasks
     SET closure_mode = CASE
@@ -154,8 +169,45 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
     return getTask.get(taskId);
   }
 
-  // Closure is monotonic for an active task: once any attached turn promises a
-  // follow-up, later silent_ok reviews must not erase that obligation.
+  function updateTaskProgress(taskId, { summary = null, title = null } = {}) {
+    if (!taskId) throw new Error("updateTaskProgress: taskId 必填");
+    const existing = getTask.get(taskId);
+    if (!existing) throw new Error("updateTaskProgress: task 不存在");
+    if (existing.status !== "active") throw new Error(`updateTaskProgress: task 已终态 ${existing.status}`);
+    if (!updateActiveTask.run(summary, title, now(), taskId).changes) {
+      throw new Error("updateTaskProgress: 状态竞争失败");
+    }
+    return getTask.get(taskId);
+  }
+
+  function terminalizeTask(taskId, status, { summary = null } = {}, operation) {
+    if (!taskId) throw new Error(`${operation}: taskId 必填`);
+    const existing = getTask.get(taskId);
+    if (!existing) throw new Error(`${operation}: task 不存在`);
+    if (existing.status === status) return existing;
+    if (existing.status !== "active") throw new Error(`${operation}: task 已是 terminal 状态 ${existing.status}`);
+    const ts = now();
+    if (!terminalizeActiveTask.run(status, summary, ts, ts, taskId).changes) {
+      throw new Error(`${operation}: 状态竞争失败`);
+    }
+    return getTask.get(taskId);
+  }
+
+  function resolveTask(taskId, options = {}) {
+    return terminalizeTask(taskId, "completed", options, "resolveTask");
+  }
+
+  function cancelTask(taskId, options = {}) {
+    return terminalizeTask(taskId, "cancelled", options, "cancelTask");
+  }
+
+  function failTask(taskId, options = {}) {
+    return terminalizeTask(taskId, "failed", options, "failTask");
+  }
+
+  // Compatibility-only task closure. New reasoner execution uses run-scoped
+  // closure; this remains monotonic for legacy paths so a promised follow-up
+  // cannot be erased by a later silent_ok decision.
   function mergeClosureMode(taskId, closureMode = "silent_ok") {
     if (!taskId) throw new Error("mergeClosureMode: taskId 必填");
     if (!["required", "silent_ok"].includes(closureMode)) {
@@ -369,7 +421,13 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
   return {
     createTask,
     attachMessage,
+    // Kept for rollback compatibility. New reasoner runs must use
+    // updateTaskProgress plus explicit resolve/cancel/fail APIs.
     transitionTask,
+    updateTaskProgress,
+    resolveTask,
+    cancelTask,
+    failTask,
     mergeClosureMode,
     activeSummaries,
     listMessages,

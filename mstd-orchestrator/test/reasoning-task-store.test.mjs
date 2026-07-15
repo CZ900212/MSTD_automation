@@ -241,18 +241,31 @@ describe("createReasoningTaskStore", () => {
     expect(tiny.every((t) => t.id && t.title && t.status === "active")).toBe(true);
   });
 
-  it("supports active/completed/failed/cancelled transitions", () => {
+  it("keeps ordinary run updates active and exposes explicit resolve/cancel terminals", () => {
     const task = store.createTask({ sessionId: session.id, title: "work", closureMode: "required" });
-    expect(store.transitionTask(task.id, { status: "completed", summary: "done" }).status).toBe("completed");
-    expect(store.getTask(task.id).completed_at).toBe(10_000);
+    expect(store.updateTaskProgress(task.id, { summary: "first run done" })).toMatchObject({
+      status: "active",
+      summary: "first run done",
+      completed_at: null,
+    });
 
-    const t2 = store.createTask({ sessionId: session.id, title: "fail-me" });
-    expect(store.transitionTask(t2.id, { status: "failed" }).status).toBe("failed");
+    expect(store.resolveTask(task.id, { summary: "resolved" })).toMatchObject({
+      status: "completed",
+      summary: "resolved",
+      completed_at: 10_000,
+    });
+    expect(store.resolveTask(task.id, { summary: "resolved" }).status).toBe("completed");
+    expect(() => store.cancelTask(task.id, { summary: "too late" })).toThrow(/terminal|终态/);
 
-    const t3 = store.createTask({ sessionId: session.id, title: "cancel-me" });
-    expect(store.transitionTask(t3.id, { status: "cancelled" }).status).toBe("cancelled");
+    const cancelled = store.createTask({ sessionId: session.id, title: "cancel-me" });
+    expect(store.cancelTask(cancelled.id, { summary: "用户取消" })).toMatchObject({
+      status: "cancelled",
+      summary: "用户取消",
+      completed_at: 10_000,
+    });
+    expect(store.cancelTask(cancelled.id, { summary: "用户取消" }).status).toBe("cancelled");
 
-    const t4 = store.createTask({ sessionId: session.id, title: "still" });
-    expect(store.transitionTask(t4.id, { status: "active", summary: "upd" }).summary).toBe("upd");
+    const failed = store.createTask({ sessionId: session.id, title: "operator-failed" });
+    expect(store.failTask(failed.id, { summary: "explicit operator terminal" }).status).toBe("failed");
   });
 });

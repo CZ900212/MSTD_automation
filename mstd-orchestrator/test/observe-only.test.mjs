@@ -55,12 +55,14 @@ describe("观察期模式（observe_only）", () => {
     ins.run("2", "no_reply", null, 2000);
     ins.run("3", "no_reply", null, 3000);
     ins.run("4", "escalate", "深度回答B", 4000);
-    const outbound = { sendMessage: vi.fn(async () => ({ messageId: "om_r" })) };
-    const report = createObserveReport({ db, outbound, adminOpenId: "ou_admin" });
+    const deliverSystemText = vi.fn(async () => ({ messageId: "om_r" }));
+    const report = createObserveReport({ db, deliverSystemText, adminOpenId: "ou_admin" });
     await report.sendWeekly(10_000);
-    const call = outbound.sendMessage.mock.calls[0][0];
-    expect(call.openId).toBe("ou_admin");
-    expect(call.text).toContain("oc_obs");
-    expect(call.text).toContain("2/4");                          // 会发言 2 / 总 4
+    expect(deliverSystemText).toHaveBeenCalledWith(
+      "feishu:p2p:ou_admin",
+      expect.stringContaining("oc_obs"),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
+    );
+    expect(deliverSystemText.mock.calls[0][1]).toContain("2/4"); // 会发言 2 / 总 4
   });
 });

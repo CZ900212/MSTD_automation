@@ -32,4 +32,80 @@ describe("C0.3 会话绑定 token 注册表", () => {
     expect(() => reg.revoke(undefined)).not.toThrow();
     expect(() => reg.revoke("从未签发")).not.toThrow();
   });
+
+  it("keeps spawn identity immutable while binding and clearing the current run attempt", () => {
+    const reg = createSessionTokenRegistry();
+    const token = reg.issue("chat", {
+      taskId: "task-a",
+      residentKey: "task:task-a",
+      residentEpoch: 7,
+    });
+
+    expect(reg.bindTurn(token, {
+      taskId: "task-a",
+      runId: "run-1",
+      dispatchId: "dispatch-1",
+      turnId: "turn-1",
+      lease: "lease-1",
+      executionKey: "task:task-a",
+    })).toBe(true);
+    expect(reg.resolveBinding(token)).toEqual({
+      sessionKey: "chat",
+      taskId: "task-a",
+      residentKey: "task:task-a",
+      residentEpoch: 7,
+      runId: "run-1",
+      dispatchId: "dispatch-1",
+      turnId: "turn-1",
+      turnLease: "lease-1",
+      executionKey: "task:task-a",
+    });
+    expect(Object.isFrozen(reg.resolveBinding(token))).toBe(true);
+
+    expect(reg.clearTurn(token, { runId: "run-old", turnId: "turn-1", lease: "lease-1" })).toBe(false);
+    expect(reg.resolveBinding(token)).toMatchObject({ runId: "run-1", turnLease: "lease-1" });
+    expect(reg.clearTurn(token, { runId: "run-1", turnId: "turn-1", lease: "lease-1" })).toBe(true);
+    expect(reg.resolveBinding(token)).toEqual({
+      sessionKey: "chat",
+      taskId: "task-a",
+      residentKey: "task:task-a",
+      residentEpoch: 7,
+    });
+  });
+
+  it("refuses a turn binding that crosses the spawn task or execution key", () => {
+    const reg = createSessionTokenRegistry();
+    const token = reg.issue("chat", { taskId: "task-a", residentKey: "task:task-a" });
+
+    expect(reg.bindTurn(token, {
+      taskId: "task-b",
+      runId: "run-b",
+      turnId: "turn-b",
+      lease: "lease-b",
+      executionKey: "task:task-b",
+    })).toBe(false);
+    expect(reg.bindTurn(token, {
+      taskId: "task-a",
+      runId: "run-a",
+      turnId: "turn-a",
+      lease: "lease-a",
+      executionKey: "task:other",
+    })).toBe(false);
+    expect(reg.resolveBinding(token)).not.toHaveProperty("runId");
+  });
+
+  it("stale cleanup from a prior run cannot clear a newer run binding", () => {
+    const reg = createSessionTokenRegistry();
+    const token = reg.issue("chat", { taskId: "task-a", residentKey: "task:task-a" });
+    const first = {
+      taskId: "task-a", runId: "run-1", turnId: "turn-1", lease: "lease-1", executionKey: "task:task-a",
+    };
+    const second = {
+      taskId: "task-a", runId: "run-2", turnId: "turn-2", lease: "lease-2", executionKey: "task:task-a",
+    };
+    expect(reg.bindTurn(token, first)).toBe(true);
+    expect(reg.bindTurn(token, second)).toBe(true);
+    expect(reg.clearTurn(token, first)).toBe(false);
+    expect(reg.resolveBinding(token)).toMatchObject({ runId: "run-2", turnId: "turn-2", turnLease: "lease-2" });
+  });
 });

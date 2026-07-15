@@ -13,13 +13,17 @@ const Intent = Type.Object({
     Type.Literal("create_event"),
     Type.Literal("send_group_msg"),
     Type.Literal("schedule_reminder"),
+    Type.Literal("complete_task"),
+    Type.Literal("update_document"),
   ]),
   payload: Type.Record(Type.String(), Type.Any(), {
     description:
       "create_task:{title,description?,due_date?,assignee_open_id?} | send_dm:{to_open_id,card_ref} | " +
       "create_event:{summary,start_time(ISO),end_time(ISO),attendee_open_ids[]} | send_group_msg:{chat_id,card_ref} | " +
-      "schedule_reminder:{due_iso(带时区的严格 ISO 8601),text,deliver_to(canonical 会话键 feishu:p2p:ou_* 或 feishu:group:oc_*)}" +
-      "——跨会话定时提醒走此意图（当前会话提醒用 heartbeat_update 即可，无需确认卡）",
+      "schedule_reminder:{due_iso(带时区的严格 ISO 8601),text,deliver_to(canonical 会话键 feishu:p2p:ou_* 或 feishu:group:oc_*)} | " +
+      "complete_task:{task_guid(飞书全局任务 GUID，不是展示编号)} | " +
+      "update_document:{doc_token,command(append|str_replace|block_insert_after|block_replace),content,revision_id(先read_doc所得基准版本),pattern?(str_replace必填),block_id?(block操作必填),doc_format?(xml|markdown，默认markdown)}" +
+      "——跨会话定时提醒走此意图（当前会话提醒用 heartbeat_update 即可，无需确认卡）；文档更新必须先用 lark_read 读取/定位，且仅支持非破坏性精确编辑",
   }),
 });
 
@@ -29,7 +33,7 @@ export default function (pi: ExtensionAPI) {
     name: "propose_actions",
     label: "ProposeActions",
     description:
-      "【写操作唯一入口】提出一批写操作意图（建任务/发私信/建日程/发群消息/跨会话定时提醒）。" +
+      "【写操作唯一入口】提出一批写操作意图（建任务/完成任务/发私信/建日程/发群消息/跨会话定时提醒/更新文档）。" +
       "服务端会规范化并发确认卡片给发起人，用户确认后才执行；执行结果会回注会话。" +
       "关键参数（负责人 open_id、时间）不确定时可留空由确认人在卡片上补选，或先向用户问清。" +
       "绝不要试图绕过本工具直接执行写操作。",

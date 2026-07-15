@@ -137,32 +137,34 @@ describe("统一回合注册表（单条 per-session 记录 + 单一回合 lease
     const a = reg.brainTurns.activate({
       sessionKey: "chat",
       taskId: "task-a",
+      runId: "run-a",
       turnId: "turn-a",
       purpose: "business",
     });
     const b = reg.brainTurns.activate({
       sessionKey: "chat",
       taskId: "task-b",
+      runId: "run-b",
       turnId: "turn-b",
       purpose: "business",
     });
     expect(a).toBeTruthy();
     expect(b).toBeTruthy();
     expect(a).not.toBe(b);
-    expect(reg.brainTurns.bindResident("chat", a, 1, { taskId: "task-a" })).toBe(true);
-    expect(reg.brainTurns.bindResident("chat", b, 2, { taskId: "task-b" })).toBe(true);
-    expect(reg.brainTurns.resolve("chat", { taskId: "task-a" })).toMatchObject({
+    expect(reg.brainTurns.bindResident("chat", a, 1, { taskId: "task-a", runId: "run-a" })).toBe(true);
+    expect(reg.brainTurns.bindResident("chat", b, 2, { taskId: "task-b", runId: "run-b" })).toBe(true);
+    expect(reg.brainTurns.resolve("chat", { taskId: "task-a", runId: "run-a" })).toMatchObject({
       turnId: "turn-a",
       taskId: "task-a",
       residentEpoch: 1,
     });
-    expect(reg.brainTurns.resolve("chat", { taskId: "task-b" })).toMatchObject({
+    expect(reg.brainTurns.resolve("chat", { taskId: "task-b", runId: "run-b" })).toMatchObject({
       turnId: "turn-b",
       taskId: "task-b",
       residentEpoch: 2,
     });
     // Closing A must not drop B.
-    expect(reg.brainTurns.clear("chat", a, { taskId: "task-a" })).toBe(true);
-    expect(reg.brainTurns.resolve("chat", { taskId: "task-b" })).toMatchObject({ turnId: "turn-b" });
+    expect(reg.brainTurns.clear("chat", a, { taskId: "task-a", runId: "run-a" })).toBe(true);
+    expect(reg.brainTurns.resolve("chat", { taskId: "task-b", runId: "run-b" })).toMatchObject({ turnId: "turn-b" });
   });
 });

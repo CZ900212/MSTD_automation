@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 const WEEK = 7 * 86_400_000;
 
-export function createObserveReport({ db, outbound, adminOpenId, log = console.error }) {
+export function createObserveReport({ db, deliverSystemText, adminOpenId, log = console.error }) {
   async function sendWeekly(nowTs = Date.now()) {
     if (!adminOpenId) return { skipped: "no admin" };
     const rows = db.prepare(
@@ -24,7 +24,9 @@ export function createObserveReport({ db, outbound, adminOpenId, log = console.e
     }
     lines.push("如信号比可接受，可将该群策略切为 mention_only 或 ambient。");
     try {
-      await outbound.sendMessage({ openId: adminOpenId, text: lines.join("\n"), idempotencyKey: randomUUID() });
+      await deliverSystemText(`feishu:p2p:${adminOpenId}`, lines.join("\n"), {
+        idempotencyKey: randomUUID(),
+      });
     } catch (e) {
       log(`[observe-report] 发送失败: ${e?.message ?? e}`);
     }

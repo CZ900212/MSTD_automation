@@ -380,9 +380,11 @@ export function createBrain({
     taskId = null,
     residentKey = null,
     runId = null,
+    dispatchId = null,
     brief,
     context,
     contextEnvelope = null,
+    contextEnvelopes = null,
     contextSource = "user",
     contextSensitivity = "internal",
     snapshot = null,
@@ -395,22 +397,45 @@ export function createBrain({
     // malformed 检查、legacy 包装、assertEnvelope、telemetry 全部单点在
     // resolveTurnContext（enforce 在 spawn/semaphore 之前 fail-closed；
     // shadow 观测后回落 legacy 原文作 prompt context）。这里只消费结果。
-    const { promptContext } = resolveTurnContext({
-      content: context,
-      envelope: contextEnvelope,
-      mode: envelopeMode,
-      scope: sessionKey,
-      source: contextSource,
-      sensitivity: contextSensitivity,
-      signer: contextSigner,
-      budget: envelopeBudget,
-      onEvent: emit,
-    });
+    if (contextEnvelopes !== null && !Array.isArray(contextEnvelopes)) {
+      throw new Error("brain contextEnvelopes 必须是数组");
+    }
+    let promptContext;
+    if (contextEnvelopes !== null) {
+      const promptContexts = contextEnvelopes.map((envelope) => resolveTurnContext({
+        envelope,
+        mode: envelopeMode,
+        scope: sessionKey,
+        source: contextSource,
+        sensitivity: contextSensitivity,
+        signer: contextSigner,
+        budget: envelopeBudget,
+        onEvent: emit,
+      }).promptContext).filter(Boolean);
+      promptContext = promptContexts.length
+        ? promptContexts.join("\n\n--- 下一条服务端上下文 ---\n\n")
+        : null;
+    } else {
+      ({ promptContext } = resolveTurnContext({
+        content: context,
+        envelope: contextEnvelope,
+        mode: envelopeMode,
+        scope: sessionKey,
+        source: contextSource,
+        sensitivity: contextSensitivity,
+        signer: contextSigner,
+        budget: envelopeBudget,
+        onEvent: emit,
+      }));
+    }
+    if (taskId && purpose === "business" && (typeof runId !== "string" || !runId.trim())) {
+      throw new Error("brain business task turn 缺少 server-issued runId");
+    }
     const daemonTurnId = typeof turnId === "string" && turnId ? turnId : `${identity.executionKey}:${nowFn()}`;
     const brainLease = activeBrainTurns?.activate({
       sessionKey,
       taskId,
-      runId: runId ?? daemonTurnId,
+      runId,
       executionKey: identity.executionKey,
       turnId: daemonTurnId,
       purpose,
@@ -444,12 +469,25 @@ export function createBrain({
             sessionKey,
             brainLease,
             entry.replyProvenance?.epoch,
-            { taskId, executionKey: identity.executionKey },
+            { taskId, runId, executionKey: identity.executionKey },
           )) {
             throw new Error("active brain turn resident 绑定失败");
           }
+          if (runId && tokens?.bindTurn && !tokens.bindTurn(entry.internalToken, {
+            taskId,
+            runId,
+            dispatchId,
+            turnId: daemonTurnId,
+            lease: brainLease,
+            executionKey: identity.executionKey,
+          })) {
+            throw new Error("internal token 当前回合绑定失败");
+          }
           const initiatorLease = activeTurnInitiators?.activate({
             sessionKey,
+            taskId,
+            runId,
+            executionKey: identity.executionKey,
             initiatorOpenId,
             turnId: daemonTurnId,
             residentEpoch: entry.replyProvenance?.epoch ?? null,
@@ -470,12 +508,23 @@ export function createBrain({
               turnId: daemonTurnId,
               purpose,
               taskId,
+              runId,
+              dispatchId,
               residentKey: entry.residentKey,
               executionKey: identity.executionKey,
             };
             break;
           } finally {
-            if (initiatorLease) activeTurnInitiators?.clear(sessionKey, initiatorLease);
+            if (initiatorLease) activeTurnInitiators?.clear(sessionKey, initiatorLease, {
+              taskId,
+              runId,
+              executionKey: identity.executionKey,
+            });
+            tokens?.clearTurn?.(entry.internalToken, {
+              runId,
+              turnId: daemonTurnId,
+              lease: brainLease,
+            });
           }
         } catch (e) {
           lastErr = e;
@@ -503,6 +552,7 @@ export function createBrain({
         turnClosing = await activeBrainTurns?.closeAdmissions(sessionKey, brainLease, {
           provider: completed?.providerKey ?? null,
           taskId,
+          runId,
           executionKey: identity.executionKey,
         });
       }
@@ -511,13 +561,16 @@ export function createBrain({
       turnId: daemonTurnId,
       sessionKey,
       taskId,
+      runId,
+      dispatchId,
+      executionKey: identity.executionKey,
       purpose,
       lease: brainLease,
       provider: completed?.providerKey ?? null,
       closing: turnClosing,
     }) : null;
     const turnOutcome = brainLease && purpose !== "business"
-      ? activeBrainTurns?.finalizeTurn(sessionKey, brainLease, { taskId, executionKey: identity.executionKey })
+      ? activeBrainTurns?.finalizeTurn(sessionKey, brainLease, { taskId, runId, executionKey: identity.executionKey })
       : null;
     if (terminalError) {
       if (turnLifecycle) terminalError.turnLifecycle = turnLifecycle;
@@ -554,7 +607,21 @@ export function createBrain({
     // Cross-task isolation: never steer a resident owned by another task/session.
     if (taskId && entry.taskId && entry.taskId !== taskId) return false;
     if (sessionKey && entry.sessionKey !== sessionKey) return false;
-    entry.client.send({ type: "prompt", message: `【用户插话】${note}` });
+    let message = `【用户插话】${note}`;
+    if (opts.contextEnvelope) {
+      const { promptContext } = resolveTurnContext({
+        envelope: opts.contextEnvelope,
+        mode: envelopeMode,
+        scope: sessionKey,
+        source: opts.contextEnvelope.source ?? "background",
+        sensitivity: opts.contextEnvelope.sensitivity ?? "internal",
+        signer: contextSigner,
+        budget: envelopeBudget,
+        onEvent: emit,
+      });
+      if (promptContext) message += `\n\n## 服务端工具结果\n${promptContext}`;
+    }
+    entry.client.send({ type: "prompt", message });
     return true;
   }
 

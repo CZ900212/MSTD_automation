@@ -63,14 +63,14 @@ export function createActiveTurnRegistry({
   }
   // executionKey -> { sessionKey, taskId, runId, executionKey, turnId, lease, receipt, brain, initiator }
   // Legacy callers pass only sessionKey, so executionKey defaults to sessionKey.
-  // Task-scoped reasoners use task:<id> / run:<id> keys so two tasks can share one sessionKey.
+  // Task-scoped reasoners use task:<id>; runId is authoritative metadata, not runtime ownership.
   const sessions = new Map();
   const admissions = new Map();
 
   function executionKeyOf({ sessionKey, taskId = null, runId = null, executionKey = null } = {}) {
     if (executionKey) return String(executionKey);
-    if (runId) return `run:${runId}`;
     if (taskId) return `task:${taskId}`;
+    if (runId) return `run:${runId}`;
     return sessionKey;
   }
 
@@ -152,12 +152,19 @@ export function createActiveTurnRegistry({
       return rec;
     }
     if (!receiptLive(rec) && !brainLive(rec)) {
+      rec.sessionKey = sessionKey;
+      rec.taskId = opts.taskId ?? null;
+      rec.runId = opts.runId ?? null;
+      rec.executionKey = executionKey;
       rec.turnId = turnId;
       rec.lease = issueLease();
       rec.initiator = null;      // 上一回合的发起人授权不得跨回合存活
       return rec;
     }
-    return rec.turnId === turnId ? rec : null;
+    if (rec.turnId !== turnId) return null;
+    if (opts.taskId != null && rec.taskId !== opts.taskId) return null;
+    if (opts.runId != null && rec.runId !== opts.runId) return null;
+    return rec;
   }
 
   // ---- receipt 域（daemon business 回合身份 + 终态回执）----
@@ -240,6 +247,7 @@ export function createActiveTurnRegistry({
       if (typeof sessionKey !== "string" || !sessionKey.trim()) return null;
       if (typeof turnId !== "string" || !turnId.trim()) return null;
       if (!PURPOSES.has(purpose)) return null;
+      if (taskId != null && (typeof runId !== "string" || !runId.trim())) return null;
       const opts = { taskId, runId, executionKey };
       const key = executionKeyOf({ sessionKey, ...opts });
       // One execution owns its executionKey until the gateway freezes its outcome.
@@ -270,6 +278,9 @@ export function createActiveTurnRegistry({
       const rec = resolveRec(sessionKey, lease, opts);
       const b = brainLive(rec);
       if (!b || b.state !== "active" || !lease || rec.lease !== lease) return false;
+      if (opts.taskId != null && rec.taskId !== opts.taskId) return false;
+      if (opts.runId != null && rec.runId !== opts.runId) return false;
+      if (opts.executionKey != null && rec.executionKey !== opts.executionKey) return false;
       if (!Number.isSafeInteger(residentEpoch) || residentEpoch <= 0) return false;
       b.residentEpoch = residentEpoch;
       b.expiresAt = now() + brainTtlMs;
@@ -279,11 +290,15 @@ export function createActiveTurnRegistry({
     resolve(sessionKey, opts = {}) {
       const rec = resolveRec(sessionKey, opts.lease ?? null, opts);
       const b = brainLive(rec);
-      return b ? brainSnapshot(rec, b) : null;
+      if (!b) return null;
+      if (opts.taskId != null && rec.taskId !== opts.taskId) return null;
+      if (opts.runId != null && rec.runId !== opts.runId) return null;
+      if (opts.executionKey != null && rec.executionKey !== opts.executionKey) return null;
+      return brainSnapshot(rec, b);
     },
 
-    admit({ sessionKey, turnId, lease, residentEpoch, taskId = null, executionKey = null } = {}) {
-      const rec = resolveRec(sessionKey, lease, { taskId, executionKey });
+    admit({ sessionKey, turnId, lease, residentEpoch, taskId = null, runId = null, executionKey = null } = {}) {
+      const rec = resolveRec(sessionKey, lease, { taskId, runId, executionKey });
       const b = brainLive(rec);
       if (!b) return rejection("no_active_turn");
       if (b.purpose === "memory_maintenance") return rejection("maintenance_silent");
@@ -294,12 +309,18 @@ export function createActiveTurnRegistry({
         || !Number.isSafeInteger(residentEpoch)
         || residentEpoch <= 0
         || residentEpoch !== b.residentEpoch
+        || (taskId != null && taskId !== rec.taskId)
+        || (runId != null && runId !== rec.runId)
+        || (executionKey != null && executionKey !== rec.executionKey)
       ) {
         return rejection("stale_turn_context");
       }
       const admission = Object.freeze({
         ok: true,
-        sessionKey,
+        sessionKey: rec.sessionKey,
+        taskId: rec.taskId ?? null,
+        runId: rec.runId ?? null,
+        executionKey: rec.executionKey,
         turnId,
         residentEpoch,
         purpose: b.purpose,
@@ -362,8 +383,8 @@ export function createActiveTurnRegistry({
       return { ok: true, receipt };
     },
 
-    recordDaemonDelivery({ sessionKey, turnId, lease, taskId = null, executionKey = null } = {}, { messageId = null } = {}) {
-      const rec = resolveRec(sessionKey, lease, { taskId, executionKey });
+    recordDaemonDelivery({ sessionKey, turnId, lease, taskId = null, runId = null, executionKey = null } = {}, { messageId = null } = {}) {
+      const rec = resolveRec(sessionKey, lease, { taskId, runId, executionKey });
       const b = rec?.brain;
       if (
         !b
@@ -396,10 +417,13 @@ export function createActiveTurnRegistry({
       return true;
     },
 
-    closeAdmissions(sessionKey, lease, { provider = null, taskId = null, executionKey = null } = {}) {
-      const rec = resolveRec(sessionKey, lease, { taskId, executionKey });
+    closeAdmissions(sessionKey, lease, { provider = null, taskId = null, runId = null, executionKey = null } = {}) {
+      const rec = resolveRec(sessionKey, lease, { taskId, runId, executionKey });
       const b = rec?.brain;
       if (!b || !lease || rec.lease !== lease) return Promise.resolve(null);
+      if (taskId != null && rec.taskId !== taskId) return Promise.resolve(null);
+      if (runId != null && rec.runId !== runId) return Promise.resolve(null);
+      if (executionKey != null && rec.executionKey !== executionKey) return Promise.resolve(null);
       if (b.state === "closed") return Promise.resolve(null);
       if (b.state === "active") {
         b.state = "closing";
@@ -433,7 +457,12 @@ export function createActiveTurnRegistry({
     finalizeTurn(sessionKey, lease, opts = {}) {
       const rec = resolveRec(sessionKey, lease, opts);
       const b = rec?.brain;
-      if (!b || !lease || rec.lease !== lease || b.state !== "closing" || b.inFlight > 0) {
+      if (
+        !b || !lease || rec.lease !== lease || b.state !== "closing" || b.inFlight > 0
+        || (opts.taskId != null && rec.taskId !== opts.taskId)
+        || (opts.runId != null && rec.runId !== opts.runId)
+        || (opts.executionKey != null && rec.executionKey !== opts.executionKey)
+      ) {
         return null;
       }
       b.state = "closed";
@@ -506,14 +535,37 @@ export function createActiveTurnRegistry({
   // ---- initiator 域（attempt 级租约：按 provider 尝试轮换，旧 finally 不得清新授权）----
 
   const initiators = {
-    activate({ sessionKey, initiatorOpenId, turnId = null, residentEpoch = null }) {
+    activate({
+      sessionKey,
+      initiatorOpenId,
+      turnId = null,
+      residentEpoch = null,
+      taskId = null,
+      runId = null,
+      executionKey = null,
+    }) {
       if (typeof sessionKey !== "string" || !sessionKey.trim()) return null;
       if (typeof initiatorOpenId !== "string" || !isValidOpenId(initiatorOpenId)) return null;
-      let rec = sessions.get(sessionKey);
+      const opts = { taskId, runId, executionKey };
+      const key = executionKeyOf({ sessionKey, ...opts });
+      let rec = sessions.get(key);
       if (!rec) {
-        rec = { sessionKey, turnId, lease: issueLease(), receipt: null, brain: null, initiator: null };
-        sessions.set(sessionKey, rec);
+        rec = {
+          sessionKey,
+          taskId,
+          runId,
+          executionKey: key,
+          turnId,
+          lease: issueLease(),
+          receipt: null,
+          brain: null,
+          initiator: null,
+        };
+        sessions.set(key, rec);
       }
+      if (taskId != null && rec.taskId !== taskId) return null;
+      if (runId != null && rec.runId !== runId) return null;
+      if (executionKey != null && rec.executionKey !== executionKey) return null;
       const attemptLease = randomUUID();
       rec.initiator = {
         openId: initiatorOpenId,
@@ -525,17 +577,38 @@ export function createActiveTurnRegistry({
       return attemptLease;
     },
 
-    resolve(sessionKey, { turnId = null, residentEpoch = null } = {}) {
-      const rec = sessions.get(sessionKey);
+    resolve(sessionKey, {
+      turnId = null,
+      residentEpoch = null,
+      taskId = null,
+      runId = null,
+      executionKey = null,
+    } = {}) {
+      const identitySpecified = taskId != null || runId != null || executionKey != null;
+      const rec = identitySpecified
+        ? resolveRec(sessionKey, null, { taskId, runId, executionKey })
+        : sessions.get(sessionKey);
       const i = initiatorLive(rec);
       if (!i) return null;
+      if (taskId != null && rec.taskId !== taskId) return null;
+      if (runId != null && rec.runId !== runId) return null;
+      if (executionKey != null && rec.executionKey !== executionKey) return null;
       if (i.turnId != null && turnId !== i.turnId) return null;
       if (i.residentEpoch != null && residentEpoch !== i.residentEpoch) return null;
       return i.openId;
     },
 
-    resolveAuthorized({ sessionKey, turnId, lease, residentEpoch } = {}) {
-      const rec = sessions.get(sessionKey);
+    resolveAuthorized({
+      sessionKey,
+      turnId,
+      lease,
+      residentEpoch,
+      taskId = null,
+      runId = null,
+      executionKey = null,
+    } = {}) {
+      const opts = { taskId, runId, executionKey };
+      const rec = resolveRec(sessionKey, lease, opts);
       const b = brainLive(rec);
       if (
         !b
@@ -543,16 +616,25 @@ export function createActiveTurnRegistry({
         || b.turnId !== turnId
         || rec.lease !== lease
         || b.residentEpoch !== residentEpoch
+        || (taskId != null && rec.taskId !== taskId)
+        || (runId != null && rec.runId !== runId)
+        || (executionKey != null && rec.executionKey !== executionKey)
       ) {
         return null;
       }
-      return initiators.resolve(sessionKey, { turnId, residentEpoch });
+      return initiators.resolve(sessionKey, { ...opts, turnId, residentEpoch });
     },
 
-    clear(sessionKey, lease) {
-      const rec = sessions.get(sessionKey);
+    clear(sessionKey, lease, { taskId = null, runId = null, executionKey = null } = {}) {
+      const identitySpecified = taskId != null || runId != null || executionKey != null;
+      const rec = identitySpecified
+        ? resolveRec(sessionKey, null, { taskId, runId, executionKey })
+        : sessions.get(sessionKey);
       const i = rec?.initiator;
       if (!i || !lease || i.attemptLease !== lease) return false;
+      if (taskId != null && rec.taskId !== taskId) return false;
+      if (runId != null && rec.runId !== runId) return false;
+      if (executionKey != null && rec.executionKey !== executionKey) return false;
       rec.initiator = null;
       prune(rec);
       return true;
@@ -570,6 +652,7 @@ export function createActiveTurnRegistry({
     return Object.freeze({
       sessionKey: rec.sessionKey,
       taskId: rec.taskId ?? null,
+      runId: rec.runId ?? null,
       executionKey: rec.executionKey,
       turnId: rec.turnId,
       receipt: r ? receiptSnapshot(r, rec.sessionKey) : null,
@@ -607,6 +690,7 @@ function brainSnapshot(rec, b) {
   return Object.freeze({
     sessionKey: rec.sessionKey,
     taskId: rec.taskId ?? null,
+    runId: rec.runId ?? null,
     executionKey: rec.executionKey,
     turnId: b.turnId,
     purpose: b.purpose,
@@ -626,6 +710,7 @@ function outcome(rec, b) {
     turnId: b.turnId,
     sessionKey: rec.sessionKey,
     taskId: rec.taskId ?? null,
+    runId: rec.runId ?? null,
     executionKey: rec.executionKey,
     purpose: b.purpose,
     state: "closed",

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createSessionStore } from "../server/sessions/store.mjs";
 import { createReinjector } from "../server/jobs/reinjector.mjs";
+import { createContextBudget } from "../server/safety/context-budget.mjs";
 
 describe("后台 job 回注（版本判定 + 进度心跳）", () => {
   let db, store, actors, brain, outbound, reinject;
@@ -34,9 +35,57 @@ describe("后台 job 回注（版本判定 + 进度心跳）", () => {
     expect(brain.turn.mock.calls[0][0].brief).toContain("翻篇");
   });
 
-  it("失败 job 回注：brief 说明失败", async () => {
+  it("高敏 derived_result 受控终止，不进入 resident brain", async () => {
     store.getOrCreate("feishu:p2p:ou_c", { kind: "p2p" });
-    await reinject.onJobComplete({ jobId: "j3", sessionKey: "feishu:p2p:ou_c", sessionVersion: 0, ok: false, error: "超时" });
+    await reinject.onJobComplete({
+      jobId: "j3", sessionKey: "feishu:p2p:ou_c", sessionVersion: 0, ok: true,
+      derived_result: { text: "身份证号 110101199001011234", sensitivity: "sensitive", parent: { sessionKey: "feishu:p2p:ou_c" } },
+    });
+    expect(brain.turn).not.toHaveBeenCalled();
+  });
+
+  it("signed envelope binds authoritative background parent provenance and configured budget", async () => {
+    const signer = (payload) => `a${Buffer.from(payload).toString("hex").slice(0, 63)}`.padEnd(64, "0").slice(0, 64);
+    const contextBudget = createContextBudget({ maxBytes: 8, marker: "" });
+    reinject = createReinjector({ store, actors, brain, outbound, contextSigner: signer, contextBudget });
+    store.getOrCreate("feishu:p2p:ou_parent", { kind: "p2p" });
+    await reinject.onJobComplete({
+      jobId: "j-parent", sessionKey: "feishu:p2p:ou_parent", sessionVersion: 2, ok: true,
+      derived_result: {
+        text: "1234567890", sensitivity: "internal",
+        parent: { sessionKey: "feishu:p2p:forged", sessionVersion: 99, jobId: "forged", kind: "research", brief: "查报价" },
+      },
+    });
+    const arg = brain.turn.mock.calls[0][0];
+    expect(arg.contextEnvelope.content).toBe("12345678");
+    expect(arg.contextEnvelope.byteLength).toBe(8);
+    expect(arg.contextEnvelope.parentHashes).toHaveLength(1);
+    expect(arg.contextEnvelope.signature).toMatch(/^[a-f0-9]{64}$/);
+    // derived_result 不再透传 brain（runTurn 从不读取）；权威溯源只经签名 envelope 携带
+    expect(arg.derived_result).toBeUndefined();
+  });
+
+  it("same provenance is deduplicated with exponential backoff", async () => {
+    store.getOrCreate("feishu:p2p:ou_d", { kind: "p2p" });
+    const event = { jobId: "j4", sessionKey: "feishu:p2p:ou_d", sessionVersion: 0, ok: true, derived_result: { text: "结果", sensitivity: "internal", parent: { sessionKey: "feishu:p2p:ou_d", kind: "research" } } };
+    await reinject.onJobComplete(event);
+    await reinject.onJobComplete(event);
+    expect(brain.turn).toHaveBeenCalledTimes(1);
+  });
+
+  it("unknown sensitivity is fail-closed and source provenance cannot override completion identity", async () => {
+    store.getOrCreate("feishu:p2p:ou_identity", { kind: "p2p" });
+    const controlled = await reinject.onJobComplete({
+      jobId: "j-identity", sessionKey: "feishu:p2p:ou_identity", sessionVersion: 2, ok: true,
+      derived_result: { text: "机密", sensitivity: "future_classification", parent: { sessionKey: "feishu:p2p:ou_other", jobId: "forged" } },
+    });
+    expect(controlled.status).toBe("controlled");
+    expect(brain.turn).not.toHaveBeenCalled();
+  });
+
+  it("失败 job 回注：brief 说明失败", async () => {
+    store.getOrCreate("feishu:p2p:ou_e", { kind: "p2p" });
+    await reinject.onJobComplete({ jobId: "j5", sessionKey: "feishu:p2p:ou_e", sessionVersion: 0, ok: false, error: "超时" });
     expect(brain.turn.mock.calls[0][0].brief).toContain("失败");
   });
 

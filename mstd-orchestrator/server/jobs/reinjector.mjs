@@ -38,6 +38,7 @@ export function createReinjector({
   ambiguityMaxMs = 60 * 60_000,
   contextSigner = null,
   contextBudget = null,
+  coordinator = null,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   now = () => Date.now(),
@@ -62,7 +63,18 @@ export function createReinjector({
     return true;
   }
 
-  function onJobComplete({ jobId, sessionKey, sessionVersion = 0, taskId = null, ok, derived_result, result, error }) {
+  function onJobComplete({
+    jobId,
+    sessionKey,
+    sessionVersion = 0,
+    taskId = null,
+    originRunId = null,
+    dispatchId = null,
+    ok,
+    derived_result,
+    result,
+    error,
+  }) {
     stopProgress(jobId);
     const derived = ok ? normalizeDerivedResult({ derived_result, result, sessionKey, sessionVersion, jobId }) : null;
     const provenance = createHash("sha256").update(JSON.stringify({
@@ -70,6 +82,8 @@ export function createReinjector({
       sessionKey,
       sessionVersion,
       taskId,
+      originRunId,
+      dispatchId,
       parent: derived?.parent ?? null,
       sensitivity: derived?.sensitivity ?? null,
       text: derived?.text ?? error ?? "",
@@ -87,29 +101,41 @@ export function createReinjector({
           ? `后台任务(${jobId})已完成，但会话话题可能已翻篇（期间隔了 ${drift} 个回合）。若结果仍有价值就简短播报，否则静默（不调用 reply）。`
           : `后台任务(${jobId})已完成，请向用户播报结果要点。`)
         : `后台任务(${jobId})执行失败（${error ?? "未知原因"}），请酌情告知用户并给出建议。`;
-      return { session, brief };
+      const contextEnvelope = ok ? createContextEnvelope({
+        trust: "internal", source: "background", scope: sessionKey,
+        sensitivity: derived.sensitivity, content: derived.text,
+        parentHashes: [stableHash(derived.parent)],
+      }, { signer: contextSigner, ...(contextBudget ? { budget: contextBudget } : {}) }) : null;
+      return { session, brief, contextEnvelope };
     });
-    return Promise.resolve(prepared).then(async ({ session, brief }) => {
+    return Promise.resolve(prepared).then(async ({ session, brief, contextEnvelope }) => {
       try {
+        if (taskId && coordinator?.attachOrStart) {
+          return await coordinator.attachOrStart({
+            session,
+            sessionKey,
+            taskId,
+            parentRunId: originRunId,
+            originKind: "reinject",
+            originId: jobId,
+            dispatchId,
+            sessionVersion,
+            brief,
+            contextEnvelope,
+            closureMode: "required",
+          });
+        }
         await brain.turn({
           session,
           sessionKey,
-          // Reinjection stays on the originating task when taskId was server-bound at spawn.
-          ...(taskId ? { taskId } : {}),
           brief,
-          // Kept for compatibility with the brain boundary and its existing
-          // observability tests; the signed envelope remains authoritative.
           context: ok ? derived.text : "",
-          contextEnvelope: ok ? createContextEnvelope({
-            trust: "internal", source: "background", scope: sessionKey,
-            sensitivity: derived.sensitivity, content: derived.text,
-            // parent 是封闭的平面原始值对象，stableHash 的深 canonical 与旧的按键排序
-            // JSON.stringify 语义等价——哈希值不变。
-            parentHashes: [stableHash(derived.parent)],
-          }, { signer: contextSigner, ...(contextBudget ? { budget: contextBudget } : {}) }) : null,
+          contextEnvelope,
         });
+        return { status: "started", taskId: null, runId: null };
       } catch (e) {
         log(`[reinject] 回注回合失败 job=${jobId}: ${e?.message ?? e}`);
+        return { status: "controlled", reason: "reinject_failed", error: String(e?.message ?? e) };
       }
     });
   }

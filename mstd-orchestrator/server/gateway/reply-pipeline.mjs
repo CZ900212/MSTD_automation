@@ -94,6 +94,11 @@ export function createReplyPipeline({
     return last;
   }
 
+  // Trusted reports use the same physical text boundary without joining a business transcript.
+  async function deliverSystemText(sessionKey, text, options = {}) {
+    return deliverText(sessionKey, text, options);
+  }
+
   function appendAssistantAfterDelivery(sessionId, { content, messageId, source }) {
     try {
       store.append(sessionId, {
@@ -203,6 +208,7 @@ export function createReplyPipeline({
           lease: turnLease,
           residentEpoch,
           taskId,
+          runId,
           executionKey: residentKey,
         });
         if (!admitted.ok) {
@@ -377,6 +383,7 @@ export function createReplyPipeline({
 
   return {
     deliverText,
+    deliverSystemText,
     deliverTerminal,
     handleReply,
     renderAutomationReply,

@@ -3,7 +3,7 @@
 // body 里的 session_key 只作一致性校验，冒名其他会话一律 403 并落 model_log。
 import { isBrainTurnAdmissionRejectionCode } from "../sessions/active-turn.mjs";
 
-export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators = null, modelLog = null, handleReply, memoryTool = null, searchTool = null, spawnBackground = null, proposeActions = null, heartbeat = null, egressSource = null, log = console.error }) {
+export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators = null, activeBrainTurns = null, sessionVersionFor = null, modelLog = null, handleReply, memoryTool = null, searchTool = null, spawnBackground = null, proposeActions = null, heartbeat = null, egressSource = null, log = console.error }) {
   const guard = (req, res) => {
     const auth = String(req.headers.authorization ?? "");
     const match = /^Bearer (\S+)$/.exec(auth);
@@ -36,7 +36,7 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
     const auth = guard(req, res);
     if (!auth) return;
     const { sessionKey, binding, body } = auth;
-    const { kind, stage = "final", brief, tone, target, turn_id: turnId, turn_lease: turnLease } = body;
+    const { kind, stage = "final", brief, tone, target } = body;
     if (stage !== "progress" && stage !== "final") {
       return res.status(400).json({ ok: false, error: "stage 必须是 progress 或 final" });
     }
@@ -49,6 +49,10 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
     const taskId = binding?.taskId ?? null;
     const runId = binding?.runId ?? null;
     const residentKey = binding?.residentKey ?? null;
+    const dispatchId = binding?.dispatchId ?? null;
+    const legacyTurnContext = !taskId && !runId;
+    const turnId = binding?.turnId ?? (legacyTurnContext ? body.turn_id ?? null : null);
+    const turnLease = binding?.turnLease ?? (legacyTurnContext ? body.turn_lease ?? null : null);
     try {
       const result = await handleReply({
         sessionKey,
@@ -62,6 +66,7 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
         residentEpoch,
         taskId,
         runId,
+        dispatchId,
         residentKey,
       });
       // ok:false 也要留痕：否则失败只存在于 Pi transcript,daemon 侧零可观测
@@ -90,9 +95,18 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
     if (!auth) return;
     if (!proposeActions) return res.status(501).json({ ok: false, error: "写路径未启用" });
     const { sessionKey, binding, body } = auth;
-    const { turn_id: turnId, turn_lease: turnLease } = body;
+    const taskId = binding?.taskId ?? null;
+    const runId = binding?.runId ?? null;
+    const dispatchId = binding?.dispatchId ?? null;
+    const executionKey = binding?.executionKey ?? binding?.residentKey ?? null;
+    const legacyTurnContext = !taskId && !runId;
+    const turnId = binding?.turnId ?? (legacyTurnContext ? body.turn_id ?? null : null);
+    const turnLease = binding?.turnLease ?? (legacyTurnContext ? body.turn_lease ?? null : null);
     const initiatorOpenId = activeTurnInitiators?.resolveAuthorized?.({
       sessionKey,
+      taskId,
+      runId,
+      executionKey,
       turnId,
       lease: turnLease,
       residentEpoch: binding?.residentEpoch ?? null,
@@ -102,8 +116,22 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
       return res.status(403).json({ ok: false, error: "当前调用未绑定真实消息发起人，拒绝创建写操作" });
     }
     const { title, intents } = body;
+    const sessionVersion = sessionVersionFor?.(sessionKey);
+    if (!Number.isSafeInteger(sessionVersion) || sessionVersion < 0) {
+      modelLog?.record({ type: "internal_auth_reject", sessionKey, detail: "propose_actions 无 authoritative session version" });
+      return res.status(403).json({ ok: false, error: "当前调用未绑定有效会话版本" });
+    }
     try {
-      const r = await proposeActions({ sessionKey, initiatorOpenId, title, intents });
+      const r = await proposeActions({
+        sessionKey,
+        sessionVersion,
+        taskId,
+        originRunId: runId,
+        dispatchId,
+        initiatorOpenId,
+        title,
+        intents,
+      });
       res.json(r.ok ? { ok: true, job_id: r.jobId, message_id: r.messageId } : r);
     } catch (e) {
       res.status(500).json({ ok: false, error: String(e?.message ?? e) });
@@ -116,13 +144,44 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
     if (!spawnBackground) return res.status(501).json({ ok: false, error: "后台 job 未启用" });
     const { sessionKey, binding, body } = auth;
     const { kind, brief, params } = body;
+    const taskId = binding?.taskId ?? null;
+    const runId = binding?.runId ?? null;
+    const dispatchId = binding?.dispatchId ?? null;
+    const executionKey = binding?.executionKey ?? binding?.residentKey ?? null;
+    const legacyTurnContext = !taskId && !runId;
+    const turnId = binding?.turnId ?? (legacyTurnContext ? body.turn_id ?? null : null);
+    const turnLease = binding?.turnLease ?? (legacyTurnContext ? body.turn_lease ?? null : null);
+    const requiresActiveRun = Boolean(taskId || runId);
+    const active = activeBrainTurns?.resolve?.(sessionKey, {
+      taskId,
+      runId,
+      executionKey,
+      lease: turnLease,
+    }) ?? null;
+    if (requiresActiveRun && (
+      !active
+      || active.state !== "active"
+      || active.turnId !== turnId
+      || active.residentEpoch !== (binding?.residentEpoch ?? null)
+    )) {
+      modelLog?.record({ type: "internal_auth_reject", sessionKey, detail: "background 无 authoritative active run" });
+      return res.status(403).json({ ok: false, error: "当前调用未绑定有效 active run" });
+    }
+    const sessionVersion = sessionVersionFor?.(sessionKey);
+    if (!Number.isSafeInteger(sessionVersion) || sessionVersion < 0) {
+      modelLog?.record({ type: "internal_auth_reject", sessionKey, detail: "background 无 authoritative session version" });
+      return res.status(403).json({ ok: false, error: "当前调用未绑定有效会话版本" });
+    }
     try {
       const jobId = spawnBackground({
         sessionKey,
+        sessionVersion,
         kind,
         brief,
         params,
-        taskId: binding?.taskId ?? null,
+        taskId,
+        originRunId: runId,
+        dispatchId,
       });
       res.json({ ok: true, job_id: jobId });
     } catch (e) {

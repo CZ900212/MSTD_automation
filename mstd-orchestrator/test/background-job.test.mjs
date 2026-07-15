@@ -14,17 +14,41 @@ describe("后台 job 委托（orch_jobs 复用 + 版本快照 + 信号量）", (
     const runJob = vi.fn(() => new Promise((r) => { release = () => r("深度检索结果"); }));
     const done = [];
     const bg = createBackgroundJobs({ db, semaphore: createSemaphore(2), runJob, onComplete: (x) => done.push(x) });
-    const jobId = bg.spawn({ sessionKey: "feishu:p2p:ou_a", sessionVersion: 3, kind: "research", params: { q: "供应商报价" } });
+    const jobId = bg.spawn({
+      sessionKey: "feishu:p2p:ou_a",
+      sessionVersion: 3,
+      taskId: "task-a",
+      originRunId: "run-a",
+      dispatchId: "dispatch-a",
+      kind: "research",
+      params: { q: "供应商报价" },
+    });
     expect(typeof jobId).toBe("string");
     const row = db.prepare("SELECT * FROM orch_jobs WHERE id = ?").get(jobId);
     expect(row.template_id).toBe("agent_background");
-    expect(JSON.parse(row.params_json)).toMatchObject({ sessionKey: "feishu:p2p:ou_a", sessionVersion: 3, kind: "research" });
+    expect(JSON.parse(row.params_json)).toMatchObject({
+      sessionKey: "feishu:p2p:ou_a",
+      sessionVersion: 3,
+      taskId: "task-a",
+      originRunId: "run-a",
+      dispatchId: "dispatch-a",
+      kind: "research",
+    });
     expect(row.status).toBe("running");
     release();
     await sleep(10);
     expect(db.prepare("SELECT status FROM orch_jobs WHERE id = ?").get(jobId).status).toBe("done");
     expect(done).toHaveLength(1);
-    expect(done[0]).toMatchObject({ jobId, sessionKey: "feishu:p2p:ou_a", sessionVersion: 3, ok: true, derived_result: { text: "深度检索结果", sensitivity: "internal" } });
+    expect(done[0]).toMatchObject({
+      jobId,
+      sessionKey: "feishu:p2p:ou_a",
+      sessionVersion: 3,
+      taskId: "task-a",
+      originRunId: "run-a",
+      dispatchId: "dispatch-a",
+      ok: true,
+      derived_result: { text: "深度检索结果", sensitivity: "internal" },
+    });
   });
 
   it("completion carries a structured derived_result with parent provenance and sensitivity", async () => {

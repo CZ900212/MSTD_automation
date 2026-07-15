@@ -37,6 +37,28 @@ describe("parseResponderOutput", () => {
 });
 
 describe("createResponder.answerTurn", () => {
+  it("emits fallback telemetry without exposing provider errors", async () => {
+    const onEvent = vi.fn();
+    const responder = createResponder({
+      caller: { call: vi.fn(async () => { throw new Error("secret provider failure"); }) },
+      soul: SOUL,
+      onEvent,
+    });
+
+    await expect(responder.answerTurn({
+      sessionKey: "feishu:p2p:ou_x",
+      items: [{ content: "在吗" }],
+      mode: "p2p",
+    })).resolves.toMatchObject({ action: "reply", text: expect.any(String) });
+    expect(onEvent).toHaveBeenCalledWith({
+      type: "responder_fallback",
+      sessionKey: "feishu:p2p:ou_x",
+      mode: "p2p",
+      action: "reply",
+    });
+    expect(JSON.stringify(onEvent.mock.calls)).not.toContain("secret provider failure");
+  });
+
   it("prompt includes SOUL and never discloses internal architecture", async () => {
     const caller = mockCaller('{"action":"reply","text":"我是小达"}');
     const responder = createResponder({ caller, soul: SOUL });

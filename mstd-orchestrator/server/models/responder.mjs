@@ -67,7 +67,7 @@ function isAddressedOrPrivate(mode) {
  * Create the always-available responder.
  * @param {{ caller: { call: Function }, soul?: string }} opts
  */
-export function createResponder({ caller, soul = "" } = {}) {
+export function createResponder({ caller, soul = "", onEvent = null } = {}) {
   if (!caller || typeof caller.call !== "function") {
     throw new Error("createResponder: caller.call 必填");
   }
@@ -90,18 +90,26 @@ export function createResponder({ caller, soul = "" } = {}) {
       `请输出 JSON。`,
     ].filter(Boolean).join("\n");
 
-    const out = await caller.call("responder", {
-      system: ANSWER_SYSTEM(soulText),
-      messages: [{ role: "user", content: prompt }],
-    });
-
+    let out = null;
     let verdict;
     try {
+      out = await caller.call("responder", {
+        system: ANSWER_SYSTEM(soulText),
+        messages: [{ role: "user", content: prompt }],
+      });
       verdict = parseResponderOutput(out.text);
     } catch {
       verdict = isAddressedOrPrivate(mode)
         ? { action: "reply", text: SAFE_ADDRESSED_FALLBACK }
         : { action: "no_reply" };
+      try {
+        onEvent?.({
+          type: "responder_fallback",
+          sessionKey,
+          mode,
+          action: verdict.action,
+        });
+      } catch { /* telemetry must never break the public fallback */ }
     }
 
     // Addressed/private must not stay silent after a successful parse of no_reply either.
@@ -115,8 +123,8 @@ export function createResponder({ caller, soul = "" } = {}) {
     return {
       ...verdict,
       meta: {
-        provider: out.model ?? null,
-        usage: out.usage ?? null,
+        provider: out?.model ?? null,
+        usage: out?.usage ?? null,
         sessionKey,
       },
     };

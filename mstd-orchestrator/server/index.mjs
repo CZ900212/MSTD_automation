@@ -32,6 +32,7 @@ import { renderReply } from "./models/reply.mjs";
 import { createResponder } from "./models/responder.mjs";
 import { createDispatcher } from "./models/dispatcher.mjs";
 import { createReasoningTaskStore } from "./reasoning/task-store.mjs";
+import { createReasoningRunStore } from "./reasoning/run-store.mjs";
 import { createReasoningCoordinator } from "./reasoning/coordinator.mjs";
 import { createTaskContextProvider } from "./reasoning/task-context.mjs";
 import { createOutbound } from "./gateway/outbound.mjs";
@@ -93,8 +94,9 @@ const config = loadServerConfig(process.env);
   if (config.enableWrite) {
     const hasTarget = String(process.env.MSTD_TEST_OPEN_IDS ?? "").trim()
       || String(process.env.MSTD_TEST_CHAT_IDS ?? "").trim()
-      || String(process.env.MSTD_TEST_TASK_GUIDS ?? "").trim();
-    if (!hasTarget) fatal.push("MSTD_ENABLE_WRITE=1 时必须配置 MSTD_TEST_OPEN_IDS、MSTD_TEST_CHAT_IDS 或 MSTD_TEST_TASK_GUIDS（写目标白名单 fail-closed，空=全拒）");
+      || String(process.env.MSTD_TEST_TASK_GUIDS ?? "").trim()
+      || String(process.env.MSTD_TEST_DOC_TOKENS ?? "").trim();
+    if (!hasTarget) fatal.push("MSTD_ENABLE_WRITE=1 时必须配置 MSTD_TEST_OPEN_IDS、MSTD_TEST_CHAT_IDS、MSTD_TEST_TASK_GUIDS 或 MSTD_TEST_DOC_TOKENS（写目标白名单 fail-closed，空=全拒）");
   }
   if (fatal.length) {
     console.error("[mstd] 致命：启动配置不完整——");
@@ -262,8 +264,9 @@ if (config.enableAgent && config.botOpenId) {
   const triage = createTriage({ caller, store: agentStore, windowTokens: Number(process.env.MSTD_TRIAGE_WINDOW_TOKENS ?? 2048) });
   // Always-available responder (Task 2): sole public voice for first reply + handoff rendering.
   // Wired for shadow/active modes; legacy path continues to use triage + renderReply adapter.
-  const responder = createResponder({ caller });
+  const responder = createResponder({ caller, onEvent: observeAgentEvent });
   const taskStore = createReasoningTaskStore(db);
+  const runStore = createReasoningRunStore(db);
   const dispatcher = createDispatcher({
     caller,
     onEvent: modelLog.record,
@@ -319,6 +322,7 @@ if (config.enableAgent && config.botOpenId) {
   });
   const coordinator = createReasoningCoordinator({
     taskStore,
+    runStore,
     dispatcher,
     caller,
     brain,
@@ -326,6 +330,7 @@ if (config.enableAgent && config.botOpenId) {
     snapshotFn: ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey }),
     activeBrainTurns,
     replyEgress,
+    responder,
     deliverTerminal: replyPipeline.deliverTerminal,
     deliverText: replyPipeline.deliverText,
     onEvent: modelLog.record,
@@ -349,8 +354,13 @@ if (config.enableAgent && config.botOpenId) {
       console.error(`[mstd] pending_send recovery failed dispatch=${row.id}: ${error?.message ?? error}`);
     }
   }
-  // Resume pending dispatcher work after restart (release stale claims first).
-  for (const row of coordinator.resumePending()) {
+  // Release stale dispatcher claims, then recover durable runs before admitting new reviews.
+  const pendingReviews = coordinator.resumePending();
+  await coordinator.recoverRuns({
+    resolveSession: (sessionId) => agentStore.getById?.(sessionId)
+      ?? db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(sessionId),
+  });
+  for (const row of pendingReviews) {
     const session = agentStore.getById?.(row.session_id)
       ?? db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(row.session_id);
     if (!session) continue;
@@ -394,7 +404,15 @@ if (config.enableAgent && config.botOpenId) {
   });
   // ---- Phase D：写路径卡片 + 后台 job + 回注 ----
   // 系统维护回合的 brief 必须沿用 persona 豁免触发词：不要调用 reply。
-  const reinjector = createReinjector({ store: agentStore, actors, brain, outbound, contextSigner, contextBudget });
+  const reinjector = createReinjector({
+    store: agentStore,
+    actors,
+    brain,
+    outbound,
+    contextSigner,
+    contextBudget,
+    coordinator,
+  });
   // 迭代二 T2.1：妙记派发执行完 → 指定群播报（未配置 MSTD_MINUTES_BROADCAST_CHAT 则静默跳过）
   const minutesBroadcast = createMinutesBroadcast({
     db,
@@ -428,8 +446,17 @@ if (config.enableAgent && config.botOpenId) {
     runLark: config.enableWrite ? makeRunLark({ profile: config.larkProfile }) : async () => ({ exitCode: 1, stdout: "", stderr: "MSTD_ENABLE_WRITE 未开" }),
     testTarget: testTargetFromEnv(process.env),
     heartbeat: heartbeatStore,
-    onExecuted: ({ jobId, sessionKey, resultsMd, ok }) => {
-      reinjector.onJobComplete({ jobId, sessionKey, sessionVersion: 0, ok, result: `写操作执行结果：\n${resultsMd}` });
+    onExecuted: ({ jobId, sessionKey, sessionVersion, taskId, originRunId, dispatchId, resultsMd, ok }) => {
+      reinjector.onJobComplete({
+        jobId,
+        sessionKey,
+        sessionVersion,
+        taskId,
+        originRunId,
+        dispatchId,
+        ok,
+        result: `写操作执行结果：\n${resultsMd}`,
+      });
       minutesBroadcast.onJobExecuted({ jobId, ok, resultsMd });   // 自含错误处理，fire-and-forget
     },
   });
@@ -444,12 +471,29 @@ if (config.enableAgent && config.botOpenId) {
     handleReply: turnHandler.handleReply,
     memoryTool,
     searchTool: createSessionSearch(db),
-    spawnBackground: ({ sessionKey, kind, brief, params }) => {
-      const session = agentStore.getOrCreate(sessionKey);
-      return backgroundJobs.spawn({ sessionKey, sessionVersion: session.version ?? 0, kind, brief, params });
-    },
-    proposeActions: ({ sessionKey, initiatorOpenId, title, intents }) =>
-      confirmFlow.startConfirmFlow({ sessionKey, intents, initiatorOpenId, title }),
+    sessionVersionFor: (sessionKey) => agentStore.getOrCreate(sessionKey).version ?? 0,
+    spawnBackground: ({ sessionKey, sessionVersion, taskId, originRunId, dispatchId, kind, brief, params }) =>
+      backgroundJobs.spawn({
+        sessionKey,
+        sessionVersion,
+        taskId,
+        originRunId,
+        dispatchId,
+        kind,
+        brief,
+        params,
+      }),
+    proposeActions: ({ sessionKey, sessionVersion, taskId, originRunId, dispatchId, initiatorOpenId, title, intents }) =>
+      confirmFlow.startConfirmFlow({
+        sessionKey,
+        sessionVersion,
+        taskId,
+        originRunId,
+        dispatchId,
+        intents,
+        initiatorOpenId,
+        title,
+      }),
     egressSource: createLarkReadEgressSource({
       verbatimGuard,
       replyEgress,
@@ -528,7 +572,11 @@ if (config.enableAgent && config.botOpenId) {
     tokenWatch.checkOnce().catch(() => {});
   }
   // 观察期周报：每周一北京 09:00 DM 管理员
-  const observeReport = createObserveReport({ db, outbound, adminOpenId: config.alertOpenId });
+  const observeReport = createObserveReport({
+    db,
+    deliverSystemText: replyPipeline.deliverSystemText,
+    adminOpenId: config.alertOpenId,
+  });
   let lastObsWeek = null;
   ticker.register("observe-report", 1, () => {
     const bj = new Date(Date.now() + 8 * 3600_000);
