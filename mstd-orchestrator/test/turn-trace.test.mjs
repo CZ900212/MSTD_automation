@@ -92,4 +92,34 @@ describe("createTurnTrace", () => {
     trace.record({ type: "no_reply", traceId: t2 });
     expect(trace.byTraceId(t2).status).toBe("no_reply");
   });
+
+  it("records the active responder first reply on the same latency clock", () => {
+    const db = openDb();
+    migrate(db);
+    let t = 1000;
+    const trace = createTurnTrace(db, { now: () => t });
+    const { traceId } = trace.beginBatch({
+      sessionKey: "feishu:p2p:ou_active",
+      mode: "addressed",
+      pipeline: "responder",
+      items: [{ eventId: "a1", platformMessageId: "om_input", ts: 900 }],
+    });
+
+    t = 1300;
+    trace.record({
+      type: "responder_sent",
+      traceId,
+      action: "reply",
+      dispatchId: "dispatch-1",
+      messageId: "om_first",
+    });
+
+    expect(trace.byTraceId(traceId)).toMatchObject({
+      pipeline: "responder",
+      ack_message_id: "om_first",
+      ack_sent_at: 1300,
+      terminal_message_id: null,
+      status: "responder_sent",
+    });
+  });
 });

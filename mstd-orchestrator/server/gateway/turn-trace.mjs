@@ -165,6 +165,21 @@ export function createTurnTrace(db, { now = Date.now, pipeline = "legacy" } = {}
       return;
     }
 
+    // The active pipeline's responder is the first user-visible effect. Store it in
+    // the same ack_* columns used by legacy so A/B first-reply latency has one clock.
+    // It is deliberately non-terminal: dispatcher/reasoner may still produce a handoff.
+    if (type === "responder_sent") {
+      const traceId = resolveTraceId(event);
+      if (!traceId) return;
+      if (event.action === "reply" && event.messageId) {
+        updateAck.run(event.messageId, t, t, traceId, null);
+        updateStatus.run("responder_sent", t, traceId);
+      } else {
+        updateStatus.run("responder_no_reply", t, traceId);
+      }
+      return;
+    }
+
     if (type === "business_turn_terminal") {
       updateTerminal.run(
         event.messageId ?? null,
