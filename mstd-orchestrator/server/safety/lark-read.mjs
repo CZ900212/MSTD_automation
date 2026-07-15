@@ -28,6 +28,11 @@ const optInt = (p, key, { min, max, dflt }) => {
   return n;
 };
 const push = (args, flag, v) => { if (v != null) args.push(flag, String(v)); };
+const needTaskGuid = (p) => {
+  const guid = need(p, "task_guid");
+  if (guid.length > 256 || /[\u0000-\u001f\u007f]/.test(guid)) throw new Error("非法 task_guid");
+  return guid;
+};
 
 const READ_OPS = {
   // ---- 妙记（原有） ----
@@ -113,6 +118,7 @@ const READ_OPS = {
     return a;
   },
   search_tasks: (p) => ["task", "+search", "--query", need(p, "query"), "--as", "user"],   // 仅 user
+  get_task: (p) => ["task", "tasks", "get", "--task-guid", needTaskGuid(p), "--as", "user"],
 
   // ---- 表格 / 多维表格 ----
   sheet_info: (p) => ["sheets", "+workbook-info", "--spreadsheet-token", need(p, "spreadsheet_token"), "--as", "user"],
@@ -171,10 +177,16 @@ const SEAT_PRIVATE_OPS = new Set(["mail_list", "mail_message", "search_minutes",
 // 后台任务（妙记链）所需窄集——job 域内除此全拒
 const JOB_OPS = new Set(["search_minutes", "get_transcript", "search_user", "get_user"]);
 
+// 批次 C taint 依据：resident 直接读过席位私有数据 → 本 security epoch 带污点，
+// 完成当前授权答复后 recycle（trust-boundary SENSITIVITIES 语义的 restricted 档）。
+export function larkReadSensitivity(op) {
+  return SEAT_PRIVATE_OPS.has(op) ? "restricted" : "internal";
+}
+
 // 从 Pi 进程 env 解析调用域。brain 在 spawn 时注入 MSTD_SESSION_KEY（+私聊的 MSTD_CHAT_ID）；
 // job Pi 只有 MSTD_JOB_WORKDIR；两者皆无 = unknown（fail-closed 全拒）。
 export function resolveLarkScope(env = {}) {
-  const ownerOpenId = String(env.MSTD_OWNER_OPEN_ID ?? "").trim() || null;
+  const ownerOpenId = String(env.MSTD_PRIVATE_DATA_OWNER_OPEN_ID ?? "").trim() || null;
   const sessionKey = String(env.MSTD_SESSION_KEY ?? "").trim();
   if (sessionKey) {
     let parsed = null;

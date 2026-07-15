@@ -109,11 +109,14 @@ export function budgetWindow(rows, { budget = 2048, format = (r) => String(r) } 
 }
 
 export function createTriage({ caller, store, soul = "", windowTokens = 2048 }) {
+  if (typeof store?.promptRecent !== "function") {
+    throw new Error("createTriage: store.promptRecent 安全接口必填");
+  }
   async function triage({ session, items, mode, snapshot = null, brainBusy = false }) {
-    // C3.2:近期语义用 store.recent(transcript 取的是最早 n 条),历史行走统一 helper;
+    // C3.2/P0:近期语义只用 promptRecent allowlist，历史行走统一 helper;
     // 排除 system——压缩摘要不得以 [用户] 身份泄入分诊上下文。
     // 上限 200 行只是 SQL 取数保护,真正的边界是 token 预算窗口
-    const rows = store.recent(session.id, { limit: 200, roles: ["user", "assistant", "tool"] });
+    const rows = store.promptRecent(session.id, { limit: 200, roles: ["user", "assistant", "tool"] });
     const recent = budgetWindow(rows, { budget: windowTokens, format: formatHistoryLine }).join("\n");
     const memoryBlock = snapshot
       ? `\n## 记忆快照\n${[snapshot.org, snapshot.scoped].filter(Boolean).join("\n")}`

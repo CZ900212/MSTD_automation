@@ -109,7 +109,7 @@ describe("buildLarkReadArgs 全域扩容（迭代二 T1.2）", () => {
     const fill = {
       minute_token: "m", query: "q", chat_id: "oc_abc", doc: "d", space_id: "s", node_token: "n",
       spreadsheet_token: "st", sheet_id: "si", range: "A1:B2", base_token: "bt", table_id: "ti",
-      user_id: "ou_abc", message_id: "mi", date_from: 20260701, date_to: 20260712,
+      user_id: "ou_abc", message_id: "mi", task_guid: "guid-123", date_from: 20260701, date_to: 20260712,
     };
     for (const op of READ_OP_NAMES) {
       const argv = buildLarkReadArgs(op, op === "attendance" ? { user_id: "e1", date_from: 20260701, date_to: 20260712 } : fill);

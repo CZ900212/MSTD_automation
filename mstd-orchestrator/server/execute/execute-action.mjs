@@ -53,6 +53,17 @@ export async function executeApprovedAction(db, { actionId, approvedHash, runLar
     return { ok: false, reason: "provenance_mismatch", status: "failed" };
   }
 
+  // 执行前从持久化 payload 重建 canonical hash，防止批准后只篡改 JSON 内容而保留 hash 列。
+  if (action.kind !== "notify_task_assignee") {
+    try {
+      const rebuilt = buildAgentAction({ jobId: action.job_id, kind: action.kind, payload, ordinal: action.ordinal ?? 0 });
+      if (rebuilt.payload_hash !== action.payload_hash) throw new Error("canonical 重建 hash 漂移");
+    } catch (e) {
+      markStatus(db, action.id, "failed", JSON.stringify({ error: "dry_validation_failed", detail: String(e.message || e) }));
+      return { ok: false, reason: "dry_validation_failed", status: "failed" };
+    }
+  }
+
   try {
     assertTestTarget({ kind: action.kind, payload }, testTarget);
   } catch (e) {

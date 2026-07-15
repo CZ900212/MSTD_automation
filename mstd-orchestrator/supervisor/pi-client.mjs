@@ -15,15 +15,38 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildPiEnv, parseRpcLine, isTerminalEvent } from "../server/pi/rpc-protocol.mjs";
 import { makeStreamProcessor } from "../server/pi/stream-processor.mjs";
+import { resolveCapabilityProfile } from "../server/pi/resident-extensions.mjs";
 
-const PI_BIN = join(homedir(), ".hermes", "node", "bin", "pi");
+export const PI_BIN = join(homedir(), ".hermes", "node", "bin", "pi");
 
-export function startPi({ provider, model, extensions = [], thinking, cwd, env, debug = false } = {}) {
-  const args = ["--mode", "rpc", "-a", "--no-session"];
+function profileArgs(capabilityProfile) {
+  if (!capabilityProfile) return [];
+  const profile = resolveCapabilityProfile(capabilityProfile);
+  // Profiles are a real runtime boundary, not metadata: disable discovery and
+  // built-ins, then enable precisely the extension tools bound to this profile.
+  const args = ["--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-builtin-tools"];
+  for (const { path } of profile.extensions) args.push("-e", path);
+  if (profile.tools.length > 0) args.push("--tools", profile.tools.join(","));
+  else args.push("--no-tools");
+  return args;
+}
+
+export function buildPiArgs({ provider, model, extensions = [], capabilityProfile = null, thinking } = {}) {
+  if (capabilityProfile && extensions.length > 0) {
+    throw new Error("Pi capabilityProfile 与裸 extensions 不可混用");
+  }
+  // --no-approve 显式拒信任 cwd 项目本地文件（0.80.3 里 -a 是 projectTrustOverride，
+  // 会加载项目本地扩展/skills；不传则遇到此类资源走交互信任流程，headless 下不可接受）。
+  const args = ["--mode", "rpc", "--no-approve", "--no-session", ...(profileArgs(capabilityProfile))];
   for (const e of extensions) args.push("-e", e);
   if (provider) args.push("--provider", provider);
   if (model) args.push("--model", model);
   if (thinking) args.push("--thinking", thinking);
+  return args;
+}
+
+export function startPi({ provider, model, extensions = [], capabilityProfile = null, thinking, cwd, env, debug = false } = {}) {
+  const args = buildPiArgs({ provider, model, extensions, capabilityProfile, thinking });
 
   const child = spawn(PI_BIN, args, {
     cwd: cwd || process.cwd(),

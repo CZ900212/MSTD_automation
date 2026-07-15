@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { scanForInjection } from "../server/memory/scan.mjs";
+import { scanPromptInjection as scanForInjection } from "../server/safety/injection-signals.mjs";
 
 describe("注入扫描（记忆写入/cron prompt 前置）", () => {
   const bad = [

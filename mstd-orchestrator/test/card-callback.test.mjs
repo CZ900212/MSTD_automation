@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createConfirmFlow } from "../server/cards/confirm-flow.mjs";
-import { stableHash } from "../server/safety/action-dsl.mjs";
+import { canonicalizeActions, stableHash } from "../server/safety/action-dsl.mjs";
+import { recordActions } from "../server/safety/action-store.mjs";
 import { createHeartbeatStore } from "../server/ticker/heartbeat-store.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -83,9 +84,22 @@ describe("卡片回调消费（operator/token/hash 三重校验）", () => {
   });
 
   it("重复点击 → 第二次被卡片状态拦截", async () => {
-    await flow.handleCardAction(evt());
-    const out2 = await flow.handleCardAction(evt());
+    const ak = db.prepare("SELECT action_key FROM job_actions WHERE job_id = ?").get(jobId).action_key;
+    const form = { [`Person_assignee_${ak}`]: ["ou_pick"] };
+    await flow.handleCardAction(evt({ formValue: form }));
+    const out2 = await flow.handleCardAction(evt({ formValue: form }));
     expect(out2.toast.content).toContain("已处理");
+  });
+
+  it("负责人未选就点确认 → toast 拦截，token 不消费，卡留 pending 可补选重点", async () => {
+    const out = await flow.handleCardAction(evt());
+    expect(out.toast.content).toContain("请先选择任务负责人");
+    expect(db.prepare("SELECT used_at FROM approval_tokens WHERE job_id = ?").get(jobId).used_at).toBeNull();
+    expect(db.prepare("SELECT status FROM confirm_cards WHERE job_id = ?").get(jobId).status).toBe("pending");
+    // 补选后同一张卡可正常确认
+    const ak = db.prepare("SELECT action_key FROM job_actions WHERE job_id = ?").get(jobId).action_key;
+    const out2 = await flow.handleCardAction(evt({ formValue: { [`Person_assignee_${ak}`]: ["ou_pick"] } }));
+    expect(JSON.stringify(out2.card)).toContain("执行中");
   });
 
   it("取消 → 卡片翻已取消，不执行", async () => {
@@ -112,6 +126,7 @@ describe("卡片回调消费（operator/token/hash 三重校验）", () => {
     const approved = JSON.parse(d.approved_action_keys_json);
     expect(approved).toEqual(after.map((x) => ({ action_key: x.action_key, payload_hash: x.payload_hash })));
     expect(d.payload_hash_at_decision).toBe(stableHash(approved));
+    expect(d.provenance_hash_at_decision).toBeNull();
     const tok = db.prepare("SELECT id, used_at FROM approval_tokens WHERE job_id = ?").get(jobId);
     expect(d.approval_token_id).toBe(tok.id);
     expect(tok.used_at).not.toBeNull();                     // token 确实在同一事务里被消费
@@ -159,6 +174,82 @@ describe("卡片回调消费（operator/token/hash 三重校验）", () => {
     expect(db.prepare("SELECT payload_hash FROM job_actions WHERE job_id = ?").get(jobId).payload_hash).toBe(before);
     await sleep(20);
     expect(db.prepare("SELECT status FROM job_actions WHERE job_id = ?").get(jobId).status).toBe("pending");  // 未执行
+  });
+
+  it("会议任务选人同步更新任务与唯一通知，decision 绑定两条新 hash", async () => {
+    const meetingJobId = "meeting-notify";
+    db.prepare(
+      "INSERT INTO orch_jobs (id, template_id, status, created_at, updated_at) VALUES (?, 'meeting_to_task', 'awaiting_confirm', 1, 1)"
+    ).run(meetingJobId);
+    recordActions(db, meetingJobId, canonicalizeActions({
+      jobId: meetingJobId,
+      notificationMode: "card",
+      items: [{ owner_name: "张三", task: "完成询价", due: "2026-07-15", suggested_open_id: null, confidence: "low" }],
+    }));
+    outbound.sendCard.mockResolvedValueOnce({ messageId: "om_meeting_notify" });
+    const r = await flow.startConfirmFlowForJob({
+      jobId: meetingJobId, initiatorOpenId: "ou_init", deliverTo: "feishu:p2p:ou_init", title: "会议待办确认",
+    });
+    const card = outbound.sendCard.mock.calls.at(-1)[0].cardJson;
+    const token = JSON.stringify(card).match(/"token_ref":"([^"]+)"/)[1];
+    const [taskBefore, noticeBefore] = db.prepare(
+      "SELECT * FROM job_actions WHERE job_id=? ORDER BY ordinal"
+    ).all(meetingJobId);
+
+    await flow.handleCardAction({
+      operator: { open_id: "ou_init" },
+      context: { open_message_id: r.messageId },
+      action: {
+        value: { action: "confirm", token_ref: token },
+        form_value: { [`Person_assignee_${taskBefore.action_key}`]: ["ou_pick"] },
+      },
+    });
+    const [taskAfter, noticeAfter] = db.prepare(
+      "SELECT * FROM job_actions WHERE job_id=? ORDER BY ordinal"
+    ).all(meetingJobId);
+    expect(JSON.parse(taskAfter.canonical_payload_json).assignee_open_id).toBe("ou_pick");
+    expect(JSON.parse(noticeAfter.canonical_payload_json).to_open_id).toBe("ou_pick");
+    expect(taskAfter.payload_hash).not.toBe(taskBefore.payload_hash);
+    expect(noticeAfter.payload_hash).not.toBe(noticeBefore.payload_hash);
+    const approved = JSON.parse(db.prepare("SELECT approved_action_keys_json FROM decisions WHERE job_id=?").get(meetingJobId).approved_action_keys_json);
+    expect(approved).toEqual([
+      { action_key: taskAfter.action_key, payload_hash: taskAfter.payload_hash },
+      { action_key: noticeAfter.action_key, payload_hash: noticeAfter.payload_hash },
+    ]);
+    await sleep(20);
+  });
+
+  it("重复通知关联使整个选人事务回滚", async () => {
+    const meetingJobId = "meeting-duplicate-notice";
+    db.prepare(
+      "INSERT INTO orch_jobs (id, template_id, status, created_at, updated_at) VALUES (?, 'meeting_to_task', 'awaiting_confirm', 1, 1)"
+    ).run(meetingJobId);
+    const actions = canonicalizeActions({
+      jobId: meetingJobId,
+      notificationMode: "card",
+      items: [{ owner_name: "张三", task: "完成询价", due: null, suggested_open_id: null, confidence: "low" }],
+    });
+    const duplicate = { ...actions[1], action_key: `${actions[1].action_key}-duplicate`, ordinal: 2 };
+    recordActions(db, meetingJobId, [...actions, duplicate]);
+    outbound.sendCard.mockResolvedValueOnce({ messageId: "om_duplicate_notice" });
+    const r = await flow.startConfirmFlowForJob({
+      jobId: meetingJobId, initiatorOpenId: "ou_init", deliverTo: "feishu:p2p:ou_init",
+    });
+    const token = JSON.stringify(outbound.sendCard.mock.calls.at(-1)[0].cardJson).match(/"token_ref":"([^"]+)"/)[1];
+    const taskBefore = db.prepare("SELECT * FROM job_actions WHERE job_id=? AND kind='create_task'").get(meetingJobId);
+    const out = await flow.handleCardAction({
+      operator: { open_id: "ou_init" }, context: { open_message_id: r.messageId },
+      action: {
+        value: { action: "confirm", token_ref: token },
+        form_value: { [`Person_assignee_${taskBefore.action_key}`]: ["ou_pick"] },
+      },
+    });
+    expect(JSON.stringify(out.card)).toContain("表单不合规");
+    const taskAfter = db.prepare("SELECT * FROM job_actions WHERE id=?").get(taskBefore.id);
+    expect(taskAfter.payload_hash).toBe(taskBefore.payload_hash);
+    expect(taskAfter.target_open_id).toBeNull();
+    expect(db.prepare("SELECT used_at FROM approval_tokens WHERE job_id=?").get(meetingJobId).used_at).toBeNull();
+    expect(db.prepare("SELECT COUNT(*) n FROM decisions WHERE job_id=?").get(meetingJobId).n).toBe(0);
   });
 
   it("form 非法：整个确认事务回滚——token 未消费、零 decision、卡终态 partial_failed", async () => {

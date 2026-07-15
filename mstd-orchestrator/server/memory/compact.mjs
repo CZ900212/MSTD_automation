@@ -7,24 +7,32 @@ export const estimateTokens = (transcript) =>
 
 export const shouldCompact = (transcriptTokens, threshold) => transcriptTokens > threshold;
 
-// C3.5:nudge 判定已迁 store.claimMemoryNudge(持久 watermark,重启不重复);
-// 本文件只保留提示文案。
-export const NUDGE_NOTE =
-  "【系统提醒】已累积较多对话，请检查是否有值得长期记住的事实/偏好/决定，用 memory 工具整理（新增/更新/淘汰）。整理完继续正常回复，不必向用户提及。";
+// C3.5:nudge 作为独立的静默维护回合执行，绝不混入业务 brief。
+export const NUDGE_MAINTENANCE_BRIEF =
+  "【系统维护回合】已累积较多对话。请检查是否有值得长期记住的事实/偏好/决定，用 memory 工具整理（新增/更新/淘汰）。不要给用户发任何消息（不要调用 reply）。";
 
 const FLUSH_BRIEF =
   "【系统维护回合】会话即将压缩。请把本会话中值得长期记住的信息（事实/偏好/决定/未完成事项）用 memory 工具写入对应记忆层。不要给用户发任何消息（不要调用 reply）。";
 
 export function createCompactor({ caller, store, thresholdTokens = 60_000, keepRecent = 20, log = console.error }) {
+  if (typeof store?.memoryTranscript !== "function") {
+    throw new Error("createCompactor: store.memoryTranscript 安全接口必填");
+  }
   async function maybeCompact({ session, sessionKey, brain, snapshot = null }) {
-    const transcript = store.transcript(session.id, { limit: 1000 });
+    const transcript = store.memoryTranscript(session.id, { limit: 1000 });
     const compactable = transcript.filter((m) => m.role !== "system");
     if (!shouldCompact(estimateTokens(compactable), thresholdTokens)) return { compacted: false };
     if (compactable.length <= keepRecent) return { compacted: false };
 
     // ① flush 先行：让模型把要紧事写入记忆
     try {
-      await brain.turn({ session, sessionKey, brief: FLUSH_BRIEF, snapshot });
+      await brain.turn({
+        session,
+        sessionKey,
+        purpose: "memory_maintenance",
+        brief: FLUSH_BRIEF,
+        snapshot,
+      });
     } catch (e) {
       log(`[compact] flush 回合失败（继续压缩）: ${e?.message ?? e}`);
     }

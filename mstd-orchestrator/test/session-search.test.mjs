@@ -34,11 +34,20 @@ describe("session_search（FTS + 权限过滤）", () => {
     expect(other.hits).toHaveLength(0);
   });
 
-  it("debug 会话可搜全部；短查询走 LIKE 也能中", () => {
-    const all = search.run({ query: "武汉项目" }, { sessionKey: "debug:d1" });
-    expect(all.hits).toHaveLength(3);
-    const short = search.run({ query: "预算" }, { sessionKey: "debug:d1" });   // 2 字 → LIKE
+  it("debug 会话只搜自会话，不再有无限范围；cron/未知一律拒绝", () => {
+    const d = store.getOrCreate("debug:d1", { kind: "debug" });
+    store.append(d.id, { role: "user", content: "武汉项目调试台备注", ts: 5000 });
+    const own = search.run({ query: "武汉项目" }, { sessionKey: "debug:d1" });
+    expect(own.hits).toHaveLength(1);
+    expect(own.hits[0].sessionKey).toBe("debug:d1");
+    const cron = search.run({ query: "武汉项目" }, { sessionKey: "cron:tick" });
+    expect(cron.ok).toBe(false);
+  });
+
+  it("短查询走 LIKE 也能命中，且同样只在本会话域内", () => {
+    const short = search.run({ query: "预算" }, { sessionKey: "feishu:group:oc_B" });   // 2 字 → LIKE
     expect(short.hits).toHaveLength(1);
+    expect(short.hits[0].sessionKey).toBe("feishu:group:oc_B");
   });
 
   it("软删消息不出现在结果", () => {

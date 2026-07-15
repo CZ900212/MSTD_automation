@@ -21,8 +21,9 @@ describe("resolveLarkScope（env → 调用域）", () => {
     expect(resolveLarkScope({ MSTD_SESSION_KEY: "feishu:p2p:ou_zhang" }).chatId).toBeNull();
   });
 
-  it("owner 从 MSTD_OWNER_OPEN_ID 透传", () => {
-    expect(resolveLarkScope({ MSTD_SESSION_KEY: "feishu:p2p:ou_o", MSTD_OWNER_OPEN_ID: "ou_o" }).ownerOpenId).toBe("ou_o");
+  it("owner 只从 MSTD_PRIVATE_DATA_OWNER_OPEN_ID 透传，alert/旧变量不授权", () => {
+    expect(resolveLarkScope({ MSTD_SESSION_KEY: "feishu:p2p:ou_o", MSTD_PRIVATE_DATA_OWNER_OPEN_ID: "ou_o" }).ownerOpenId).toBe("ou_o");
+    expect(resolveLarkScope({ MSTD_SESSION_KEY: "feishu:p2p:ou_o", MSTD_ALERT_OPEN_ID: "ou_o", MSTD_OWNER_OPEN_ID: "ou_o" }).ownerOpenId).toBeNull();
   });
 
   it("job：无 sessionKey 但有 MSTD_JOB_WORKDIR", () => {
@@ -127,6 +128,7 @@ describe("元数据与公司资产类", () => {
       expect(buildLarkReadArgsScoped("read_doc", { doc: "https://x.feishu.cn/docx/A" }, scope)[0]).toBe("docs");
       expect(buildLarkReadArgsScoped("agenda", {}, scope)[0]).toBe("calendar");
       expect(buildLarkReadArgsScoped("my_tasks", {}, scope)[0]).toBe("task");
+      expect(buildLarkReadArgsScoped("get_task", { task_guid: "guid-123" }, scope)).toEqual(["task", "tasks", "get", "--task-guid", "guid-123", "--as", "user"]);
     }
   });
 
@@ -134,7 +136,7 @@ describe("元数据与公司资产类", () => {
     const fill = {
       minute_token: "m", query: "q", chat_id: "oc_abc", doc: "d", space_id: "s", node_token: "n",
       spreadsheet_token: "st", sheet_id: "si", range: "A1:B2", base_token: "bt", table_id: "ti",
-      user_id: "ou_abc", message_id: "mi", date_from: 20260701, date_to: 20260712,
+      user_id: "ou_abc", message_id: "mi", task_guid: "guid-123", date_from: 20260701, date_to: 20260712,
     };
     for (const op of READ_OP_NAMES) {
       const params = op === "attendance" ? { user_id: "e1", date_from: 20260701, date_to: 20260712 } : fill;

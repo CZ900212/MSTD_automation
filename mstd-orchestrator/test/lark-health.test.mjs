@@ -24,4 +24,15 @@ describe("lark health", () => {
     expect(alert).toHaveBeenCalledTimes(1);
     h.stop();
   });
+
+  it("turns a runner exception into an unready result rather than rejecting readiness", async () => {
+    const h = startLarkHealth({
+      runLark: async () => { throw new Error("lark executable unavailable"); },
+      log: () => {},
+      setIntervalFn: () => ({ unref() {} }),
+    });
+    await expect(h.checkOnce()).resolves.toMatchObject({ ok: false, ready: false });
+    expect(h.last.detail).toMatch(/unavailable/);
+    h.stop();
+  });
 });

@@ -8,6 +8,9 @@ import { openDb, migrate } from "../server/db/index.mjs";
 import { makeRunLark } from "../server/execute/run-lark.mjs";
 import { createOutbound } from "../server/gateway/outbound.mjs";
 import { createConfirmFlow } from "../server/cards/confirm-flow.mjs";
+import { canonicalizeActions } from "../server/safety/action-dsl.mjs";
+import { recordActions } from "../server/safety/action-store.mjs";
+import { createJob } from "../server/store/jobs.mjs";
 import { testTargetFromEnv } from "../server/execute/write-target.mjs";
 
 const RUN = String(process.env.MSTD_E2E ?? "") === "1" && String(process.env.MSTD_ENABLE_WRITE ?? "") === "1";
@@ -79,5 +82,72 @@ describe.skipIf(!RUN)("Phase D E2E · 卡片确认真写闭环", () => {
     }
     expect(reinjected).toHaveLength(1);
     expect(reinjected[0].ok).toBe(true);
+  }, 180_000);
+
+  it("会议 action 真链：选一次负责人→真建任务→同一人收到固定通知卡", async () => {
+    const db = openDb(join(ROOT, "db", "e2e-write.sqlite"));
+    migrate(db);
+    const runLark = makeRunLark({ profile: process.env.LARK_PROFILE });
+    const realOutbound = createOutbound({ runLark });
+    let sentCardJson = null;
+    const outbound = {
+      ...realOutbound,
+      sendCard: async (args) => { sentCardJson = args.cardJson; return realOutbound.sendCard(args); },
+    };
+    const flow = createConfirmFlow({
+      db, outbound, renderCardCopy: null, runLark,
+      testTarget: testTargetFromEnv(process.env),
+    });
+    const stamp = Date.now();
+    const title = `[E2E通知] 询价跟进 ${stamp}`;
+    const job = createJob(db, {
+      templateId: "meeting_to_task", title: "会议任务通知确认（E2E）",
+      paramsJson: JSON.stringify({ sessionKey: `feishu:p2p:${INITIATOR}`, initiatorOpenId: INITIATOR }),
+      status: "awaiting_confirm",
+    });
+    const actions = canonicalizeActions({
+      jobId: job.id, notificationMode: "card",
+      items: [{ owner_name: "待选择", task: title, due: null, suggested_open_id: null, confidence: "low" }],
+    });
+    recordActions(db, job.id, actions);
+
+    const r = await flow.startConfirmFlowForJob({
+      jobId: job.id, actions, initiatorOpenId: INITIATOR,
+      deliverTo: `feishu:p2p:${INITIATOR}`, title: "会议任务通知确认（E2E）",
+    });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const tokenRef = JSON.stringify(sentCardJson).match(/"token_ref":"([^"]+)"/)?.[1];
+    expect(tokenRef).toBeTruthy();
+    const task = db.prepare("SELECT * FROM job_actions WHERE job_id=? AND kind='create_task'").get(job.id);
+
+    await flow.handleCardAction({
+      operator: { open_id: INITIATOR },
+      context: { open_message_id: r.messageId },
+      action: {
+        value: { action: "confirm", token_ref: tokenRef },
+        form_value: { [`Person_assignee_${task.action_key}`]: [INITIATOR] },
+      },
+    });
+
+    const deadline = Date.now() + 60_000;
+    let cardStatus = "pending";
+    while (Date.now() < deadline) {
+      cardStatus = db.prepare("SELECT status FROM confirm_cards WHERE job_id=?").get(job.id).status;
+      if (cardStatus === "done" || cardStatus === "partial_failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    const rows = db.prepare("SELECT * FROM job_actions WHERE job_id=? ORDER BY ordinal").all(job.id);
+    expect(cardStatus, rows.map((x) => x.result_json).join("\n")).toBe("done");
+    expect(rows.map((x) => [x.kind, x.status])).toEqual([
+      ["create_task", "succeeded"], ["notify_task_assignee", "succeeded"],
+    ]);
+    const taskPayload = JSON.parse(rows[0].canonical_payload_json);
+    const noticePayload = JSON.parse(rows[1].canonical_payload_json);
+    expect(taskPayload.assignee_open_id).toBe(INITIATOR);
+    expect(noticePayload.to_open_id).toBe(INITIATOR);
+
+    const list = await runLark(["task", "+get-my-tasks", "--as", "user", "--json"]);
+    expect(list.stdout).toContain(title);
+    expect(rows[1].result_json).toContain("message_id");
   }, 180_000);
 });

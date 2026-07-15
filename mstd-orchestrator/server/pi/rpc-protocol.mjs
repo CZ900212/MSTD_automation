@@ -1,3 +1,4 @@
+// CZ_CLAUDE_KEY 仅保留为 Pi RPC 协议兼容能力位；当前模型链与扩展均不消费它。
 const ENV_ALLOW = ["PATH", "HOME", "LANG", "TZ", "CZ_GPT_KEY", "CZ_CLAUDE_KEY", "DEEPSEEK_KEY"];
 
 export function parseRpcLine(line) {

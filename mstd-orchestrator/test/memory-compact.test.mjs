@@ -33,6 +33,9 @@ describe("上下文压缩 + flush + nudge", () => {
       const r = await compactor.maybeCompact({ session, sessionKey: "feishu:p2p:ou_a", brain });
       expect(r.compacted).toBe(true);
       expect(calls[0]).toBe("flush");                       // flush 先行
+      expect(brain.turn).toHaveBeenCalledWith(expect.objectContaining({
+        purpose: "memory_maintenance",
+      }));
       expect(calls[1]).toBe("summarize:reason");            // 摘要走 reason 链
       const t = store.transcript(session.id);
       expect(t.filter((m) => m.role !== "system")).toHaveLength(20);   // 近 20 条保留
@@ -44,8 +47,8 @@ describe("上下文压缩 + flush + nudge", () => {
     });
   });
 
-  // Task 6：earlyText 统一历史行——tool 行标 [内部记录] 不冒充用户
-  it("earlyText 的 tool 行标 [内部记录]", async () => {
+  // P0：tool-internal 不进入记忆压缩模型输入。
+  it("earlyText 排除 tool-internal", async () => {
     const db = openDb(); migrate(db);
     const store = createSessionStore(db);
     const session = store.getOrCreate("feishu:p2p:ou_t6", { kind: "p2p" });
@@ -59,8 +62,7 @@ describe("上下文压缩 + flush + nudge", () => {
     });
     expect(r.compacted).toBe(true);
     const earlyText = call.mock.calls[0][1].messages[0].content;
-    expect(earlyText).toContain("[内部记录]: 内部X");
-    expect(earlyText).not.toContain("[用户]: 内部X");
+    expect(earlyText).not.toContain("内部X");
   });
 
   // Task 7:nudge 判定迁 store.claimMemoryNudge(持久 watermark),状态机测试见 session-store.test.mjs

@@ -15,6 +15,7 @@ export function createJobLauncher({
   buffer,
   registry,
   extensions = [],
+  capabilityProfile = null,
   piCwd,
   now = () => Date.now(),
   onActionsReady = null,     // E7：常驻 agent 卡片确认链路钩子
@@ -32,7 +33,9 @@ export function createJobLauncher({
         registry,
         job,
         extensions,
+        capabilityProfile,
         piOptions: { ...(config.pi ?? {}), cwd: piCwd },
+        notificationMode: config.meetingTaskNotificationMode ?? "none",
         now,
         onActionsReady,
       });

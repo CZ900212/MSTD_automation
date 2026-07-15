@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# mstd — 民商通达常驻编排服务启停器。任意目录一个词启动/停止/看状态。
+#   mstd            启动当前目录拥有的 daemon，并核验消费者（默认）
+#   mstd start      同上
+#   mstd stop       停止服务及其飞书事件消费子进程
+#   mstd restart    stop + start
+#   mstd status     看运行状态与消费者健康
+#   mstd logs       实时跟随 daemon.log
+set -euo pipefail
+
+# —— 定位 orchestrator 根目录（跟随 symlink，任意位置调用都对）——
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PROFILE="${MSTD_LARK_PROFILE:-}"
+PORT="${PORT:-8899}"
+LOG="$ROOT/daemon.log"
+ENTRY="server/index.mjs"
+PID_FILE="${MSTD_PID_FILE:-$ROOT/daemon.pid}"
+
+green() { printf "\033[32m%s\033[0m\n" "$1"; }
+red()   { printf "\033[31m%s\033[0m\n" "$1"; }
+dim()   { printf "\033[2m%s\033[0m\n" "$1"; }
+
+owned_pid() {
+  [ -f "$PID_FILE" ] || return 1
+  local pid command
+  pid="$(tr -d '[:space:]' < "$PID_FILE")"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command" == *"$ENTRY"* ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+running() { owned_pid >/dev/null; }
+
+child_matches() {
+  local pid="$1" pattern="$2"
+  pgrep -P "$pid" -f "$pattern" >/dev/null 2>&1
+}
+
+verify() {
+  local ok=0 pid
+  pid="$(owned_pid)" || return 1
+  if child_matches "$pid" "event consume im.message.receive_v1 --as bot"; then
+    green "  ✅ 聊天消费者 im.message.receive_v1"
+  else
+    red  "  ❌ 聊天消费者缺失（小达会装聋——多半 MSTD_ENABLE_AGENT 没生效）"; ok=1
+  fi
+  if child_matches "$pid" "event consume card.action.trigger --as bot"; then
+    green "  ✅ 卡片消费者 card.action.trigger"
+  else
+    red  "  ❌ 卡片消费者缺失"; ok=1
+  fi
+  if child_matches "$pid" "event consume minutes.minute.generated_v1 --as user"; then
+    green "  ✅ 妙记消费者 minutes.minute.generated_v1"
+  else
+    dim  "  – 妙记消费者未启（MSTD_ENABLE_TRIGGER=0 时正常）"
+  fi
+  if lsof -a -p "$pid" -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    green "  ✅ 端口 $PORT 监听中"
+  else
+    red  "  ❌ 端口 $PORT 未监听"; ok=1
+  fi
+  return $ok
+}
+
+start() {
+  if running; then
+    red "当前 CLI 已拥有运行中的 daemon（pid $(owned_pid)）；请用 mstd restart。"
+    exit 1
+  fi
+  rm -f "$PID_FILE"
+  if pgrep -f "$ENTRY" >/dev/null 2>&1; then
+    red "发现不属于当前 PID 文件的 daemon；为避免误杀，拒绝启动第二个 consumer。"
+    exit 1
+  fi
+  # ${ROOT} 带大括号：紧跟全角括号时部分 bash 会把多字节字符并入变量名
+  echo "▶ 启动 orchestrator（${ROOT}）…"
+  cd "$ROOT"
+  nohup node --env-file=.env "$ENTRY" > "$LOG" 2>&1 &
+  printf '%s\n' "$!" > "$PID_FILE"
+  disown || true
+  # 轮询等 gateway 起来（正常 ~6s，给到 25s）；进程若启动即退出则报错
+  local up=0
+  for _ in $(seq 1 25); do
+    sleep 1
+    if grep -q "agent gateway on" "$LOG" 2>/dev/null; then up=1; break; fi
+    if ! running; then
+      rm -f "$PID_FILE"
+      red "进程启动即退出，日志尾部："; echo; tail -20 "$LOG"; exit 1
+    fi
+  done
+  echo
+  if [ "$up" != 1 ]; then
+    red "等待 25s 仍未见 'agent gateway on'，日志尾部："; echo; tail -20 "$LOG"; exit 1
+  fi
+  green "已启动。核验："
+  if verify; then
+    echo
+    dim "日志: mstd logs   状态: mstd status   停止: mstd stop"
+  else
+    echo
+    red "部分组件未就绪，日志尾部："; echo; tail -20 "$LOG"; exit 1
+  fi
+}
+
+stop() {
+  local pid children
+  if ! pid="$(owned_pid)"; then
+    rm -f "$PID_FILE"
+    dim "当前 CLI 没有拥有运行中的 daemon；未终止任何进程。"
+    return 0
+  fi
+  echo "▶ 停止 pid $pid…"
+  children="$(pgrep -P "$pid" 2>/dev/null || true)"
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    red "pid $pid 未按时退出，仅强制终止该 PID。"
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  for child in $children; do kill "$child" 2>/dev/null || true; done
+  rm -f "$PID_FILE"
+  green "已停止。"
+}
+
+status() {
+  if running; then
+    green "orchestrator 运行中（pid $(owned_pid)，profile=${PROFILE:-由 .env 提供}）"
+    verify || true
+  else
+    red "orchestrator 未运行。敲 'mstd' 启动。"
+    exit 1
+  fi
+}
+
+case "${1:-start}" in
+  start|"") start ;;
+  stop)     stop ;;
+  restart)  stop; echo; start ;;
+  status)   status ;;
+  logs)     exec tail -f "$LOG" ;;
+  -h|--help|help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) red "未知命令: $1"; echo "用法: mstd [start|stop|restart|status|logs]"; exit 1 ;;
+esac

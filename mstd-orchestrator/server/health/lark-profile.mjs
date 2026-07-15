@@ -11,11 +11,21 @@ export function startLarkHealth({
   let last = { ok: null, ts: 0, detail: "" };
 
   async function checkOnce(now = Date.now()) {
-    const r = await runLark(["auth", "status"]);
+    let r;
+    try {
+      r = await runLark(["auth", "status"]);
+    } catch (error) {
+      r = { exitCode: null, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+    }
     const text = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
     const ok = r.exitCode === 0 && !/expired|unauthorized|not logged in|invalid/i.test(text);
     const wasOk = last.ok;
-    last = { ok, ts: now, detail: ok ? "" : text.trim().slice(0, 500) };
+    last = {
+      ok,
+      ready: ok,
+      ts: now,
+      detail: ok ? "" : (text.trim().slice(0, 500) || `lark auth status exit=${r.exitCode ?? "unknown"}`),
+    };
     // 边沿：首查即坏(null→false) 或 ok→fail；连续失败不重复告警
     if (!ok && wasOk !== false) {
       log(`[health] lark profile 异常: ${last.detail}`);

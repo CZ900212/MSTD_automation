@@ -71,8 +71,12 @@ describe.skipIf(!E2E)("C1 E2E · persona 真机生效（人格/记号契约）",
     expect(existsSync(WORKSPACE), `agent workspace 未创建: ${WORKSPACE}`).toBe(true);
   }
 
-  async function botTextsAfter(runLark, sinceMs, { timeoutMs = 150_000 } = {}) {
+  async function botTextsAfter(runLark, sinceMs, {
+    timeoutMs = 150_000,
+    until = (text) => text.trim().length > 0,
+  } = {}) {
     const deadline = Date.now() + timeoutMs;
+    let latest = "";
     while (Date.now() < deadline) {
       const r = await runLark([
         "im", "+chat-messages-list", "--as", "bot", "--chat-id", P2P_CHAT,
@@ -84,16 +88,18 @@ describe.skipIf(!E2E)("C1 E2E · persona 真机生效（人格/记号契约）",
         const fromBot = items.filter((m) =>
           m?.sender?.sender_type === "app" || m?.sender?.id_type === "app_id");
         if (fromBot.length) {
-          // 真机形状:此列表接口 content 是顶层纯文本字符串(非 body.content JSON)
-          return fromBot.map((m) => {
+          // ACK/progress are deliberately non-terminal. Keep polling until the scenario's
+          // final-answer contract is satisfied instead of returning the first bot effect.
+          latest = fromBot.map((m) => {
             const raw = m.body?.content ?? m.content ?? "";
             try { return JSON.parse(raw).text ?? String(raw); } catch { return String(raw); }
           }).join("\n");
+          if (until(latest)) return latest;
         }
       } catch { /* 继续轮询 */ }
       await sleep(5000);
     }
-    return "";
+    return latest;
   }
 
   // lark-cli 偶发空返回(真机观测),发送重试 3 次
@@ -116,7 +122,10 @@ describe.skipIf(!E2E)("C1 E2E · persona 真机生效（人格/记号契约）",
     const t0 = Date.now();
     await sendWithRetry(runLark, "你是谁?对话记录里的 [@我] 记号是什么意思?", `e2e-c1-${t0}`);
 
-    const text = await botTextsAfter(runLark, t0 - 1000);
+    const text = await botTextsAfter(runLark, t0 - 1000, {
+      until: (candidate) => candidate.includes("小达")
+        && /对我|@.{0,4}我|叫我|喊我/.test(candidate),
+    });
     expect(text, `bot 未回复。daemon 日志：\n${logs.join("").slice(-3000)}`).not.toBe("");
     expect(text).toContain("小达");                            // 人格生效
     expect(text).not.toMatch(/不是小达/);                       // §5.2:排除否定式假绿

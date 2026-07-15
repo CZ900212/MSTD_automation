@@ -2,8 +2,20 @@ import { createHash } from "node:crypto";
 import { parseStrictIsoWithTimezone } from "../time/strict-iso.mjs";
 import { canonicalDeliverableKey } from "../sessions/session-key.mjs";
 
+// open_id 唯一校验器：outbound 出站与 initiator 门禁同用此处，不得各持一份正则。
+const OPEN_ID_PATTERN = /^ou_[a-zA-Z0-9]+$/;
+
 export function isValidOpenId(v) {
-  return typeof v === "string" && /^ou_/.test(v);
+  return typeof v === "string" && OPEN_ID_PATTERN.test(v);
+}
+
+// task_guid 唯一约束：action 规范化与 write-args 执行侧共用（payload_hash 之外规则单一来源）。
+export function isValidTaskGuid(v) {
+  return typeof v === "string" && !!v.trim() && v.length <= 256 && !/[\u0000-\u001f\u007f]/.test(v);
+}
+
+export function isValidDocToken(v) {
+  return typeof v === "string" && /^[a-zA-Z0-9_-]{8,256}$/.test(v);
 }
 
 export function canonicalJson(value) {
@@ -21,6 +33,84 @@ export function canonicalJson(value) {
 
 export function stableHash(value) {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+// 溯源是批准上下文的一部分，而不是模型卡片文案。保留任意 JSON 以便审计，
+// 但卡片永不渲染其中的原始字符串（它们可能来自不可信内容）。
+export function canonicalizeProvenanceManifest(manifest) {
+  if (manifest == null) return { json: null, hash: null };
+  const json = canonicalJson(manifest);
+  if (Buffer.byteLength(json, "utf8") > 16 * 1024) throw new Error("provenance manifest 过大（上限 16KiB）");
+  return { json, hash: stableHash(manifest) };
+}
+
+// 卡片只给出固定、短的安全提示；绝不把 manifest 的 source/risk/original_text 原样带上卡。
+export function provenanceCardSummary(manifestHash) {
+  // 只渲染服务端固定词，manifest 原文（含 source/risk/text 等）绝不能进卡片。
+  return manifestHash
+    ? { source: "已绑定服务端溯源记录", risk: "请核对权威预览后确认" }
+    : { source: "无附加溯源记录", risk: "请核对权威预览后确认" };
+}
+
+function previewText(value) {
+  // action payload 可能含模型或用户输入；保留真实值，但编码为纯文本，不能借 Markdown 改写预览结构。
+  return String(value ?? "未提供")
+    .replace(/\\/g, "\\\\")
+    .replace(/[`{}\[\]<>|]/g, "\\$&")
+    .replace(/[\r\n]+/g, " ");
+}
+
+function previewTarget(value, fallback = "未指定") {
+  return value ? previewText(value) : fallback;
+}
+
+// 由 canonical action payload 唯一生成。它是确认的权威依据，不能由模型文案替代。
+export function buildAuthoritativePreview(actions) {
+  const lines = [`**操作数量**：${actions.length}`];
+  for (const [index, action] of actions.entries()) {
+    const p = action.payload ?? {};
+    let detail;
+    switch (action.kind) {
+      case "create_task":
+        detail = `目标：负责人 ${previewTarget(p.assignee_open_id, "待确认人选择")}；参数：任务「${previewText(p.title)}」${p.due_date ? `，截止 ${previewText(p.due_date)}` : "，无截止时间"}`;
+        break;
+      case "notify_task_assignee":
+        detail = `目标：负责人 ${previewTarget(p.to_open_id, "待确认人选择")}；参数：任务「${previewText(p.title)}」${p.due_date ? `，截止 ${previewText(p.due_date)}` : ""}，来源任务 ${previewText(p.source_task_action_key)}`;
+        break;
+      case "create_event":
+        detail = `目标：参与人 ${p.attendee_open_ids?.length ? p.attendee_open_ids.map(previewText).join("、") : "无"}；参数：${previewText(p.summary)}；时间：${previewText(p.start_time)} 至 ${previewText(p.end_time)}`;
+        break;
+      case "send_dm":
+        detail = `目标：${previewTarget(p.to_open_id, "待确认人选择")}；参数：卡片引用 ${previewText(p.card_ref)}`;
+        break;
+      case "send_group_msg":
+        detail = `目标：群 ${previewText(p.chat_id)}；参数：卡片引用 ${previewText(p.card_ref)}`;
+        break;
+      case "schedule_reminder":
+        detail = `目标：${previewText(p.deliver_to)}；参数：提醒「${previewText(p.text)}」；时间：${previewText(p.due_iso)}`;
+        break;
+      case "complete_task":
+        detail = `目标：任务 ${previewText(p.task_guid)}；参数：标记为完成`;
+        break;
+      case "update_document":
+        detail = `目标：文档 ${previewText(p.doc_token)}；参数：${previewText(p.command)}，基准版本 ${previewText(p.revision_id)}${p.pattern ? `，匹配「${previewText(p.pattern)}」` : ""}${p.block_id ? `，块 ${previewText(p.block_id)}` : ""}；写入内容「${previewText(p.content)}」`;
+        break;
+      default:
+        detail = "参数：受限动作";
+    }
+    lines.push(`${index + 1}. **${previewText(action.kind)}**（${previewText(action.action_key)}）\n${detail}`);
+  }
+  return lines.join("\n");
+}
+
+export function validateStoredProvenance({ manifestJson, provenanceHash }) {
+  if (manifestJson == null) return provenanceHash == null;
+  try {
+    const manifest = JSON.parse(manifestJson);
+    return canonicalizeProvenanceManifest(manifest).hash === provenanceHash;
+  } catch {
+    return false;
+  }
 }
 
 function createTaskAction(jobId, item, ordinal) {
@@ -42,17 +132,25 @@ function createTaskAction(jobId, item, ordinal) {
   };
 }
 
-function notifyAction(jobId, item, ordinal) {
-  const payload = { to_open_id: item.suggested_open_id ?? null, card_ref: `${jobId}:notify` };
-  const kind = "send_dm";
+export function buildTaskNotificationAction({ jobId, taskActionKey, toOpenId, title, description = "", dueDate = null, ordinal, actionKey = null }) {
+  const payload = {
+    source_task_action_key: taskActionKey,
+    to_open_id: isValidOpenId(toOpenId) ? toOpenId : null,
+    title: String(title ?? ""),
+    description: String(description ?? ""),
+    due_date: dueDate ?? null,
+    template_version: 1,
+  };
+  if (!payload.source_task_action_key || !payload.title.trim()) throw new Error("notify_task_assignee 缺来源任务或标题");
+  const kind = "notify_task_assignee";
   return {
-    action_key: stableHash({ jobId, kind, ordinal, payload }),
+    action_key: actionKey ?? stableHash({ jobId, kind, ordinal, payload }),
     kind,
     payload,
     payload_hash: stableHash(payload),
     target_open_id: payload.to_open_id,
     ordinal,
-    requires_open_id: item.confidence === "low" || !isValidOpenId(payload.to_open_id),
+    requires_open_id: false,
   };
 }
 
@@ -93,6 +191,49 @@ const AGENT_PAYLOADS = {
   },
   // Task 4B：跨会话提醒。payload 闭合 {deliver_to, due_iso, text}；due 统一规范成 UTC toISOString,
   // 等价 offset 同意图同 hash。owner 不在 payload 里——执行时取 confirm flow 的 authoritative sessionKey。
+  complete_task(p) {
+    const allowed = new Set(["task_guid"]);
+    for (const k of Object.keys(p)) {
+      if (!allowed.has(k)) throw new Error(`complete_task 未知字段: ${k}（payload 闭合）`);
+    }
+    if (typeof p.task_guid !== "string" || !p.task_guid.trim()) throw new Error("complete_task task_guid 必填");
+    const taskGuid = p.task_guid.trim();
+    if (taskGuid.length > 256 || /[\u0000-\u001f\u007f]/.test(taskGuid)) throw new Error("complete_task 非法 task_guid");
+    return { payload: { task_guid: taskGuid }, targetOpenId: null, requiresOpenId: false };
+  },
+  update_document(p) {
+    const allowed = new Set(["doc_token", "command", "content", "revision_id", "pattern", "block_id", "doc_format"]);
+    for (const k of Object.keys(p)) {
+      if (!allowed.has(k)) throw new Error(`update_document 未知字段: ${k}（payload 闭合）`);
+    }
+    const docToken = typeof p.doc_token === "string" ? p.doc_token.trim() : "";
+    if (!isValidDocToken(docToken)) throw new Error("update_document 非法 doc_token");
+    const command = String(p.command ?? "");
+    if (!new Set(["append", "str_replace", "block_insert_after", "block_replace"]).has(command)) {
+      throw new Error(`update_document 不支持 command: ${command}`);
+    }
+    const docFormat = p.doc_format == null ? "markdown" : String(p.doc_format);
+    if (!new Set(["xml", "markdown"]).has(docFormat)) throw new Error(`update_document 非法 doc_format: ${docFormat}`);
+    if (!Number.isSafeInteger(p.revision_id) || p.revision_id < 0) throw new Error("update_document revision_id 必须为读取所得非负整数");
+    if (typeof p.content !== "string") throw new Error("update_document content 必须为字符串");
+    if (p.content.includes(" ")) throw new Error("update_document content 含非法控制字符");
+    if (Buffer.byteLength(p.content, "utf8") > DOCUMENT_CONTENT_MAX_BYTES) throw new Error(`update_document content 超长（上限 ${DOCUMENT_CONTENT_MAX_BYTES} bytes）`);
+    let pattern = null;
+    let blockId = null;
+    if (command === "str_replace") {
+      if (typeof p.pattern !== "string" || !p.pattern) throw new Error("update_document str_replace 缺 pattern");
+      if (p.pattern.includes(" ") || Buffer.byteLength(p.pattern, "utf8") > DOCUMENT_PATTERN_MAX_BYTES) throw new Error("update_document pattern 非法或过长");
+      pattern = p.pattern;
+    } else if (command === "block_insert_after" || command === "block_replace") {
+      if (typeof p.block_id !== "string" || !/^(?:-1|[a-zA-Z0-9_-]{6,256})$/.test(p.block_id)) throw new Error("update_document block 操作缺合法 block_id");
+      blockId = p.block_id;
+    }
+    return {
+      payload: { doc_token: docToken, command, content: p.content, revision_id: p.revision_id, pattern, block_id: blockId, doc_format: docFormat },
+      targetOpenId: null,
+      requiresOpenId: false,
+    };
+  },
   schedule_reminder(p) {
     const allowed = new Set(["deliver_to", "due_iso", "text"]);
     for (const k of Object.keys(p)) {
@@ -118,6 +259,8 @@ const AGENT_PAYLOADS = {
 };
 
 const REMINDER_TEXT_MAX = 4000;   // 与 heartbeat 队列 TEXT_MAX 对齐
+const DOCUMENT_CONTENT_MAX_BYTES = 8 * 1024;
+const DOCUMENT_PATTERN_MAX_BYTES = 2 * 1024;
 
 export function buildAgentAction({ jobId, kind, payload, ordinal = 0 }) {
   const normalizer = AGENT_PAYLOADS[kind];
@@ -134,12 +277,26 @@ export function buildAgentAction({ jobId, kind, payload, ordinal = 0 }) {
   };
 }
 
-export function canonicalizeActions({ jobId, items, enableNotify = false }) {
+export function canonicalizeActions({ jobId, items, notificationMode = "none" }) {
+  if (!["card", "feishu_system", "none"].includes(notificationMode)) {
+    throw new Error(`未知会议任务通知模式: ${notificationMode}`);
+  }
   const actions = [];
   let ord = 0;
   for (const item of items) {
-    actions.push(createTaskAction(jobId, item, ord++));
-    if (enableNotify) actions.push(notifyAction(jobId, item, ord++));
+    const task = createTaskAction(jobId, item, ord++);
+    actions.push(task);
+    if (notificationMode === "card") {
+      actions.push(buildTaskNotificationAction({
+        jobId,
+        taskActionKey: task.action_key,
+        toOpenId: task.payload.assignee_open_id,
+        title: task.payload.title,
+        description: task.payload.description,
+        dueDate: task.payload.due_date,
+        ordinal: ord++,
+      }));
+    }
   }
   return actions;
 }

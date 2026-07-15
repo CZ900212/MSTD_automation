@@ -1,16 +1,29 @@
+const TOP_LEVEL_KEYS = new Set(["card_text", "items"]);
+const ITEM_KEYS = new Set(["owner_name", "task", "due", "suggested_open_id", "confidence"]);
+
+function hasOnlyKeys(value, allowed) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isClosedIntentShape(value) {
+  return hasOnlyKeys(value, TOP_LEVEL_KEYS)
+    && Array.isArray(value.items)
+    && value.items.every((item) => hasOnlyKeys(item, ITEM_KEYS));
+}
+
+// Fail closed: exactly one complete JSON object, either raw or in one json fence.
+// The surrounding text must be whitespace only; model prose, multiple values and
+// unknown keys are all rejected before action validation/canonicalization.
 export function parseIntentFromText(text) {
   if (typeof text !== "string" || !text.trim()) return null;
-  const candidates = [];
-  const fence = /```json\s*([\s\S]*?)```/i.exec(text) || /```\s*([\s\S]*?)```/.exec(text);
-  if (fence) candidates.push(fence[1]);
-  const first = text.indexOf("{");
-  const last = text.lastIndexOf("}");
-  if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1));
-  for (const c of candidates) {
-    try {
-      const v = JSON.parse(c);
-      if (v && typeof v === "object") return v;
-    } catch { /* 试下一个候选 */ }
+  const trimmed = text.trim();
+  const fence = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n?```$/i.exec(trimmed);
+  const candidate = fence ? fence[1].trim() : trimmed;
+  try {
+    const value = JSON.parse(candidate);
+    return isClosedIntentShape(value) ? value : null;
+  } catch {
+    return null;
   }
-  return null;
 }

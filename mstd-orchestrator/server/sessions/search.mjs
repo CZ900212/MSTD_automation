@@ -3,13 +3,15 @@
 import { parseSessionKey } from "./session-key.mjs";
 
 export function createSessionSearch(db) {
-  // 权限 → 允许的 session_key 前缀；null = 不限（debug/cron 管理面）
+  // 权限 → 允许的 session_key 前缀。不存在"不限范围"：debug 只搜自会话，
+  // cron/未知一律拒绝（防注入计划批次 E：不保留 null=无限范围的管理面后门）。
   function scopePrefix(sessionKey) {
     let parsed;
     try { parsed = parseSessionKey(sessionKey); } catch { return "__deny__"; }
     if (parsed.kind === "group") return `feishu:group:${parsed.chatId}`;
     if (parsed.kind === "p2p") return `feishu:p2p:${parsed.openId}`;
-    return null; // cron/debug
+    if (parsed.kind === "debug") return sessionKey;
+    return "__deny__";
   }
 
   function run({ query, limit = 10 }, ctx) {
@@ -24,6 +26,9 @@ export function createSessionSearch(db) {
       JOIN agent_messages m ON m.id = f.message_id
       JOIN agent_sessions s ON s.id = m.session_id
       WHERE m.active = 1
+        AND m.prompt_eligible = 1
+        AND m.security_label = 'normal'
+        AND m.provenance = 'conversation'
         AND ${useMatch ? "agent_messages_fts MATCH ?" : "f.content LIKE ?"}
         ${prefix ? "AND (s.session_key = ? OR s.session_key LIKE ?)" : ""}
       ORDER BY m.ts DESC

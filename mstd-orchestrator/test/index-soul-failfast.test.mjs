@@ -21,7 +21,7 @@ function bootWithMemoryDir(memoryDir, dbDir) {
         MSTD_BOT_OPEN_ID: "ou_test_bot",
         MSTD_BOT_NAME: "小达",
         LARK_PROFILE: "mstd-failfast-noprofile",
-        CZ_GPT_KEY: "x", CZ_CLAUDE_KEY: "x", DEEPSEEK_KEY: "x",
+        CZ_GPT_KEY: "x", DEEPSEEK_KEY: "x",
         MSTD_DB_PATH: join(dbDir, "failfast.sqlite"),
         MSTD_MEMORY_DIR: memoryDir,
         PORT: "0",

@@ -92,7 +92,7 @@ describe("wireGateway 管道装配", () => {
     const { children, wired } = setup({ handleTurn: (t) => { turns.push(t); }, actors });
     children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg()) + "\n"));
     children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg()) + "\n")); // 同 event_id 去重
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(600);
     expect(actors.enqueue).toHaveBeenCalledWith("feishu:p2p:ou_a", expect.any(Function));
     expect(turns).toHaveLength(0);
     await actorCallback();
@@ -101,6 +101,50 @@ describe("wireGateway 管道装配", () => {
     expect(turns[0].items).toHaveLength(1);
     wired.consumer.stop();
     vi.useRealTimers();
+  });
+
+  it("actor/handleTurn rejection is caught and logged at the gateway async boundary", async () => {
+    const handleTurn = vi.fn(async () => { throw new Error("turn failed"); });
+    const log = vi.fn();
+    const { children, wired } = setup({ handleTurn, log });
+    try {
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({ eventId: "reject-1" })) + "\n"));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(handleTurn).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("turn failed"));
+    } finally {
+      wired.consumer.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("same-sender debounce keeps addressed mode when a later ambient message joins the batch", async () => {
+    const turns = [];
+    const { db, children, wired } = setup({ handleTurn: (turn) => { turns.push(turn); } });
+    try {
+      db.prepare(
+        "INSERT INTO group_policies (chat_id, policy, hourly_proactive_limit, updated_at) VALUES (?, 'ambient', 4, 0)"
+      ).run("oc_1");
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({
+        eventId: "mode-addressed",
+        chatType: "group",
+        mentions: [{ id: { open_id: "ou_bot" } }],
+        text: "@小达 帮我查",
+      })) + "\n"));
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({
+        eventId: "mode-ambient",
+        chatType: "group",
+        text: "再补一句",
+      })) + "\n"));
+
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({ mode: "addressed" });
+      expect(turns[0].items).toHaveLength(2);
+    } finally {
+      wired.consumer.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("admitted 消息在 debounce 前刷新会话，阻止 expiry 抢先 flush 与归档", async () => {
@@ -125,7 +169,7 @@ describe("wireGateway 管道装配", () => {
       expect(brain.turn).not.toHaveBeenCalled();
       expect(turns).toHaveLength(0);
 
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(600);
       expect(turns).toHaveLength(1);
       expect(turns[0]).toMatchObject({ sessionKey: "feishu:p2p:ou_a", mode: "addressed" });
     } finally {

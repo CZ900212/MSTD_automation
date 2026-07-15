@@ -4,8 +4,13 @@
 const text = (content) => ({ tag: "plain_text", content: String(content) });
 const md = (content) => ({ tag: "markdown", content: String(content) });
 
-export function buildConfirmCard({ title, previewMd, actions = [], formFields = [], tokenRef }) {
-  const elements = [md(previewMd)];
+export function buildConfirmCard({ title, authoritativePreviewMd, previewMd = "", sourceLabel = "未提供溯源记录", riskLabel = "请核对权威预览后确认", actions = [], formFields = [], tokenRef }) {
+  // authoritativePreviewMd 只由 canonical action payload 生成，模型 previewMd 只能作为次要说明。
+  const elements = [
+    md(`**权威操作预览**\n${String(authoritativePreviewMd ?? "")}`),
+    md(`**来源**：${String(sourceLabel)}　**风险提示**：${String(riskLabel)}`),
+  ];
+  if (previewMd) elements.push(md(`**补充说明（不作为批准依据）**\n${String(previewMd)}`));
 
   for (const a of actions) {
     elements.push(md(a.summaryMd));
@@ -64,6 +69,19 @@ export function buildMarkdownMessageCard({ md: content }) {
     schema: "2.0",
     config: { update_multi: true },
     body: { elements: [md(content)] },
+  };
+}
+
+export function buildTaskNotificationCard({ title, description = "", dueDate = null }) {
+  const lines = [`**任务名称**\n${String(title)}`];
+  if (dueDate) lines.push(`**截止时间**\n${String(dueDate)}`);
+  if (description) lines.push(`**任务说明**\n${String(description)}`);
+  lines.push("该任务已在飞书任务中创建，请到任务中心查看和处理。");
+  return {
+    schema: "2.0",
+    config: { update_multi: true },
+    header: { title: text("任务通知"), template: "blue" },
+    body: { elements: [md(lines.join("\n\n"))] },
   };
 }
 

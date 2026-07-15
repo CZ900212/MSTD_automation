@@ -5,11 +5,10 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { buildLarkReadArgsScoped, resolveLarkScope } from "../server/safety/lark-read.mjs";
-import { resolveInsideWorkdir } from "../server/execute/job-workdir.mjs";
+import { readJobArtifactUtf8 } from "../server/execute/job-workdir.mjs";
 
 const LARK_CLI = join(homedir(), ".hermes", "node", "bin", "lark-cli");
 const CLIP = 20000;
@@ -34,6 +33,24 @@ function runLark(args: string[], signal?: AbortSignal): Promise<{ stdout: string
 
 const clip = (s: string) => (s.length > CLIP ? s.slice(0, CLIP) + "\n...(截断)" : s);
 
+// 批次 C：向 daemon 上报本次读到的源文本（逐字引用守卫的比对基准 + 席位私有 taint）。
+// 尽力而为：daemon 侧 fail 不阻断读取；但 resident（有 token）会在返回结果前等它落地，
+// 保证模型看到内容之前 shingle 已登记——reply 出站检查不会跑在登记前面。
+async function reportSource(op: string, text: string): Promise<void> {
+  const base = process.env.MSTD_INTERNAL_URL;
+  const token = process.env.MSTD_INTERNAL_TOKEN;
+  const sessionKey = process.env.MSTD_SESSION_KEY;
+  if (!base || !token || !sessionKey || !text) return;
+  try {
+    await fetch(`${base}/internal/egress/source`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ session_key: sessionKey, op, text }),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch { /* 登记失败不阻断只读链路 */ }
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "lark_read",
@@ -44,7 +61,7 @@ export default function (pi: ExtensionAPI) {
       "【文档】read_doc(doc)——读文档正文(doc=URL或token,markdown输出) | search_docs(query)——搜云文档/wiki | search_drive——搜云盘文件(可选 query)\n" +
       "【知识库】wiki_spaces——空间列表 | wiki_nodes(space_id)——节点列表 | wiki_node(node_token)——节点详情\n" +
       "【日历】agenda——日程(默认今天,可选 start/end) | search_events——搜日程(可选 query/start/end)\n" +
-      "【任务】my_tasks——我的任务(可选 complete=true/false,query) | search_tasks(query)\n" +
+      "【任务】my_tasks——我的任务(可选 complete=true/false,query) | search_tasks(query) | get_task(task_guid)——按飞书全局任务 GUID 读取单条任务（不是 t104121 一类展示编号）\n" +
       "【表格】sheet_info(spreadsheet_token) | sheet_cells(spreadsheet_token,sheet_id,range如A1:F10) | base_tables(base_token) | base_records(base_token,table_id)\n" +
       "【妙记】search_minutes——搜我拥有的妙记 | get_transcript(minute_token)——导出逐字稿(文件落./out)\n" +
       "【其他】search_user(query)——人名→open_id | get_user——查用户(可选 user_id=ou_*,缺省查自己) | okr_cycles(user_id) | mail_list——邮件列表(可选 query/limit) | mail_message(message_id) | attendance(user_id,date_from,date_to整数YYYYMMDD)——打卡记录\n" +
@@ -64,6 +81,7 @@ export default function (pi: ExtensionAPI) {
       parent_node_token: Type.Optional(Type.String()),
       node_token: Type.Optional(Type.String()),
       complete: Type.Optional(Type.String({ description: "true|false" })),
+      task_guid: Type.Optional(Type.String({ description: "飞书全局任务 GUID（不是展示编号）" })),
       spreadsheet_token: Type.Optional(Type.String()),
       sheet_id: Type.Optional(Type.String()),
       range: Type.Optional(Type.String()),
@@ -78,14 +96,19 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal) {
       try {
         if (params.op === "read_file") {
-          const workdir = process.env.MSTD_JOB_WORKDIR || process.cwd();
-          const abs = resolveInsideWorkdir(workdir, params.path ?? "");
-          return { content: [{ type: "text", text: clip(readFileSync(abs, "utf8")) }], details: { path: abs } };
+          const workdir = String(process.env.MSTD_JOB_WORKDIR ?? "").trim();
+          if (!workdir) throw new Error("read_file 仅限 job workdir（fail-closed）");
+          const text = readJobArtifactUtf8(workdir, params.path ?? "");
+          const clipped = clip(text);
+          await reportSource(params.op, clipped);
+          return { content: [{ type: "text", text: clipped }], details: { path: params.path } };
         }
         const args = buildLarkReadArgsScoped(params.op, params, resolveLarkScope(process.env));
         const r = await runLark(args, signal);
         const body = r.code === 0 ? r.stdout || "(空输出)" : `exit=${r.code}\nSTDERR:\n${r.stderr}`;
-        return { content: [{ type: "text", text: clip(body) }], details: { exitCode: r.code, argv: args } };
+        const clipped = clip(body);
+        if (r.code === 0) await reportSource(params.op, clipped);
+        return { content: [{ type: "text", text: clipped }], details: { exitCode: r.code, argv: args } };
       } catch (e) {
         return { content: [{ type: "text", text: `拒绝/失败: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }

@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "pi": {
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.80.3"
+  },
+  "execution": {
+    "mode": "rpc",
+    "isolation": "temporary empty cwd and agent directory; offline; no session; no model prompt or tool invocation"
+  },
+  "cases": [
+    {
+      "id": "default",
+      "args": [],
+      "extensions": ["probe_allowed", "probe_unlisted"],
+      "observation": {
+        "activeTools": ["bash", "edit", "probe_allowed", "probe_unlisted", "read", "write"],
+        "configuredTools": ["bash", "edit", "find", "grep", "ls", "probe_allowed", "probe_unlisted", "read", "write"]
+      },
+      "stderr": [],
+      "stdout": [],
+      "exit": { "code": 0, "signal": null }
+    },
+    {
+      "id": "approve",
+      "args": ["-a"],
+      "extensions": ["probe_allowed", "probe_unlisted"],
+      "observation": {
+        "activeTools": ["bash", "edit", "probe_allowed", "probe_unlisted", "read", "write"],
+        "configuredTools": ["bash", "edit", "find", "grep", "ls", "probe_allowed", "probe_unlisted", "read", "write"]
+      },
+      "stderr": [],
+      "stdout": [],
+      "exit": { "code": 0, "signal": null }
+    },
+    {
+      "id": "no-approve",
+      "args": ["--no-approve"],
+      "extensions": ["probe_allowed", "probe_unlisted"],
+      "observation": {
+        "activeTools": ["bash", "edit", "probe_allowed", "probe_unlisted", "read", "write"],
+        "configuredTools": ["bash", "edit", "find", "grep", "ls", "probe_allowed", "probe_unlisted", "read", "write"]
+      },
+      "stderr": [],
+      "stdout": [],
+      "exit": { "code": 0, "signal": null }
+    },
+    {
+      "id": "no-tools",
+      "args": ["--no-tools"],
+      "extensions": ["probe_allowed", "probe_unlisted"],
+      "observation": { "activeTools": [], "configuredTools": [] },
+      "stderr": [],
+      "stdout": [],
+      "exit": { "code": 0, "signal": null }
+    },
+    {
+      "id": "tools",
+      "args": ["--tools", "probe_allowed"],
+      "extensions": ["probe_allowed", "probe_unlisted"],
+      "observation": { "activeTools": ["probe_allowed"], "configuredTools": ["probe_allowed"] },
+      "stderr": [],
+      "stdout": [],
+      "exit": { "code": 0, "signal": null }
+    },
+    {
+      "id": "no-tools-plus-tools",
+      "args": ["--no-tools", "--tools", "probe_allowed"],
+      "extensions": ["probe_allowed", "probe_unlisted"],
+      "observation": { "activeTools": ["probe_allowed"], "configuredTools": ["probe_allowed"] },
+      "stderr": [],
+      "stdout": [],
+      "exit": { "code": 0, "signal": null }
+    },
+    {
+      "id": "no-extensions-plus-explicit-e",
+      "args": ["--no-extensions"],
+      "extensions": ["probe_allowed"],
+      "observation": {
+        "activeTools": ["bash", "edit", "probe_allowed", "read", "write"],
+        "configuredTools": ["bash", "edit", "find", "grep", "ls", "probe_allowed", "read", "write"]
+      },
+      "stderr": [],
+      "stdout": [],
+      "exit": { "code": 0, "signal": null }
+    },
+    {
+      "id": "no-skills-context-prompts",
+      "args": ["--no-skills", "--no-context-files", "--no-prompt-templates"],
+      "extensions": ["probe_allowed", "probe_unlisted"],
+      "observation": {
+        "activeTools": ["bash", "edit", "probe_allowed", "probe_unlisted", "read", "write"],
+        "configuredTools": ["bash", "edit", "find", "grep", "ls", "probe_allowed", "probe_unlisted", "read", "write"]
+      },
+      "stderr": [],
+      "stdout": [],
+      "exit": { "code": 0, "signal": null }
+    }
+  ]
+}

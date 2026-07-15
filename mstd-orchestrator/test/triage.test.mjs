@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createTriage, RECAP_INTENT, ADVICE_INTENT, matchLightReply, estimateTokens, budgetWindow } from "../server/models/triage.mjs";
 
 const mkCaller = (text) => ({ call: vi.fn(async () => ({ text, model: "v4-flash", usage: null })) });
-const store = { recent: () => [] };
+const store = { promptRecent: () => [] };
 const session = { id: "s1", version: 0 };
 // 注意:不能用"你好"这类轻交互整句当共享夹具——会被轻交互终止路由确定性收口,
 // 遮蔽下面所有"escalate 应保留"的用例。
@@ -43,19 +43,19 @@ describe("triage 四选一", () => {
     expect(userMsg).toContain("ambient");
   });
 
-  // Task 6：近期对话走 store.recent（真"最近"），历史行语义统一——tool 永不冒充用户
-  it("近期对话走 store.recent 且 tool 行标 [内部记录]", async () => {
+  // P0：近期对话只走 store.promptRecent 安全 allowlist。
+  it("近期对话走 store.promptRecent 且历史行语义统一", async () => {
     const caller = mkCaller('{"action":"no_reply"}');
     const recentRows = [
       { role: "tool", sender_name: "张三", content: "内部X" },
       { role: "user", sender_name: "李四", content: "早" },
       { role: "assistant", content: "早上好" },
     ];
-    const recent = vi.fn(() => recentRows);
-    const t = createTriage({ caller, store: { recent } });
+    const promptRecent = vi.fn(() => recentRows);
+    const t = createTriage({ caller, store: { promptRecent } });
     await t.triage({ session, items, mode: "addressed" });
     // roles 过滤是 §5.1 审核补的硬约束：system 压缩摘要不得以 [用户] 身份泄入
-    expect(recent).toHaveBeenCalledWith(session.id, expect.objectContaining({
+    expect(promptRecent).toHaveBeenCalledWith(session.id, expect.objectContaining({
       limit: expect.any(Number), roles: ["user", "assistant", "tool"],
     }));
     const userMsg = caller.call.mock.calls[0][1].messages.at(-1).content;
@@ -416,10 +416,10 @@ describe("budgetWindow/estimateTokens", () => {
     expect(budgetWindow([], { budget: 100 })).toEqual([]);
   });
 
-  it("triage 用预算窗口而非固定 20 条:store.recent 上限放宽到 200", async () => {
-    const recent = vi.fn(() => []);
-    const t = createTriage({ caller: mkCaller('{"action":"no_reply"}'), store: { recent } });
+  it("triage 用预算窗口而非固定 20 条:store.promptRecent 上限放宽到 200", async () => {
+    const promptRecent = vi.fn(() => []);
+    const t = createTriage({ caller: mkCaller('{"action":"no_reply"}'), store: { promptRecent } });
     await t.triage({ session, items, mode: "ambient" });
-    expect(recent).toHaveBeenCalledWith("s1", expect.objectContaining({ limit: 200 }));
+    expect(promptRecent).toHaveBeenCalledWith("s1", expect.objectContaining({ limit: 200 }));
   });
 });

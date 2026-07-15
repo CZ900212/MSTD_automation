@@ -94,11 +94,25 @@ describe("canonicalizeActions", () => {
     expect(a.action_key).not.toBe(b.action_key);
   });
 
-  it("appends send_dm only when enableNotify", () => {
-    const actions = canonicalizeActions({ jobId: "job1", items, enableNotify: true });
-    const dm = actions.find((a) => a.kind === "send_dm");
-    expect(dm).toBeTruthy();
-    expect(dm.target_open_id).toBe(actions.find((a) => a.kind === "create_task").payload.assignee_open_id);
+  it("card mode appends one linked task notification per item", () => {
+    const actions = canonicalizeActions({ jobId: "job1", items, notificationMode: "card" });
+    expect(actions.map((a) => a.kind)).toEqual([
+      "create_task", "notify_task_assignee", "create_task", "notify_task_assignee",
+    ]);
+    const [task, notice] = actions;
+    expect(notice.payload.source_task_action_key).toBe(task.action_key);
+    expect(notice.target_open_id).toBe(task.payload.assignee_open_id);
+    expect(notice.requires_open_id).toBe(false);
+  });
+
+  it.each(["feishu_system", "none"])("%s mode creates no bot notification", (notificationMode) => {
+    const actions = canonicalizeActions({ jobId: "job1", items, notificationMode });
+    expect(actions).toHaveLength(2);
+    expect(actions.every((a) => a.kind === "create_task")).toBe(true);
+  });
+
+  it("rejects unknown notification mode", () => {
+    expect(() => canonicalizeActions({ jobId: "job1", items, notificationMode: "both" })).toThrow(/通知模式/);
   });
 });
 
@@ -140,8 +154,34 @@ describe("buildAgentAction（D1 扩类）", () => {
     expect(b.requires_open_id).toBe(false);
   });
 
+  it("update_document 只允许带基准版本的非破坏性精确编辑", () => {
+    const a = buildAgentAction({
+      jobId: "j", kind: "update_document",
+      payload: { doc_token: "docxToken_123", command: "str_replace", pattern: "旧版本", content: "新版本", revision_id: 7 },
+    });
+    expect(a.payload).toEqual({
+      doc_token: "docxToken_123", command: "str_replace", content: "新版本", revision_id: 7,
+      pattern: "旧版本", block_id: null, doc_format: "markdown",
+    });
+    expect(() => buildAgentAction({ jobId: "j", kind: "update_document", payload: { ...a.payload, command: "overwrite" } })).toThrow(/不支持/);
+    expect(() => buildAgentAction({ jobId: "j", kind: "update_document", payload: { ...a.payload, revision_id: -1 } })).toThrow(/revision_id/);
+    expect(() => buildAgentAction({ jobId: "j", kind: "update_document", payload: { ...a.payload, doc_token: "https://evil/docx/x" } })).toThrow(/doc_token/);
+    expect(() => buildAgentAction({ jobId: "j", kind: "update_document", payload: { ...a.payload, extra: true } })).toThrow(/未知字段/);
+  });
+
   it("未知 kind 拒绝（类型封闭）", () => {
     expect(() => buildAgentAction({ jobId: "j", kind: "drop_table", payload: {} })).toThrow(/未知|unknown/);
+  });
+});
+
+describe("buildAgentAction complete_task", () => {
+  it("payload 闭合且 hash 只绑定规范 GUID", () => {
+    const a = buildAgentAction({ jobId: "j", kind: "complete_task", payload: { task_guid: " guid-1 " } });
+    expect(a.payload).toEqual({ task_guid: "guid-1" });
+    expect(a.requires_open_id).toBe(false);
+    expect(() => buildAgentAction({ jobId: "j", kind: "complete_task", payload: { task_guid: "guid-1", extra: true } })).toThrow(/未知字段/);
+    expect(() => buildAgentAction({ jobId: "j", kind: "complete_task", payload: { task_guid: "" } })).toThrow(/task_guid/);
+    expect(() => buildAgentAction({ jobId: "j", kind: "complete_task", payload: { task_guid: "bad\nvalue" } })).toThrow(/非法/);
   });
 });
 
@@ -230,8 +270,8 @@ describe("buildAgentAction schedule_reminder（Task 4B）", () => {
   });
 });
 
-describe("propose_actions schema（TypeBox union 含 schedule_reminder）", () => {
-  it("union 含 schedule_reminder，描述明确 {due_iso,text,deliver_to} 形状", async () => {
+describe("propose_actions schema（TypeBox union 含受控写动作）", () => {
+  it("union 含 schedule_reminder/update_document，描述明确 payload 形状", async () => {
     const mod = await import("../pi-ext/propose-actions.ts");
     const tools = [];
     mod.default({ registerTool: (t) => tools.push(t), events: createEventBus() });
@@ -239,10 +279,12 @@ describe("propose_actions schema（TypeBox union 含 schedule_reminder）", () =
     expect(spec).toBeTruthy();
     const s = JSON.stringify(spec.parameters);
     expect(s).toContain('"schedule_reminder"');
+    expect(s).toContain('"update_document"');
     expect(s).toMatch(/schedule_reminder:\{due_iso[^}]*text[^}]*deliver_to/);
+    expect(s).toMatch(/update_document:\{doc_token[^}]*command[^}]*revision_id/);
     // kind union 的 const 集合必须精确闭合（防用宽松 Type.String 冒充 literal）
     const kindSchema = spec.parameters.properties.intents.items.properties.kind;
     const consts = (kindSchema.anyOf ?? []).map((x) => x.const).sort();
-    expect(consts).toEqual(["create_event", "create_task", "schedule_reminder", "send_dm", "send_group_msg"]);
+    expect(consts).toEqual(["complete_task", "create_event", "create_task", "schedule_reminder", "send_dm", "send_group_msg", "update_document"]);
   });
 });

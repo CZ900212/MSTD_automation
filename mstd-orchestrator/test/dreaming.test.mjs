@@ -29,7 +29,7 @@ function setup(mode) {
   };
   const gitCalls = [];
   const dreaming = createDreaming({
-    db, files, caller, mode,
+    db, files, caller, mode, isTest: true,
     execFn: (cmd) => { gitCalls.push(cmd); return ""; },
     now: () => NOW,
   });
@@ -49,7 +49,7 @@ describe("dreaming 夜间蒸馏", () => {
     const text = readFileSync(report, "utf8");
     expect(text).toContain("周报改成每周四交");
     expect(text).toContain("shadow");
-    expect(gitCalls.join(" ")).toContain("commit");                            // 备份先行
+    expect(gitCalls).toHaveLength(0);                                             // shadow 无写入，不需备份
   });
 
   it("apply 模式：append-only——新增追加、矛盾旧条标 invalidated、重复跳过", async () => {
@@ -65,6 +65,28 @@ describe("dreaming 夜间蒸馏", () => {
     await dreaming.run(NOW);
     const again = files.readLayer("group", "oc_1").content;
     expect(again.match(/周报改成每周四交（张三拍板）/g)).toHaveLength(1);
+  });
+
+  it("非测试运行忽略 apply 配置，强制 shadow 并上报 fail-safe/report", async () => {
+    const { db, files, caller } = setup("shadow");
+    const events = [];
+    const logs = [];
+    const dreaming = createDreaming({
+      db, files, caller, mode: "apply", isTest: false,
+      execFn: vi.fn(), now: () => NOW, log: (line) => logs.push(line), onEvent: (event) => events.push(event),
+    });
+    files.writeLayer("group", "oc_1", "周报每周五交");
+    const before = files.readLayer("group", "oc_1").content;
+    const result = await dreaming.run(NOW);
+    expect(result).toMatchObject({ mode: "shadow", requestedMode: "apply", applyBlocked: true });
+    expect(files.readLayer("group", "oc_1").content).toBe(before);
+    expect(logs.join("\n")).toContain("强制 shadow");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "dreaming_apply_blocked", requestedMode: "apply", effectiveMode: "shadow" }),
+      expect.objectContaining({ type: "dreaming_report", mode: "shadow", applyBlocked: true }),
+    ]));
+    const report = readFileSync(result.reportPath, "utf8");
+    expect(report).toContain("已拒绝配置 apply");
   });
 
   it("低置信提取被跳过（不入合并）", async () => {

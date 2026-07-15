@@ -1,8 +1,22 @@
 import { parseSessionKey } from "../sessions/session-key.mjs";
 
 // v1 fail-closed：只允许写到配置的测试 open_id / 测试群 / 测试清单。
-export function assertTestTarget(action, { allowOpenIds, allowChatIds, allowTasklist } = {}) {
+export function assertTestTarget(action, { allowOpenIds, allowChatIds, allowTaskGuids, allowDocTokens } = {}) {
   const kind = action.kind;
+  if (kind === "update_document") {
+    const docToken = action.payload?.doc_token;
+    if (!allowDocTokens || !allowDocTokens.has(docToken)) {
+      throw new Error(`非测试文档，拒绝真写: ${JSON.stringify(docToken)}（仅允许 MSTD_TEST_DOC_TOKENS）`);
+    }
+    return;
+  }
+  if (kind === "complete_task") {
+    const taskGuid = action.payload?.task_guid;
+    if (!allowTaskGuids || !allowTaskGuids.has(taskGuid)) {
+      throw new Error(`非测试任务，拒绝真写: ${JSON.stringify(taskGuid)}（仅允许 MSTD_TEST_TASK_GUIDS）`);
+    }
+    return;
+  }
   if (kind === "schedule_reminder") {
     const deliverTo = action.payload?.deliver_to;
     let parsed;
@@ -37,15 +51,18 @@ export function assertTestTarget(action, { allowOpenIds, allowChatIds, allowTask
     }
     return;
   }
-  const target = kind === "send_dm" ? action.payload?.to_open_id : action.payload?.assignee_open_id;
+  const target = kind === "send_dm" || kind === "notify_task_assignee"
+    ? action.payload?.to_open_id
+    : action.payload?.assignee_open_id;
   if (!allowOpenIds || !allowOpenIds.has(target)) {
     throw new Error(`非测试目标，v1 拒绝真写: ${JSON.stringify(target)}（仅允许测试 open_id）`);
   }
-  void allowTasklist;
 }
 
 export function testTargetFromEnv(env = process.env) {
   const ids = (env.MSTD_TEST_OPEN_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
   const chats = (env.MSTD_TEST_CHAT_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
-  return { allowOpenIds: new Set(ids), allowChatIds: new Set(chats), allowTasklist: env.MSTD_TEST_TASKLIST_GUID || "" };
+  const taskGuids = (env.MSTD_TEST_TASK_GUIDS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const docTokens = (env.MSTD_TEST_DOC_TOKENS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return { allowOpenIds: new Set(ids), allowChatIds: new Set(chats), allowTaskGuids: new Set(taskGuids), allowDocTokens: new Set(docTokens) };
 }

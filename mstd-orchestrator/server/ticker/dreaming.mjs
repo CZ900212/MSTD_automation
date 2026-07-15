@@ -1,5 +1,5 @@
-// dreaming 夜间蒸馏：两阶段（V4 per-chunk 提取 → 5.5 跨块合并/冲突裁决）+ append-only 写入
-// + 人类可读报告 + git 备份可回滚。MSTD_DREAMING_MODE=shadow|apply（默认 shadow 只出报告）。
+// dreaming 夜间蒸馏：两阶段（V4 per-chunk 提取 → 5.5 跨块合并/冲突裁决）+ 人类可读报告。
+// 生产运行一律 shadow；仅显式测试运行可 apply，配置绝不能打开生产写入。
 import { execSync } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -23,10 +23,18 @@ export function createDreaming({
   files,
   caller,
   mode = process.env.MSTD_DREAMING_MODE || "shadow",
+  isTest = process.env.NODE_ENV === "test" || process.env.VITEST === "true",
+  onEvent = null,
   execFn = (cmd) => execSync(cmd, { encoding: "utf8" }),
   now = Date.now,
   log = console.error,
 }) {
+  const requestedMode = mode;
+  // Fail safe: a production process must never turn model output into memory writes via configuration.
+  const effectiveMode = isTest && requestedMode === "apply" ? "apply" : "shadow";
+  const applyBlocked = requestedMode === "apply" && effectiveMode !== "apply";
+  const emit = (evt) => { try { onEvent?.(evt); } catch { /* observability never affects dreaming */ } };
+
   function gitBackup() {
     const root = files.rootDir;
     try {
@@ -43,7 +51,9 @@ export function createDreaming({
     const rows = db.prepare(
       `SELECT s.kind, s.chat_id, s.session_key, m.sender_name, m.sender_open_id, m.content, m.ts
        FROM agent_messages m JOIN agent_sessions s ON s.id = m.session_id
-       WHERE m.active = 1 AND m.ts >= ? AND m.role IN ('user','assistant')
+       WHERE m.active = 1 AND m.memory_eligible = 1 AND m.security_label = 'normal'
+         AND m.provenance = 'conversation'
+         AND m.ts >= ? AND m.role IN ('user','assistant')
        ORDER BY s.session_key, m.ts`
     ).all(nowTs - WINDOW_MS);
     const bySession = new Map();
@@ -124,7 +134,13 @@ export function createDreaming({
   }
 
   async function run(nowTs = now()) {
-    gitBackup();
+    if (applyBlocked) {
+      const detail = "生产/非测试 dreaming 强制 shadow；忽略 MSTD_DREAMING_MODE=apply";
+      log(`[dreaming] ${detail}`);
+      emit({ type: "dreaming_apply_blocked", requestedMode, effectiveMode, detail });
+    }
+    // Shadow does not mutate memory, so there is nothing to back up. Keep backups only for test-only apply.
+    if (effectiveMode === "apply") gitBackup();
     const chunks = sliceChunks(nowTs);
     const byTarget = new Map();  // layer:id -> {target, candidates}
     let extracted = 0;
@@ -137,12 +153,12 @@ export function createDreaming({
     }
 
     const dateStr = new Date(nowTs).toISOString().slice(0, 10);
-    const report = [`# dreaming 报告 ${dateStr}`, ``, `模式: ${mode} · 切片 ${chunks.length} · 提取 ${extracted} 条`];
+    const report = [`# dreaming 报告 ${dateStr}`, ``, `模式: ${effectiveMode}${applyBlocked ? `（已拒绝配置 ${requestedMode}）` : ""} · 切片 ${chunks.length} · 提取 ${extracted} 条`];
     for (const { target, candidates } of byTarget.values()) {
       if (!candidates.length) continue;
       const merged = await mergeLayer(target, candidates);
       report.push(``, `## ${target.layer}/${target.id}`);
-      if (mode === "apply") {
+      if (effectiveMode === "apply") {
         applyLayer(target, merged, nowTs, report);
       } else {
         for (const t of merged.add) report.push(`  - [拟新增] ${t}`);
@@ -153,7 +169,9 @@ export function createDreaming({
     const reportPath = join(files.rootDir, "memory", "dreams", `${dateStr}.md`);
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, report.join("\n") + "\n", "utf8");
-    return { ok: true, mode, chunks: chunks.length, extracted, reportPath };
+    const result = { ok: true, mode: effectiveMode, requestedMode, applyBlocked, chunks: chunks.length, extracted, reportPath };
+    emit({ type: "dreaming_report", ...result });
+    return result;
   }
 
   return { run };

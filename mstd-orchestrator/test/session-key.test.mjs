@@ -16,4 +16,19 @@ describe("session-key", () => {
     expect(() => buildSessionKey({ kind: "p2p" })).toThrow();
     expect(() => buildSessionKey({ kind: "nope" })).toThrow();
   });
+
+  it.each([
+    null,
+    "",
+    "feishu:p2p:",
+    "feishu:p2p:ou_a:extra",
+    "feishu:group:",
+    "feishu:group:oc_1:",
+    "feishu:group:oc_1:omt_9:extra",
+    "cron:",
+    "cron:daily:extra",
+    "debug:",
+  ])("拒绝非 canonical 会话键 %j", (key) => {
+    expect(() => parseSessionKey(key)).toThrow();
+  });
 });

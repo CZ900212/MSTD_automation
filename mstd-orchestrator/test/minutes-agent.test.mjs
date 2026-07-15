@@ -86,14 +86,14 @@ describe("createMinutesBroadcast：执行后群播报", () => {
     ).run(id, templateId, title, "done", 1, 1);
   }
 
-  it("meeting_to_task job → handleReply 到指定群，brief 带标题与结果", async () => {
+  it("meeting_to_task job → renderAutomationReply 到指定群，brief 带标题与结果", async () => {
     const db = freshDb();
     setupJob(db);
     const replies = [];
     const bc = createMinutesBroadcast({
       db,
       chatKey: "feishu:group:oc_broadcast",
-      handleReply: async (args) => { replies.push(args); return { ok: true }; },
+      renderAutomationReply: async (args) => { replies.push(args); return { ok: true }; },
       log: () => {},
     });
     const r = await bc.onJobExecuted({ jobId: "job1", ok: true, resultsMd: "✅ 建任务：成功" });
@@ -109,23 +109,23 @@ describe("createMinutesBroadcast：执行后群播报", () => {
     const db = freshDb();
     setupJob(db);
     const replies = [];
-    const noChat = createMinutesBroadcast({ db, chatKey: "", handleReply: async (a) => { replies.push(a); return { ok: true }; }, log: () => {} });
+    const noChat = createMinutesBroadcast({ db, chatKey: "", renderAutomationReply: async (a) => { replies.push(a); return { ok: true }; }, log: () => {} });
     expect(await noChat.onJobExecuted({ jobId: "job1", ok: true, resultsMd: "x" })).toBe(false);
 
     db.prepare("INSERT INTO orch_jobs (id, template_id, status, created_at, updated_at) VALUES (?,?,?,?,?)")
       .run("job2", "other_template", "done", 1, 1);
-    const bc = createMinutesBroadcast({ db, chatKey: "feishu:group:oc_x", handleReply: async (a) => { replies.push(a); return { ok: true }; }, log: () => {} });
+    const bc = createMinutesBroadcast({ db, chatKey: "feishu:group:oc_x", renderAutomationReply: async (a) => { replies.push(a); return { ok: true }; }, log: () => {} });
     expect(await bc.onJobExecuted({ jobId: "job2", ok: true, resultsMd: "x" })).toBe(false);
     expect(replies.length).toBe(0);
   });
 
-  it("handleReply 失败/抛错 → 返回 false 不炸", async () => {
+  it("renderAutomationReply 失败/抛错 → 返回 false 不炸", async () => {
     const db = freshDb();
     setupJob(db);
     const logs = [];
     const bc = createMinutesBroadcast({
       db, chatKey: "feishu:group:oc_x",
-      handleReply: async () => ({ ok: false, error: "渲染挂了" }),
+      renderAutomationReply: async () => ({ ok: false, error: "渲染挂了" }),
       log: (m) => logs.push(m),
     });
     expect(await bc.onJobExecuted({ jobId: "job1", ok: false, resultsMd: "❌" })).toBe(false);
@@ -133,7 +133,7 @@ describe("createMinutesBroadcast：执行后群播报", () => {
 
     const bc2 = createMinutesBroadcast({
       db, chatKey: "feishu:group:oc_x",
-      handleReply: async () => { throw new Error("boom"); },
+      renderAutomationReply: async () => { throw new Error("boom"); },
       log: () => {},
     });
     expect(await bc2.onJobExecuted({ jobId: "job1", ok: true, resultsMd: "x" })).toBe(false);

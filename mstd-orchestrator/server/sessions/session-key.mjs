@@ -30,14 +30,30 @@ export function canonicalDeliverableKey(key) {
 }
 
 export function parseSessionKey(key) {
+  if (typeof key !== "string" || !key) throw new Error(`无法解析会话键: ${key}`);
   const parts = key.split(":");
-  if (parts[0] === "cron") return { kind: "cron", jobId: parts[1] };
-  if (parts[0] === "debug") return { kind: "debug", debugId: parts[1] };
-  if (parts[0] === "feishu" && parts[1] === "p2p") return { kind: "p2p", openId: parts[2] };
-  if (parts[0] === "feishu" && parts[1] === "group") {
-    const out = { kind: "group", chatId: parts[2] };
-    if (parts[3]) out.topicId = parts[3];
-    return out;
+  let parsed;
+  if (parts.length === 2 && parts[0] === "cron" && parts[1]) {
+    parsed = { kind: "cron", jobId: parts[1] };
+  } else if (parts.length === 2 && parts[0] === "debug" && parts[1]) {
+    parsed = { kind: "debug", debugId: parts[1] };
+  } else if (parts.length === 3 && parts[0] === "feishu" && parts[1] === "p2p" && parts[2]) {
+    parsed = { kind: "p2p", openId: parts[2] };
+  } else if (
+    (parts.length === 3 || parts.length === 4)
+    && parts[0] === "feishu"
+    && parts[1] === "group"
+    && parts[2]
+    && (parts.length === 3 || parts[3])
+  ) {
+    parsed = {
+      kind: "group",
+      chatId: parts[2],
+      ...(parts.length === 4 ? { topicId: parts[3] } : {}),
+    };
+  } else {
+    throw new Error(`无法解析会话键: ${key}`);
   }
-  throw new Error(`无法解析会话键: ${key}`);
+  if (buildSessionKey(parsed) !== key) throw new Error(`无法解析会话键: ${key}`);
+  return parsed;
 }

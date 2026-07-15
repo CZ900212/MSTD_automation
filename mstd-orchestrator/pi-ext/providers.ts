@@ -1,53 +1,18 @@
 /**
- * Pi provider extension: 把 CZ 聚合网关 (api.cz900212.com, OpenAI 兼容) 注册成三个 provider。
- * 定型路由（2026-07-09，网关已支持工具调用后）：
- *   - cz-gpt     -> gpt-5.6-sol       【主脑】工具循环 / 编排推理（medium）
- *   - cz-claude  -> claude-opus-4-6   【与用户交互】写消息/卡片/报告（被主脑经 draft_zh 调用）
- *   - deepseek   -> DeepSeek V4 Flash / V4 Pro（均 non-thinking）
- * key 走环境变量插值（$CZ_GPT_KEY / $CZ_CLAUDE_KEY / $DEEPSEEK_KEY），不写死。
+ * Pi provider extension: 注册 GPT 中枢与 DeepSeek 备用中枢。
+ * 定型路由（2026-07-12）：
+ *   - cz-gpt   -> gpt-5.6-sol       【主脑】工具循环 / 编排推理（medium）
+ *   - deepseek -> DeepSeek V4 Flash / V4 Pro（均 non-thinking）
+ * key 走环境变量插值（$CZ_GPT_KEY / $DEEPSEEK_KEY），不写死。
  * 用法: pi -e pi-ext/providers.ts --provider cz-gpt --model gpt-5.6-sol ...
  *
- * 注：CZ 网关对 Claude 路由的 tool_calls.arguments 会多拼一个前导空对象 `{}`（如 `{}{"city":"北京"}`），
- *     Pi 的解析器实测能容忍（Opus 调 bash 工具正常）；GPT 路由 arguments 干净，无此问题。
+ * GPT 路由的 tool_calls.arguments 由 Pi 按 OpenAI 兼容协议解析。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const BASE_URL = "https://api.cz900212.com/v1";
 
 export default function (pi: ExtensionAPI) {
-  pi.registerProvider("cz-claude", {
-    name: "CZ Gateway · Claude",
-    baseUrl: BASE_URL,
-    apiKey: "$CZ_CLAUDE_KEY",
-    api: "openai-completions",
-    models: [
-      {
-        id: "claude-opus-4-6",
-        name: "Claude Opus 4.6 (CZ)",
-        reasoning: true,
-        input: ["text", "image"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
-        maxTokens: 16384,
-        // 让 pi 的 medium 映射到网关的 medium；其余档位隐藏，避免误发不支持的 effort
-        thinkingLevelMap: { off: null, minimal: null, low: null, medium: "medium", high: "high", xhigh: null },
-        compat: { supportsReasoningEffort: true, maxTokensField: "max_tokens" },
-      },
-      {
-        // reason 链降级第二级（brain.mjs REASON_PROVIDERS）：GPT-5.6 Sol 连败后由它顶上工具循环
-        id: "claude-opus-4-8",
-        name: "Claude Opus 4.8 (CZ · 中枢降级)",
-        reasoning: true,
-        input: ["text", "image"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
-        maxTokens: 16384,
-        thinkingLevelMap: { off: null, minimal: null, low: null, medium: "medium", high: "high", xhigh: null },
-        compat: { supportsReasoningEffort: true, maxTokensField: "max_tokens" },
-      },
-    ],
-  });
-
   // DeepSeek 直连 —— 对外回复首选 + CZ 网关不可用时的备用主脑。
   pi.registerProvider("deepseek", {
     name: "DeepSeek",

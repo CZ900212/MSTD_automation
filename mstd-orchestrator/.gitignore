@@ -1,6 +1,7 @@
 .env
 node_modules/
 *.log
+daemon.pid
 data/
 demo/out/
 

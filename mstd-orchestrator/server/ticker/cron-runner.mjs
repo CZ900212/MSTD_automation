@@ -1,7 +1,7 @@
 // cron 执行器：到期 job → 新鲜会话（注入 SOUL+ORG+journal，无历史）→ brain 回合 → reply 投递。
 // 纪律：cron 回合的写意图一律 propose_actions 发确认卡给 owner（agent 扩展集本就无直接执行路径）；
 // prompt 组装后过注入扫描，污染即拦截并 disabled。
-import { scanForInjection } from "../memory/scan.mjs";
+import { scanPromptInjection } from "../safety/injection-signals.mjs";
 
 export function createCronRunner({ brain, agentStore, cronStore, grants = null, snapshotFn = null, log = console.error }) {
   function buildBrief(job) {
@@ -15,7 +15,7 @@ export function createCronRunner({ brain, agentStore, cronStore, grants = null, 
   }
 
   async function runOne(job, nowTs) {
-    const scan = scanForInjection(job.prompt);
+    const scan = scanPromptInjection(job.prompt);
     if (!scan.ok) {
       log(`[cron] 任务 ${job.id} prompt 命中注入模式(${scan.pattern})，已停用`);
       cronStore.setEnabled(job.id, false);

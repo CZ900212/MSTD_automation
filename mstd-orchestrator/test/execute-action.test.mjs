@@ -41,6 +41,44 @@ describe("executeApprovedAction", () => {
     expect(seen[1]).not.toContain("--dry-run");
   });
 
+  it("update_document 先 dry-run 后按精确文档白名单真写", async () => {
+    const action = buildAgentAction({
+      jobId: "job1", kind: "update_document", ordinal: 8,
+      payload: { doc_token: "docxAllowed_123", command: "append", content: "## 会议结论", revision_id: 4, doc_format: "markdown" },
+    });
+    recordActions(db, "job1", [action]);
+    const stored = db.prepare("SELECT * FROM job_actions WHERE job_id='job1' AND kind='update_document'").get();
+    const runLark = vi.fn(async () => ({ exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" }));
+    const out = await executeApprovedAction(db, {
+      actionId: stored.id, approvedHash: stored.payload_hash, runLark,
+      testTarget: { allowDocTokens: new Set(["docxAllowed_123"]) },
+    });
+    expect(out).toMatchObject({ ok: true, status: "succeeded" });
+    expect(runLark.mock.calls[0][0]).toContain("--dry-run");
+    expect(runLark.mock.calls[1][0]).toEqual([
+      "docs", "+update", "--as", "user", "--doc", "docxAllowed_123", "--command", "append",
+      "--doc-format", "markdown", "--revision-id", "4", "--content", "## 会议结论", "--json",
+    ]);
+  });
+
+  it("update_document 批准后 payload JSON 被篡改时不调用 lark", async () => {
+    const action = buildAgentAction({
+      jobId: "job1", kind: "update_document", ordinal: 8,
+      payload: { doc_token: "docxAllowed_123", command: "append", content: "原文", revision_id: 4 },
+    });
+    recordActions(db, "job1", [action]);
+    const stored = db.prepare("SELECT * FROM job_actions WHERE job_id='job1' AND kind='update_document'").get();
+    db.prepare("UPDATE job_actions SET canonical_payload_json = ? WHERE id = ?")
+      .run(JSON.stringify({ ...action.payload, content: "篡改内容" }), stored.id);
+    const runLark = vi.fn();
+    const out = await executeApprovedAction(db, {
+      actionId: stored.id, approvedHash: stored.payload_hash, runLark,
+      testTarget: { allowDocTokens: new Set(["docxAllowed_123"]) },
+    });
+    expect(out.reason).toBe("dry_validation_failed");
+    expect(runLark).not.toHaveBeenCalled();
+  });
+
   it("complete_task 先 dry-run 后真写，且 argv 无伪造幂等参数", async () => {
     const action = buildAgentAction({ jobId: "job1", kind: "complete_task", payload: { task_guid: "guid-test" }, ordinal: 9 });
     recordActions(db, "job1", [action]);

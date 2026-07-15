@@ -19,6 +19,19 @@ describe("outbound（唯一出站通道）", () => {
     ]);
   });
 
+  it("上游成功结构缺少真实 message_id 时 sendMessage/sendCard 都 fail-closed", async () => {
+    const runLark = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ ok: true, data: {} }),
+      stderr: "",
+    }));
+    const ob = createOutbound({ runLark });
+    await expect(ob.sendMessage({ chatId: "oc_1", text: "x", idempotencyKey: "i1" }))
+      .rejects.toThrow(/message_id/);
+    await expect(ob.sendCard({ chatId: "oc_1", cardJson: { schema: "2.0" }, idempotencyKey: "i2" }))
+      .rejects.toThrow(/message_id/);
+  });
+
   it("chatId 非法 fail-closed 抛错，不调 runLark", async () => {
     const runLark = vi.fn();
     const ob = createOutbound({ runLark });

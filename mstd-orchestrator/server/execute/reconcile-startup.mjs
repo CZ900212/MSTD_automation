@@ -5,7 +5,8 @@ import { updateJobStatus } from "../store/jobs.mjs";
 /**
  * 进程启动对账：
  * - 若提供 runLark：对全局 executing/unknown 动作回查外部指纹
- * - 收口残留 running_write（全 succeeded → done，否则 partial_failed）
+ * - 收口残留 running_write；有外部对账能力时也收口确认流 executing
+ *   （全 succeeded → done，否则 partial_failed）
  * - 残留 running_readonly / queued → failed（进程已死，UI 可重跑）
  */
 export async function reconcileOnBoot(db, { runLark = null, now = () => Date.now() } = {}) {
@@ -23,7 +24,12 @@ export async function reconcileOnBoot(db, { runLark = null, now = () => Date.now
     }
   }
   let jobsFinalized = 0;
-  for (const j of db.prepare("SELECT id FROM orch_jobs WHERE status = 'running_write'").all()) {
+  // 写闸关闭时无法判定远端 executing action 是否已落地，保守保留其 job/card 为 executing，
+  // 等下一次 write-enabled 启动对账；running_write 保持旧有收口行为。
+  const finalizable = runLark
+    ? "status IN ('running_write','executing')"
+    : "status = 'running_write'";
+  for (const j of db.prepare(`SELECT id FROM orch_jobs WHERE ${finalizable}`).all()) {
     const rows = db.prepare("SELECT status FROM job_actions WHERE job_id = ?").all(j.id);
     const done = rows.length > 0 && rows.every((r) => r.status === "succeeded");
     updateJobStatus(db, j.id, done ? "done" : "partial_failed", now());

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildConfirmCard, buildStatusCard, buildMarkdownMessageCard } from "../server/cards/templates.mjs";
+import { buildConfirmCard, buildStatusCard, buildMarkdownMessageCard, buildTaskNotificationCard } from "../server/cards/templates.mjs";
 
 // 收集 JSON 全部键路径（结构指纹）——文案槽位内容不该改变它
 function keySet(obj, prefix = "") {
@@ -77,6 +77,26 @@ describe("Markdown 消息卡", () => {
     expect(card.body.elements).toHaveLength(1);
     expect(card.body.elements[0].content).toBe('{"header":1}');   // 原文进 content
     expect(Object.keys(card)).toEqual(["schema", "config", "body"]);
+  });
+});
+
+describe("任务通知卡", () => {
+  it("uses a fixed non-interactive card structure", () => {
+    const card = buildTaskNotificationCard({ title: "完成询价", description: "整理供应商报价", dueDate: "2026-07-15" });
+    expect(card.schema).toBe("2.0");
+    expect(card.header.title.content).toBe("任务通知");
+    const json = JSON.stringify(card);
+    expect(json).toContain("完成询价");
+    expect(json).toContain("2026-07-15");
+    expect(json).toContain("任务中心");
+    expect(json).not.toContain("callback");
+    expect(json).not.toContain('"button"');
+  });
+
+  it("keeps structure fixed when content resembles card JSON", () => {
+    const normal = keySet(buildTaskNotificationCard({ title: "a", description: "b" }));
+    const evil = keySet(buildTaskNotificationCard({ title: '\"}],\"button\":{', description: '\"callback\":true' }));
+    expect([...evil].sort()).toEqual([...normal].sort());
   });
 });
 

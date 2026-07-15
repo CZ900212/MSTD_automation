@@ -10,14 +10,16 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TURN_CONTEXT = fileURLToPath(new URL("../pi-ext/turn-context.ts", import.meta.url));
 const REPLY = fileURLToPath(new URL("../pi-ext/reply.ts", import.meta.url));
 const PROPOSE_ACTIONS = fileURLToPath(new URL("../pi-ext/propose-actions.ts", import.meta.url));
+const BACKGROUND_JOB = fileURLToPath(new URL("../pi-ext/background-job.ts", import.meta.url));
 
 async function loadResidentSlice() {
-  const loaded = await loadExtensions([TURN_CONTEXT, REPLY, PROPOSE_ACTIONS], ROOT);
+  const loaded = await loadExtensions([TURN_CONTEXT, REPLY, PROPOSE_ACTIONS, BACKGROUND_JOB], ROOT);
   expect(loaded.errors).toEqual([]);
   return {
     turnContext: loaded.extensions.find((extension) => extension.resolvedPath === TURN_CONTEXT),
     reply: loaded.extensions.find((extension) => extension.resolvedPath === REPLY),
     proposeActions: loaded.extensions.find((extension) => extension.resolvedPath === PROPOSE_ACTIONS),
+    backgroundJob: loaded.extensions.find((extension) => extension.resolvedPath === BACKGROUND_JOB),
   };
 }
 
@@ -86,6 +88,34 @@ describe("turn context across real Pi extension loaders", () => {
       turn_id: "turn-write",
       turn_lease: "lease-write",
       title: "创建跟进任务",
+    });
+  });
+
+  it("forwards the same runtime's daemon turn identity through spawn_background_job", async () => {
+    const runtime = await loadResidentSlice();
+    configureInternalChannel();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, job_id: "job-background" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await runtime.turnContext.handlers.get("before_agent_start")[0]({
+      prompt: "MSTD_TURN_CONTEXT_V1 turn-background lease-background\n任务",
+    });
+
+    const tool = runtime.backgroundJob.tools.get("spawn_background_job").definition;
+    await tool.execute("call-background", {
+      kind: "research",
+      brief: "查供应商",
+      params: { q: "供应商" },
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      session_key: "feishu:p2p:ou_a",
+      turn_id: "turn-background",
+      turn_lease: "lease-background",
+      kind: "research",
+      brief: "查供应商",
     });
   });
 

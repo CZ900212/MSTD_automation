@@ -1,7 +1,6 @@
-// 飞书 open_id 必须是非空字符串且带 ou_ 前缀；否则 fail-closed，绝不构造 argv。
-function isValidOpenId(v) {
-  return typeof v === "string" && /^ou_/.test(v);
-}
+import { buildTaskNotificationCard } from "../cards/templates.mjs";
+// open_id / task_guid 非法即 fail-closed，绝不构造 argv；校验规则与 action-dsl 单一来源。
+import { isValidDocToken, isValidOpenId, isValidTaskGuid } from "./action-dsl.mjs";
 
 function createTaskArgs(payload, key) {
   if (!isValidOpenId(payload.assignee_open_id)) {
@@ -19,6 +18,22 @@ function sendDmArgs(payload, key) {
   }
   const content = JSON.stringify({ ref: payload.card_ref });
   return ["im", "+messages-send", "--as", "bot", "--user-id", String(payload.to_open_id), "--msg-type", "interactive", "--content", content, "--idempotency-key", key];
+}
+
+function notifyTaskAssigneeArgs(payload, key) {
+  if (!isValidOpenId(payload.to_open_id)) {
+    throw new Error(`notify_task_assignee 拒绝非法 to_open_id: ${JSON.stringify(payload.to_open_id)}`);
+  }
+  if (typeof payload.title !== "string" || !payload.title.trim() || !payload.source_task_action_key) {
+    throw new Error("notify_task_assignee 缺来源任务或标题");
+  }
+  const card = buildTaskNotificationCard({
+    title: payload.title,
+    description: payload.description,
+    dueDate: payload.due_date,
+  });
+  return ["im", "+messages-send", "--as", "bot", "--user-id", payload.to_open_id,
+    "--msg-type", "interactive", "--content", JSON.stringify(card), "--idempotency-key", key];
 }
 
 // ISO 8601 校验（create_event 用）；不合法 fail-closed
@@ -53,10 +68,41 @@ function sendGroupMsgArgs(payload, key) {
   return ["im", "+messages-send", "--as", "bot", "--chat-id", String(payload.chat_id), "--msg-type", "interactive", "--content", content, "--idempotency-key", key];
 }
 
+function updateDocumentArgs(payload) {
+  if (!isValidDocToken(payload.doc_token)) throw new Error(`update_document 拒绝非法 doc_token: ${JSON.stringify(payload.doc_token)}`);
+  if (!new Set(["append", "str_replace", "block_insert_after", "block_replace"]).has(payload.command)) {
+    throw new Error(`update_document 拒绝不支持 command: ${JSON.stringify(payload.command)}`);
+  }
+  if (!new Set(["xml", "markdown"]).has(payload.doc_format)) throw new Error(`update_document 拒绝非法 doc_format: ${JSON.stringify(payload.doc_format)}`);
+  if (!Number.isSafeInteger(payload.revision_id) || payload.revision_id < 0) throw new Error("update_document 拒绝非法 revision_id");
+  if (typeof payload.content !== "string") throw new Error("update_document 拒绝非字符串 content");
+  const argv = ["docs", "+update", "--as", "user", "--doc", payload.doc_token, "--command", payload.command,
+    "--doc-format", payload.doc_format, "--revision-id", String(payload.revision_id)];
+  if (payload.command === "str_replace") {
+    if (typeof payload.pattern !== "string" || !payload.pattern) throw new Error("update_document str_replace 缺 pattern");
+    argv.push("--pattern", payload.pattern);
+  }
+  if (payload.command === "block_insert_after" || payload.command === "block_replace") {
+    if (typeof payload.block_id !== "string" || !payload.block_id) throw new Error("update_document block 操作缺 block_id");
+    argv.push("--block-id", payload.block_id);
+  }
+  argv.push("--content", payload.content, "--json");
+  return argv;
+}
+
 export function buildWriteArgs(action, idempotencyKey) {
   if (action.kind === "create_task") return createTaskArgs(action.payload, idempotencyKey);
   if (action.kind === "send_dm") return sendDmArgs(action.payload, idempotencyKey);
+  if (action.kind === "notify_task_assignee") return notifyTaskAssigneeArgs(action.payload, idempotencyKey);
   if (action.kind === "create_event") return createEventArgs(action.payload);
   if (action.kind === "send_group_msg") return sendGroupMsgArgs(action.payload, idempotencyKey);
+  if (action.kind === "update_document") return updateDocumentArgs(action.payload);
+  if (action.kind === "complete_task") {
+    const taskGuid = action.payload?.task_guid;
+    if (!isValidTaskGuid(taskGuid)) {
+      throw new Error(`complete_task 拒绝非法 task_guid: ${JSON.stringify(taskGuid)}`);
+    }
+    return ["task", "+complete", "--as", "user", "--task-id", taskGuid];
+  }
   throw new Error(`unknown action kind: ${action.kind}`);
 }

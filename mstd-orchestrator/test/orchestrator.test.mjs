@@ -5,9 +5,12 @@ import { createEventBus } from "../server/jobs/event-bus.mjs";
 import { createEventBuffer } from "../server/jobs/event-buffer.mjs";
 import { createRuntimeRegistry } from "../server/jobs/runtime.mjs";
 import { runReadonlyPhase, runWritePhase } from "../server/jobs/orchestrator.mjs";
+import { buildCapabilityProfile } from "../server/pi/resident-extensions.mjs";
 
 function fakeStartPi(script) {
-  return () => ({
+  return (options) => {
+    script.options = options;
+    return {
     child: { kill() { script.killed = true; } },
     runJob(_prompt, { onEvent }) {
       for (const e of script.events ?? []) onEvent(e);
@@ -15,7 +18,8 @@ function fakeStartPi(script) {
       return Promise.resolve({ finalText: script.finalText });
     },
     close() { return Promise.resolve(); },
-  });
+    };
+  };
 }
 
 let db, bus, buffer, registry;
@@ -57,6 +61,16 @@ describe("runReadonlyPhase", () => {
     expect(evTypes).toContain("tool_start");
     expect(evTypes).not.toContain("assistant_delta");
     expect(registry.has(job.id)).toBe(false);
+  });
+
+  it("passes the locked readonly capability profile to Pi", async () => {
+    const job = makeJob();
+    const script = { finalText: goodIntent };
+    const startPi = fakeStartPi(script);
+    const capabilityProfile = buildCapabilityProfile("/r", "readonly_job");
+    await runReadonlyPhase({ db, startPi, bus, buffer, registry, job, capabilityProfile, now: () => 2000 });
+    expect(script.options).toMatchObject({ capabilityProfile });
+    expect(script.options.extensions).toBeUndefined();
   });
 
   it("unparseable/invalid intent -> needs_attention with raw_output", async () => {

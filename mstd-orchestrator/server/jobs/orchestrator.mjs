@@ -6,14 +6,14 @@ import { recordActions } from "../safety/action-store.mjs";
 import { updateJobStatus, saveJobDraft } from "../store/jobs.mjs";
 import { jobWorkdir } from "../execute/job-workdir.mjs";
 import { parseIntentFromText } from "./intent-parse.mjs";
-import { buildPrompt, TEMPLATES } from "./templates.mjs";
+import { buildPrompt } from "./templates.mjs";
 
 function emit(bus, buffer, jobId, phase, sse) {
   const seq = buffer.record(jobId, phase, sse);
   bus.publish(jobId, seq == null ? sse : { ...sse, seq });
 }
 
-export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job, extensions = [], piOptions = {}, now = () => Date.now(), onActionsReady = null }) {
+export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job, extensions = [], capabilityProfile = null, piOptions = {}, notificationMode = "none", now = () => Date.now(), onActionsReady = null }) {
   updateJobStatus(db, job.id, "running_readonly", now());
   emit(bus, buffer, job.id, "readonly", { event: "job_status", data: { status: "running_readonly" } });
 
@@ -26,7 +26,7 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
     thinking: piOptions.thinking ?? "medium",
     cwd: workdir,
     env: { MSTD_JOB_WORKDIR: workdir },
-    extensions,
+    ...(capabilityProfile ? { capabilityProfile } : { extensions }),
   });
   registry.register(job.id, { client, abort: () => { try { client.child?.kill(); } catch { /* 已退出 */ } } });
 
@@ -51,10 +51,9 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
   try { await client.close(); } catch { /* ignore */ }
 
   const raw = parseIntentFromText(finalText);
-  const enableNotify = TEMPLATES[job.template_id]?.enableNotify ?? false;
   try {
     const intent = validateIntent(raw);
-    const actions = canonicalizeActions({ jobId: job.id, items: intent.items, enableNotify });
+    const actions = canonicalizeActions({ jobId: job.id, items: intent.items, notificationMode });
     recordActions(db, job.id, actions);
     saveJobDraft(db, job.id, {
       cardText: intent.card_text,

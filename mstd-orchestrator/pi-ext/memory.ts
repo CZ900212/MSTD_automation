@@ -10,13 +10,13 @@ export default function (pi: ExtensionAPI) {
     name: "memory",
     label: "Memory",
     description:
-      "全局记忆读写。layer: org=公司共享事实 | group=本群记忆(id=chat_id) | user=本人画像(id=open_id，仅私聊) | journal=公司总日志(只读)。" +
+      "会话记忆读写。layer: org=公司共享事实(只读) | group=本群记忆(id=chat_id) | user=本人画像(id=open_id，仅私聊) | soul=人格(只读)。journal 是受控审计层，不向模型开放。" +
       "action: add=追加条目 | replace=替换(old_text 唯一命中) | remove=删除(old_text 唯一命中) | read=读取。" +
       "值得长期记住的事实/偏好/决定要及时 add；过时信息用 replace/remove 维护。条目会自动带来源与时间戳。",
     parameters: Type.Object({
       action: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("remove"), Type.Literal("read")]),
-      layer: Type.Union([Type.Literal("org"), Type.Literal("group"), Type.Literal("user"), Type.Literal("journal"), Type.Literal("soul")]),
-      id: Type.Optional(Type.String({ description: "group=chat_id / user=open_id；org/journal/soul 不需要" })),
+      layer: Type.Union([Type.Literal("org"), Type.Literal("group"), Type.Literal("user"), Type.Literal("soul")]),
+      id: Type.Optional(Type.String({ description: "group=chat_id / user=open_id；org/soul 不需要" })),
       entry: Type.Optional(Type.String({ description: "add/replace 的新条目内容" })),
       old_text: Type.Optional(Type.String({ description: "replace/remove 的定位子串（须唯一命中）" })),
     }),

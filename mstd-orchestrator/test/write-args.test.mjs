@@ -29,6 +29,13 @@ describe("buildWriteArgs", () => {
     expect(buildWriteArgs(createTask, "job1:k1")).toContain("job1:k1");
   });
 
+  it("complete_task 使用精确 GUID 且不附加幂等参数", () => {
+    expect(buildWriteArgs({ kind: "complete_task", payload: { task_guid: "guid-1" } }, "ignored")).toEqual([
+      "task", "+complete", "--as", "user", "--task-id", "guid-1",
+    ]);
+    expect(() => buildWriteArgs({ kind: "complete_task", payload: { task_guid: "bad\nvalue" } }, "ignored")).toThrow(/task_guid/);
+  });
+
   it("throws on unknown kind", () => {
     expect(() => buildWriteArgs({ kind: "drop_db", payload: {} }, "k")).toThrow(/unknown/i);
   });
@@ -63,6 +70,22 @@ describe("buildWriteArgs", () => {
       "--idempotency-key", "job1:k1",
     ]);
   });
+
+  it("notify_task_assignee sends a fixed task card with its own idempotency key", () => {
+    const action = {
+      kind: "notify_task_assignee",
+      payload: {
+        source_task_action_key: "task-key", to_open_id: "ou_a", title: "完成询价",
+        description: "", due_date: "2026-07-15", template_version: 1,
+      },
+    };
+    const argv = buildWriteArgs(action, "notice-key");
+    expect(argv.slice(0, 8)).toEqual(["im", "+messages-send", "--as", "bot", "--user-id", "ou_a", "--msg-type", "interactive"]);
+    const content = JSON.parse(argv[argv.indexOf("--content") + 1]);
+    expect(content.header.title.content).toBe("任务通知");
+    expect(JSON.stringify(content)).toContain("完成询价");
+    expect(argv).toContain("notice-key");
+  });
 });
 
 // ---- D1: create_event / send_group_msg argv 构造 ----
@@ -92,5 +115,23 @@ describe("buildWriteArgs D1 扩类", () => {
   });
   it("send_group_msg 非法 chat_id fail-closed", () => {
     expect(() => buildWriteArgs({ kind: "send_group_msg", payload: { chat_id: "ou_x", card_ref: "c" } }, "k")).toThrow();
+  });
+
+  it("update_document 构造带 revision 的受控 str_replace argv", () => {
+    const argv = buildWriteArgs({ kind: "update_document", payload: {
+      doc_token: "docxToken_123", command: "str_replace", content: "新版本", revision_id: 7,
+      pattern: "旧版本", block_id: null, doc_format: "markdown",
+    } }, "ignored");
+    expect(argv).toEqual([
+      "docs", "+update", "--as", "user", "--doc", "docxToken_123", "--command", "str_replace",
+      "--doc-format", "markdown", "--revision-id", "7", "--pattern", "旧版本", "--content", "新版本", "--json",
+    ]);
+    expect(argv).not.toContain("--yes");
+  });
+
+  it("update_document 拒绝破坏性命令和非法 token", () => {
+    const base = { doc_token: "docxToken_123", content: "x", revision_id: 1, doc_format: "markdown" };
+    expect(() => buildWriteArgs({ kind: "update_document", payload: { ...base, command: "overwrite" } }, "k")).toThrow(/不支持/);
+    expect(() => buildWriteArgs({ kind: "update_document", payload: { ...base, command: "append", doc_token: "https:\/\/evil" } }, "k")).toThrow(/doc_token/);
   });
 });

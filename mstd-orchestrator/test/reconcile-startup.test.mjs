@@ -82,6 +82,27 @@ describe("reconcileOnBoot", () => {
     expect(job.status).toBe("partial_failed");
   });
 
+  it("确认流 executing job：动作全部成功后启动收口为 done", async () => {
+    const rows = seedJob("job-confirm-done", "executing", [
+      { owner_name: "王五", task: "确认报价", due: null, suggested_open_id: "ou_test3", confidence: "high" },
+    ]);
+    db.prepare("UPDATE job_actions SET status='succeeded' WHERE id=?").run(rows[0].id);
+    const out = await reconcileOnBoot(db, {
+      runLark: async () => ({ exitCode: 0, stdout: "{}", stderr: "" }), now: () => 102,
+    });
+    expect(out.jobsFinalized).toBe(1);
+    expect(db.prepare("SELECT status FROM orch_jobs WHERE id='job-confirm-done'").get().status).toBe("done");
+  });
+
+  it("写闸关闭时保守保留 executing job，等待下次可对账启动", async () => {
+    seedJob("job-confirm-deferred", "executing", [
+      { owner_name: "赵六", task: "核对合同", due: null, suggested_open_id: "ou_test4", confidence: "high" },
+    ]);
+    const out = await reconcileOnBoot(db, { runLark: null, now: () => 103 });
+    expect(out.jobsFinalized).toBe(0);
+    expect(db.prepare("SELECT status FROM orch_jobs WHERE id='job-confirm-deferred'").get().status).toBe("executing");
+  });
+
   it("running_readonly 残留 job → failed", async () => {
     seedJob("job3", "running_readonly");
 
