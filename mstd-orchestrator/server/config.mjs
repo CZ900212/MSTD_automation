@@ -2,6 +2,7 @@ import { resolveFeishuConfig } from "./auth/feishu-oauth.mjs";
 import { sessionSecret, sessionTtlSeconds } from "./http/session.mjs";
 import { maxConcurrentPi } from "./jobs/semaphore.mjs";
 import { buildBotNames } from "./gateway/normalize.mjs";
+import { canonicalDeliverableKey } from "./sessions/session-key.mjs";
 
 const NOTIFICATION_MODES = new Set(["card", "feishu_system", "none"]);
 const CONTEXT_ENVELOPE_MODES = new Set(["enforce", "shadow"]);
@@ -38,7 +39,39 @@ function agentArchitectureMode(env) {
   return enumEnv(env, "MSTD_AGENT_ARCHITECTURE_MODE", "legacy", AGENT_ARCHITECTURE_MODES);
 }
 
+function architectureTargets(env, key) {
+  const targets = new Set();
+  for (const raw of String(env[key] ?? "").split(",").map((value) => value.trim()).filter(Boolean)) {
+    const canonical = canonicalDeliverableKey(raw);
+    if (!canonical) throw new Error(`${key} 包含非法 canonical session: ${raw}`);
+    targets.add(canonical);
+  }
+  return targets;
+}
+
+export function resolveAgentArchitecture({
+  requestedMode = "legacy",
+  sessionKey,
+  activeTargets = new Set(),
+  shadowTargets = new Set(),
+} = {}) {
+  if (!AGENT_ARCHITECTURE_MODES.has(requestedMode)) throw new Error("requested architecture mode 非法");
+  if (!canonicalDeliverableKey(sessionKey)) return { requestedMode, effectiveMode: "legacy", match: "invalid_target" };
+  if (requestedMode === "active" && activeTargets.has(sessionKey)) {
+    return { requestedMode, effectiveMode: "active", match: "active_target" };
+  }
+  if (requestedMode === "shadow") return { requestedMode, effectiveMode: "shadow", match: "global_shadow" };
+  if (shadowTargets.has(sessionKey)) return { requestedMode, effectiveMode: "shadow", match: "shadow_target" };
+  return { requestedMode, effectiveMode: "legacy", match: "default" };
+}
+
 export function loadServerConfig(env = process.env) {
+  const architectureMode = agentArchitectureMode(env);
+  const agentActiveTargets = architectureTargets(env, "MSTD_AGENT_ACTIVE_TARGETS");
+  const agentShadowTargets = architectureTargets(env, "MSTD_AGENT_SHADOW_TARGETS");
+  if (architectureMode === "active" && !agentActiveTargets.size) {
+    throw new Error("MSTD_AGENT_ACTIVE_TARGETS 在 active mode 下必须非空");
+  }
   return {
     port: Number(env.PORT ?? 8787),
     sessionSecret: sessionSecret(env),
@@ -51,7 +84,9 @@ export function loadServerConfig(env = process.env) {
     privateDataOwnerOpenId: String(env.MSTD_PRIVATE_DATA_OWNER_OPEN_ID ?? "").trim(),
     minutesBroadcastChat: String(env.MSTD_MINUTES_BROADCAST_CHAT ?? "").trim(),   // 妙记派发执行后播报的群 chat_id
     meetingTaskNotificationMode: meetingTaskNotificationMode(env),
-    agentArchitectureMode: agentArchitectureMode(env),
+    agentArchitectureMode: architectureMode,
+    agentActiveTargets,
+    agentShadowTargets,
     dispatchContextLines: intEnv(env, "MSTD_DISPATCH_CONTEXT_LINES", 20),
     dispatchContextBytes: intEnv(env, "MSTD_DISPATCH_CONTEXT_BYTES", 8192),
     // Fairness cap for concurrent task reasoners inside one conversation (global Pi lease still applies).

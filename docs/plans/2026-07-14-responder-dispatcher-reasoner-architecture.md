@@ -14,7 +14,8 @@
 
 The implementation review was checked against the current tree and incorporated here:
 
-- Migration numbers are 018 for task persistence and 019 for observability because 017_security_quarantine.sql already exists.
+- Migration numbers are 019 for task persistence and 020 for observability; durable run state is additive migration 021 (with 022 run inputs).
+- Contract repair and rollout details: `/Users/admin1/.claude/plans/quizzical-conjuring-crystal.md`.
 - Dispatcher input now includes a byte-bounded recent transcript so short follow-ups can be matched to the correct task.
 - Reply provenance migration explicitly includes resident-scoped taint and recycle semantics, with cross-task security tests.
 - Reasoner handoff preserves both kind (message/card_copy) and deliverKind (group/p2p).
@@ -258,7 +259,7 @@ Add legacy, shadow, and active modes. legacy preserves the current path. shadow 
 
 **Files:**
 
-- Create: mstd-orchestrator/server/db/migrations/018_reasoning_tasks.sql
+- Create: mstd-orchestrator/server/db/migrations/019_reasoning_tasks.sql
 - Create: mstd-orchestrator/server/reasoning/task-store.mjs
 - Create: mstd-orchestrator/test/reasoning-task-store.test.mjs
 - Modify: mstd-orchestrator/server/db/index.mjs
@@ -436,7 +437,7 @@ Add legacy, shadow, and active modes. legacy preserves the current path. shadow 
 
 **Files:**
 
-- Create: mstd-orchestrator/server/db/migrations/019_reasoning_observability.sql
+- Create: mstd-orchestrator/server/db/migrations/020_reasoning_observability.sql
 - Modify: mstd-orchestrator/server/models/model-log.mjs
 - Modify: mstd-orchestrator/server/http/admin-routes.mjs
 - Modify: mstd-orchestrator/README.md

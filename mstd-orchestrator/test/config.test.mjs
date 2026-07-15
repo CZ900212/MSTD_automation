@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { loadServerConfig } from "../server/config.mjs";
+import { loadServerConfig, resolveAgentArchitecture } from "../server/config.mjs";
 
 describe("loadServerConfig", () => {
   it("结构锁：带默认值的枚举和整数 env 由通用 helper 解析", () => {
@@ -85,7 +85,7 @@ describe("loadServerConfig", () => {
     expect(c.agentArchitectureMode).toBe("legacy");
   });
 
-  it.each(["legacy", "shadow", "active"])("accepts architecture mode %j", (mode) => {
+  it.each(["legacy", "shadow"])("accepts architecture mode %j", (mode) => {
     expect(loadServerConfig({
       MSTD_SESSION_SECRET: "s",
       MSTD_AGENT_ARCHITECTURE_MODE: mode,
@@ -101,6 +101,39 @@ describe("loadServerConfig", () => {
       })).toThrow(/MSTD_AGENT_ARCHITECTURE_MODE/);
     },
   );
+
+  it("requires a canonical non-empty active target allowlist", () => {
+    expect(() => loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_AGENT_ARCHITECTURE_MODE: "active",
+    })).toThrow(/ACTIVE_TARGETS/);
+    expect(() => loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_AGENT_ARCHITECTURE_MODE: "active",
+      MSTD_AGENT_ACTIVE_TARGETS: "not-canonical",
+    })).toThrow(/ACTIVE_TARGETS/);
+    expect(loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_AGENT_ARCHITECTURE_MODE: "active",
+      MSTD_AGENT_ACTIVE_TARGETS: "feishu:p2p:ou_admin",
+    }).agentActiveTargets).toEqual(new Set(["feishu:p2p:ou_admin"]));
+  });
+
+  it("resolves legacy/shadow/active per canonical target in one process", () => {
+    const options = {
+      requestedMode: "active",
+      activeTargets: new Set(["feishu:p2p:ou_active"]),
+      shadowTargets: new Set(["feishu:p2p:ou_shadow"]),
+    };
+    expect(resolveAgentArchitecture({ ...options, sessionKey: "feishu:p2p:ou_active" }))
+      .toMatchObject({ effectiveMode: "active", match: "active_target" });
+    expect(resolveAgentArchitecture({ ...options, sessionKey: "feishu:p2p:ou_shadow" }))
+      .toMatchObject({ effectiveMode: "shadow", match: "shadow_target" });
+    expect(resolveAgentArchitecture({ ...options, sessionKey: "feishu:p2p:ou_legacy" }))
+      .toMatchObject({ effectiveMode: "legacy", match: "default" });
+    expect(resolveAgentArchitecture({ requestedMode: "shadow", sessionKey: "feishu:p2p:ou_any" }))
+      .toMatchObject({ effectiveMode: "shadow", match: "global_shadow" });
+  });
 
   it("defaults dispatch context bounds to 20 lines and 8192 bytes", () => {
     const c = loadServerConfig({ MSTD_SESSION_SECRET: "s" });

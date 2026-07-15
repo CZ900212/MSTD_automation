@@ -337,8 +337,9 @@ export function createTurnHandler({
       return emitEvent({ type: "unhandled_kind", kind, turn });
     }
 
-    if (architectureMode === "active") return handleTurnActive(turn, emitEvent);
-    if (architectureMode === "shadow") return handleTurnShadow(turn, emitEvent);
+    const effectiveArchitectureMode = turn.architectureMode ?? architectureMode;
+    if (effectiveArchitectureMode === "active") return handleTurnActive(turn, emitEvent);
+    if (effectiveArchitectureMode === "shadow") return handleTurnShadow(turn, emitEvent);
     return handleTurnLegacy(turn, emitEvent);
   }
 

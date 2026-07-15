@@ -5,6 +5,39 @@ import { createReasoningTaskStore } from "../server/reasoning/task-store.mjs";
 import { createTurnHandler } from "../server/gateway/turn-handler.mjs";
 
 describe("turn-handler active architecture", () => {
+  it("uses the per-turn resolved architecture mode over the constructor default", async () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const sessionKey = "feishu:p2p:ou_resolved";
+    const session = store.getOrCreate(sessionKey, { kind: "p2p" });
+    const responder = { answerTurn: vi.fn(async () => ({ action: "reply", text: "active reply" })) };
+    const taskStore = {
+      createDispatch: vi.fn(() => ({ id: "d1", outbound_idempotency_key: "k1" })),
+      recordDispatchSent: vi.fn(),
+    };
+    const coordinator = { schedule: vi.fn() };
+    const handler = createTurnHandler({
+      architectureMode: "legacy",
+      triage: { triage: vi.fn(async () => ({ action: "no_reply" })) },
+      brain: { turn: vi.fn(), steer: vi.fn(), isBusy: vi.fn() },
+      store,
+      budget: { allow: () => ({ ok: true }), record: vi.fn() },
+      responder,
+      taskStore,
+      coordinator,
+      replyPipeline: {
+        deliverText: vi.fn(async () => ({ messageId: "om1" })),
+        deliverTerminal: vi.fn(), handleReply: vi.fn(), renderAutomationReply: vi.fn(), deliverTrusted: vi.fn(),
+      },
+    });
+    await handler.handleTurn({
+      kind: "message", session, sessionKey, items: [{ content: "x", ts: 1 }], mode: "p2p",
+      architectureMode: "active",
+    });
+    expect(responder.answerTurn).toHaveBeenCalled();
+    expect(coordinator.schedule).toHaveBeenCalled();
+  });
   it("shadow preserves legacy outbound while reviewing responder and dispatcher without task side effects", async () => {
     const db = openDb();
     migrate(db);

@@ -33,6 +33,13 @@
 **永远不要**一次性清空白名单换成"全放开"——保持 fail-closed 语义，全员放开 = 把全员 open_id 列进白名单，动作有审计可查。
 回退：任何误写 → `MSTD_ENABLE_WRITE=0` 重启，再查 `job_actions` 审计与幂等键核对影响面。
 
+## 2.5 Responder 架构定向放量
+
+- 默认 `MSTD_AGENT_ARCHITECTURE_MODE=legacy`，active targets 为空。
+- 全局 shadow：设为 `shadow`；legacy 仍是唯一业务出站，新链只记录 telemetry，不能创建 dispatch/task/run/Pi。
+- 定向 canary：设为 `active`，并把已批准的 canonical session key 写入 `MSTD_AGENT_ACTIVE_TARGETS`。未命中会话保持 legacy；`MSTD_AGENT_SHADOW_TARGETS` 命中会话只跑 shadow。
+- active 模式下 targets 为空或含非法 session key 会启动失败。回滚时清空 active targets、切回 legacy 并重启；写闸独立保持关闭。
+
 ## 3. 新群接入 SOP（观察期两周）
 
 1. 拉 bot 进群；`group_policies` 落 `observe_only`（默认新群建议先 observe_only）：

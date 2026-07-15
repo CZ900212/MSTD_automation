@@ -4,6 +4,7 @@ import { createAdmit } from "./admit.mjs";
 import { createDebouncer } from "./debounce.mjs";
 import { createSessionStore } from "../sessions/store.mjs";
 import { buildSessionKey } from "../sessions/session-key.mjs";
+import { resolveAgentArchitecture } from "../config.mjs";
 
 // 管道装配：consumer → inbox(去重) → admit → debounce → actor → handleTurn
 // 导出 ingestRaw / ingestNormalized 供 C 模式合成入口复用同一路径。
@@ -98,13 +99,19 @@ export function wireGateway({
       const initiatorOpenId = senders.size === 1 ? [...senders][0] : null;
 
       let traceId = null;
+      const architecture = resolveAgentArchitecture({
+        requestedMode: config.agentArchitectureMode,
+        sessionKey,
+        activeTargets: config.agentActiveTargets,
+        shadowTargets: config.agentShadowTargets,
+      });
       if (turnTrace) {
         const source = items.some((it) => it.source === "simulator") ? "simulator" : "feishu";
         const begun = turnTrace.beginBatch({
           sessionKey,
           mode,
           source,
-          pipeline: config.agentArchitectureMode === "active" || config.agentArchitectureMode === "shadow"
+          pipeline: architecture.effectiveMode === "active" || architecture.effectiveMode === "shadow"
             ? "responder"
             : "legacy",
           items,
@@ -112,6 +119,14 @@ export function wireGateway({
         });
         traceId = begun.traceId;
         turnTrace.linkInboxEvents(traceId, begun.eventIds);
+        turnTrace.record({
+          type: "architecture_resolved",
+          traceId,
+          sessionKey,
+          requestedMode: architecture.requestedMode,
+          effectiveMode: architecture.effectiveMode,
+          match: architecture.match,
+        });
       }
 
       // A/C 写意图审批人：仅当配置了 simulator approval open id 时覆盖 initiator
@@ -130,6 +145,7 @@ export function wireGateway({
         initiatorOpenId: approvalInitiator,
         transcriptInitiatorOpenId: initiatorOpenId,
         traceId,
+        architectureMode: architecture.effectiveMode,
       }));
     }, { delay });
     return { accepted: true, sessionKey, mode: verdict.mode };
