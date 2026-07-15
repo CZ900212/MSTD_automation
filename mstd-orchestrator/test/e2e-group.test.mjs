@@ -38,11 +38,16 @@ describe.skipIf(!E2E)("Phase F E2E · 群@/旁听/限额真机", () => {
     } catch { return []; }
   }
 
-  async function waitBotReply(sinceMs, timeoutMs = 150_000) {
+  function messageText(message) {
+    const raw = message?.body?.content ?? message?.content ?? "";
+    try { return JSON.parse(raw).text ?? String(raw); } catch { return String(raw); }
+  }
+
+  async function waitBotReply(sinceMs, timeoutMs = 150_000, until = () => true) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const got = await botMessagesSince(sinceMs);
-      if (got.length) return got;
+      if (got.length && until(got.map(messageText).join("\n"))) return got;
       await sleep(6000);
     }
     return [];
@@ -76,7 +81,7 @@ describe.skipIf(!E2E)("Phase F E2E · 群@/旁听/限额真机", () => {
     // ② @bot 问上下文 → 必答
     const t2 = Date.now();
     await send(`<at user_id="${BOT_OPEN_ID}">小达</at> 刚才群里大家在聊什么？简单复述一下`, `e2e-g3-${t2}`);
-    const reply2 = await waitBotReply(t2 - 1000);
+    const reply2 = await waitBotReply(t2 - 1000, 150_000, (text) => /球赛|外卖/.test(text));
     expect(reply2.length, `bot 未回复@。日志：${logs.join("").slice(-2000)}`).toBeGreaterThan(0);
 
     // ③ 切 ambient → 明确求助 → 主动接话
@@ -85,16 +90,20 @@ describe.skipIf(!E2E)("Phase F E2E · 群@/旁听/限额真机", () => {
     ).run(GROUP);
     const t3 = Date.now();
     await send("在吗各位，谁知道 2+2 等于几？我算不明白了，急，在线等", `e2e-g4-${t3}`);
-    const reply3 = await waitBotReply(t3 - 1000);
+    const reply3 = await waitBotReply(t3 - 1000, 150_000, (text) => /(?:^|\D)4(?:\D|$)|四/.test(text));
     expect(reply3.length, `ambient 未接话。日志：${logs.join("").slice(-2000)}`).toBeGreaterThan(0);
 
     // ④ 连发闲聊 → 不刷屏（新增 bot 消息 ≤1）
+    const baseline = new Set(
+      (await botMessagesSince(t3 - 60_000)).map((message) => message.message_id),
+    );
     const t4 = Date.now();
     await send("哈哈哈哈", `e2e-g5-${t4}`);
     await send("就是说啊", `e2e-g6-${t4}`);
     await send("下班了下班了", `e2e-g7-${t4}`);
     await sleep(45_000);
-    const noisy = await botMessagesSince(t4 - 1000);
+    const noisy = (await botMessagesSince(t3 - 60_000))
+      .filter((message) => !baseline.has(message.message_id));
     expect(noisy.length).toBeLessThanOrEqual(1);
   }, 600_000);
 });
