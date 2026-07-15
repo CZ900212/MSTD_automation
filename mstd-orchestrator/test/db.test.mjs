@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { openDb, migrate } from "../server/db/index.mjs";
 
 const TABLES = [
@@ -58,6 +58,20 @@ describe("db migrate", () => {
     } finally {
       db.close();
       for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
+  });
+
+  it("openDb creates a missing parent directory for a fresh file database", () => {
+    const root = join(tmpdir(), `mstd-fresh-db-${randomBytes(8).toString("hex")}`);
+    const path = join(root, "nested", "mstd.sqlite");
+    expect(existsSync(join(root, "nested"))).toBe(false);
+
+    const db = openDb(path);
+    try {
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
