@@ -16,6 +16,7 @@ import { createMemoryFiles } from "../server/memory/files.mjs";
 import { createDreaming } from "../server/ticker/dreaming.mjs";
 import { createCronStore } from "../server/ticker/cron-jobs.mjs";
 import { createHeartbeatStore } from "../server/ticker/heartbeat-store.mjs";
+import { stopOwnedProcessTree } from "./support/e2e-daemon.mjs";
 
 const E2E = String(process.env.MSTD_E2E ?? "") === "1";
 const WRITE = String(process.env.MSTD_ENABLE_WRITE ?? "") === "1";
@@ -49,7 +50,7 @@ describe.skipIf(!RUN)("H3 全链路 E2E 回归剧本", () => {
   const logs = [];
   const runLark = makeRunLark({ profile: process.env.LARK_PROFILE });
 
-  afterAll(() => { daemon?.kill("SIGTERM"); });
+  afterAll(async () => { await stopOwnedProcessTree(daemon); });
 
   async function send(chatId, text, key) {
     const r = await runLark(["im", "+messages-send", "--as", "user", "--chat-id", chatId, "--text", text, "--idempotency-key", key, "--json"]);
@@ -96,6 +97,7 @@ describe.skipIf(!RUN)("H3 全链路 E2E 回归剧本", () => {
         // 回合 60s 没回来就沿 reason 链降级重跑（waitBotReply 150s 窗口内容得下两跳）
         MSTD_TURN_TIMEOUT_MS: "60000",
       },
+      detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     daemon.stdout.on("data", (d) => logs.push(String(d)));

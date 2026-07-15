@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeRunLark } from "../server/execute/run-lark.mjs";
+import { stopOwnedProcessTree } from "./support/e2e-daemon.mjs";
 
 const E2E = String(process.env.MSTD_E2E ?? "") === "1";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,12 +18,13 @@ describe.skipIf(!E2E)("Phase B E2E · test org 私聊闭环", () => {
   let daemon = null;
   const logs = [];
 
-  afterAll(() => { daemon?.kill("SIGTERM"); });
+  afterAll(async () => { await stopOwnedProcessTree(daemon); });
 
   async function startDaemon() {
     daemon = spawn("node", [join(ROOT, "server", "index.mjs")], {
       cwd: ROOT,
       env: { ...process.env, MSTD_ENABLE_AGENT: "1", PORT: String(PORT), MSTD_DB_PATH: join(ROOT, "db", "e2e-p2p.sqlite") },
+      detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     daemon.stdout.on("data", (d) => logs.push(String(d)));

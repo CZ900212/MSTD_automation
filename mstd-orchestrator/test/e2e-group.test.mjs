@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { rmSync } from "node:fs";
 import { makeRunLark } from "../server/execute/run-lark.mjs";
 import { openDb } from "../server/db/index.mjs";
+import { stopOwnedProcessTree } from "./support/e2e-daemon.mjs";
 
 const E2E = String(process.env.MSTD_E2E ?? "") === "1";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,7 +23,7 @@ describe.skipIf(!E2E)("Phase F E2E · 群@/旁听/限额真机", () => {
   const logs = [];
   const runLark = makeRunLark({ profile: process.env.LARK_PROFILE });
 
-  afterAll(() => { daemon?.kill("SIGTERM"); });
+  afterAll(async () => { await stopOwnedProcessTree(daemon); });
 
   async function send(text, key) {
     const r = await runLark(["im", "+messages-send", "--as", "user", "--chat-id", GROUP, "--text", text, "--idempotency-key", key, "--json"]);
@@ -52,6 +53,7 @@ describe.skipIf(!E2E)("Phase F E2E · 群@/旁听/限额真机", () => {
     daemon = spawn("node", [join(ROOT, "server", "index.mjs")], {
       cwd: ROOT,
       env: { ...process.env, MSTD_ENABLE_AGENT: "1", PORT: String(PORT), MSTD_DB_PATH: DB_PATH },
+      detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     daemon.stdout.on("data", (d) => logs.push(String(d)));

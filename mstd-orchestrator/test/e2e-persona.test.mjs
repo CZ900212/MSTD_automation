@@ -8,6 +8,7 @@ import { existsSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeRunLark } from "../server/execute/run-lark.mjs";
+import { stopOwnedProcessTree } from "./support/e2e-daemon.mjs";
 
 const E2E = String(process.env.MSTD_E2E ?? "") === "1";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -25,18 +26,7 @@ describe.skipIf(!E2E)("C1 E2E · persona 真机生效（人格/记号契约）",
   const logs = [];
 
   afterAll(async () => {
-    if (daemon) {
-      daemon.kill("SIGTERM");
-      // §5.2 审卷采纳:SIGTERM 被忽略时 SIGKILL 兜底并确认退出,不做无条件超时放行
-      const exited = await new Promise((r) => {
-        daemon.once("exit", () => r(true));
-        setTimeout(() => r(false), 5000);
-      });
-      if (!exited) {
-        daemon.kill("SIGKILL");
-        await new Promise((r) => { daemon.once("exit", r); setTimeout(r, 3000); });
-      }
-    }
+    await stopOwnedProcessTree(daemon);
     rmSync(WORKSPACE, { recursive: true, force: true });
     for (const suffix of ["", "-wal", "-shm"]) rmSync(`${DB_PATH}${suffix}`, { force: true });
   });
@@ -52,7 +42,7 @@ describe.skipIf(!E2E)("C1 E2E · persona 真机生效（人格/记号契约）",
     // §5.2 Task 9 审卷:钉死读仓内 agent-memory 的真实 SOUL,防父环境指向别处
     delete env.MSTD_MEMORY_DIR;
     daemon = spawn("node", [join(ROOT, "server", "index.mjs")], {
-      cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"],
+      cwd: ROOT, env, detached: true, stdio: ["ignore", "pipe", "pipe"],
     });
     daemon.stdout.on("data", (d) => logs.push(String(d)));
     daemon.stderr.on("data", (d) => logs.push(String(d)));
