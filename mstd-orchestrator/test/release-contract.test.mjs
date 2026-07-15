@@ -19,6 +19,12 @@ describe("Phase 7 release contract", () => {
     }
   });
 
+  it("uses the supported Vite 8 toolchain for release builds", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../../mstd-ui/package.json", import.meta.url)));
+    expect(pkg.devDependencies.vite).toBe("^8.1.4");
+    expect(pkg.devDependencies["@vitejs/plugin-react"]).toBe("^6.0.3");
+  });
+
   it("builds a deterministic, non-secret manifest from release evidence", () => {
     const rootDir = mkdtempSync(join(tmpdir(), "mstd-release-"));
     mkdirSync(join(rootDir, "mstd-orchestrator", "server", "migrations"), { recursive: true });
