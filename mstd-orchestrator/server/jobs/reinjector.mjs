@@ -4,6 +4,7 @@ import { createContextEnvelope } from "../safety/context-envelope.mjs";
 import { stableHash } from "../safety/action-dsl.mjs";
 
 const SAFE_SENSITIVITY = new Set(["public", "internal"]);
+const SAFE_ERROR_KINDS = new Set(["timeout", "tool_error", "crashed", "unknown"]);
 
 function normalizeDerivedResult({ derived_result, result, sessionKey, sessionVersion, jobId }) {
   // Legacy producers are supported only at the boundary, then normalized. The
@@ -74,6 +75,7 @@ export function createReinjector({
     derived_result,
     result,
     error,
+    errorKind = "unknown",
   }) {
     stopProgress(jobId);
     const derived = ok ? normalizeDerivedResult({ derived_result, result, sessionKey, sessionVersion, jobId }) : null;
@@ -86,7 +88,7 @@ export function createReinjector({
       dispatchId,
       parent: derived?.parent ?? null,
       sensitivity: derived?.sensitivity ?? null,
-      text: derived?.text ?? error ?? "",
+      text: derived?.text ?? (SAFE_ERROR_KINDS.has(errorKind) ? errorKind : "unknown"),
     })).digest("hex");
     if (!claimAmbiguity(provenance)) return Promise.resolve({ status: "deduplicated", provenance });
     if (ok && (!derived || !SAFE_SENSITIVITY.has(derived.sensitivity))) {
@@ -96,11 +98,14 @@ export function createReinjector({
       const session = store.getOrCreate(sessionKey);
       const drift = (session.version ?? 0) - sessionVersion;
       const stale = drift > versionThreshold;
+      const sensitivityInstruction = derived?.sensitivity === "internal"
+        ? "结果供你内部参考，向用户播报时只说结论与影响，不引用原文细节。"
+        : "请向用户播报结果要点。";
       const brief = ok
         ? (stale
-          ? `后台任务(${jobId})已完成，但会话话题可能已翻篇（期间隔了 ${drift} 个回合）。若结果仍有价值就简短播报，否则静默（不调用 reply）。`
-          : `后台任务(${jobId})已完成，请向用户播报结果要点。`)
-        : `后台任务(${jobId})执行失败（${error ?? "未知原因"}），请酌情告知用户并给出建议。`;
+          ? `后台任务(${jobId})已完成，但会话话题可能已翻篇（期间隔了 ${drift} 个回合）。${sensitivityInstruction}若结果仍有价值就简短播报，否则静默（不调用 reply）。`
+          : `后台任务(${jobId})已完成，${sensitivityInstruction}`)
+        : `后台任务(${jobId})执行失败（分类：${SAFE_ERROR_KINDS.has(errorKind) ? errorKind : "unknown"}），请告知用户任务没成并给建议，不要描述技术细节。`;
       const contextEnvelope = ok ? createContextEnvelope({
         trust: "internal", source: "background", scope: sessionKey,
         sensitivity: derived.sensitivity, content: derived.text,

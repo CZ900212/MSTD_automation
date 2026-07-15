@@ -2,12 +2,14 @@
 // job 完成 → onComplete 回调（D7 reinjector 消费：版本判定→回注会话）。
 import { createJob, updateJobStatus } from "../store/jobs.mjs";
 import { SENSITIVITIES } from "../safety/trust-boundary.mjs";
+import { randomUUID } from "node:crypto";
 
 export function createBackgroundJobs({
   db,
   semaphore,
   runJob,                       // async ({jobId, sessionKey, kind, params, brief}) => result（实际执行体，注入）
   onComplete = () => {},
+  onEvent = () => {},
   now = () => Date.now(),
   log = console.error,
 }) {
@@ -68,9 +70,17 @@ export function createBackgroundJobs({
       updateJobStatus(db, jobId, "done", now());
       onComplete({ jobId, ...meta, ok: true, derived_result });
     } catch (e) {
-      log(`[background] job ${jobId} 失败: ${e?.message ?? e}`);
+      const error = String(e?.message ?? e);
+      const errorKind = ["timeout", "tool_error", "crashed", "unknown"].includes(e?.errorKind)
+        ? e.errorKind : "unknown";
+      log(`[background] job ${jobId} 失败: ${error}`);
       updateJobStatus(db, jobId, "failed", now());
-      onComplete({ jobId, ...meta, ok: false, error: String(e?.message ?? e) });
+      const seq = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM job_events WHERE job_id = ?").get(jobId).seq;
+      db.prepare(
+        "INSERT INTO job_events (id, job_id, phase, seq, type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(randomUUID(), jobId, "background", seq, "background_failed", JSON.stringify({ errorKind, error }), now());
+      onEvent({ type: "background_job_failed", jobId, sessionKey: meta.sessionKey, errorKind, error });
+      onComplete({ jobId, ...meta, ok: false, errorKind });
     } finally {
       semaphore.release();
       pump();

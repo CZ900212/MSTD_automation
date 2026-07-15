@@ -83,14 +83,22 @@ describe("后台 job 委托（orch_jobs 复用 + 版本快照 + 信号量）", (
 
   it("runJob 抛错 → 状态 failed，回调 ok:false", async () => {
     const done = [];
+    const events = [];
     const bg = createBackgroundJobs({
       db, semaphore: createSemaphore(1),
       runJob: vi.fn(async () => { throw new Error("炸了"); }),
       onComplete: (x) => done.push(x),
+      onEvent: (x) => events.push(x),
     });
     const jobId = bg.spawn({ sessionKey: "s", sessionVersion: 0, kind: "x", params: {} });
     await sleep(10);
     expect(db.prepare("SELECT status FROM orch_jobs WHERE id = ?").get(jobId).status).toBe("failed");
-    expect(done[0]).toMatchObject({ ok: false });
+    expect(done[0]).toMatchObject({ ok: false, errorKind: "unknown" });
+    expect(done[0]).not.toHaveProperty("error");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "background_job_failed", errorKind: "unknown", error: "炸了" }),
+    ]));
+    const failure = db.prepare("SELECT * FROM job_events WHERE job_id = ? AND type = 'background_failed'").get(jobId);
+    expect(JSON.parse(failure.payload_json)).toEqual({ errorKind: "unknown", error: "炸了" });
   });
 });

@@ -434,6 +434,7 @@ if (config.enableAgent && config.botOpenId) {
       capabilityProfile: buildCapabilityProfile(ROOT, "background"),
       timeoutMs: Number(process.env.MSTD_BACKGROUND_TIMEOUT_MS ?? 240_000),
     }),
+    onEvent: observeAgentEvent,
     onComplete: (x) => reinjector.onJobComplete(x),
   });
   // C0.4：heartbeat 改 owner-bound 结构化队列——DB due picker 逐项受信直投,

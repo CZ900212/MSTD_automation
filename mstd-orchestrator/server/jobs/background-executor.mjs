@@ -3,6 +3,23 @@
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 
+const TIMEOUT_CODES = new Set(["ETIMEDOUT", "ERR_OPERATION_TIMEOUT", "ABORT_ERR"]);
+const CRASH_CODES = new Set(["EPIPE", "ECONNRESET", "ERR_CHILD_PROCESS_IPC_REQUIRED"]);
+
+export function classifyBackgroundError(error) {
+  const name = String(error?.name ?? "");
+  const code = String(error?.code ?? "").toUpperCase();
+  const message = String(error?.message ?? error ?? "");
+  if (name === "TimeoutError" || name === "AbortError" || TIMEOUT_CODES.has(code) || /tim(?:e|ed)\s*out|deadline exceeded|超时/i.test(message)) {
+    return "timeout";
+  }
+  if (name === "ToolError" || code === "TOOL_ERROR" || /\btool[_ -]?error\b/i.test(message)) return "tool_error";
+  if (Number.isInteger(error?.exitCode) || error?.signal || CRASH_CODES.has(code) || /\b(?:crash(?:ed)?|child exited|process exited)\b/i.test(message)) {
+    return "crashed";
+  }
+  return "unknown";
+}
+
 export function createBackgroundExecutor({ startPi, config, agentWorkspace, capabilityProfile, timeoutMs }) {
   return async function runJob({ jobId, sessionKey: _sessionKey, brief, params }) {
     const workdir = join(agentWorkspace, "background", jobId);
@@ -21,6 +38,11 @@ export function createBackgroundExecutor({ startPi, config, agentWorkspace, capa
         { id: `background:${jobId}`, timeoutMs },
       );
       return { text: result.finalText, sensitivity: "internal" };
+    } catch (error) {
+      const classified = new Error(String(error?.message ?? error ?? "unknown background error"), { cause: error });
+      classified.name = error?.name ?? "Error";
+      classified.errorKind = classifyBackgroundError(error);
+      throw classified;
     } finally {
       await client.close();
     }

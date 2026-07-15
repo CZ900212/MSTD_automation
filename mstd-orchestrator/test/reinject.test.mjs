@@ -28,6 +28,25 @@ describe("后台 job 回注（版本判定 + 进度心跳）", () => {
     expect(actors.enqueue).toHaveBeenCalledWith("feishu:p2p:ou_a", expect.any(Function));
   });
 
+  it("public 结果维持正常播报，internal 结果只允许播报结论与影响", async () => {
+    store.getOrCreate("feishu:p2p:ou_public", { kind: "p2p" });
+    await reinject.onJobComplete({
+      jobId: "j-public", sessionKey: "feishu:p2p:ou_public", sessionVersion: 0, ok: true,
+      derived_result: { text: "公开结果", sensitivity: "public" },
+    });
+    expect(brain.turn.mock.calls[0][0].brief).toContain("请向用户播报结果要点");
+
+    store.getOrCreate("feishu:p2p:ou_internal", { kind: "p2p" });
+    await reinject.onJobComplete({
+      jobId: "j-internal", sessionKey: "feishu:p2p:ou_internal", sessionVersion: 0, ok: true,
+      derived_result: { text: "内部诊断", sensitivity: "internal" },
+    });
+    const internalBrief = brain.turn.mock.calls[1][0].brief;
+    expect(internalBrief).toContain("结果供你内部参考");
+    expect(internalBrief).toContain("只说结论与影响，不引用原文细节");
+    expect(internalBrief).not.toContain("请向用户播报结果要点");
+  });
+
   it("过时回注：版本差 >3 → prompt 标注话题可能翻篇", async () => {
     const s = store.getOrCreate("feishu:p2p:ou_b", { kind: "p2p" });
     for (let i = 0; i < 5; i++) store.bumpVersion(s.id);
@@ -83,10 +102,17 @@ describe("后台 job 回注（版本判定 + 进度心跳）", () => {
     expect(brain.turn).not.toHaveBeenCalled();
   });
 
-  it("失败 job 回注：brief 说明失败", async () => {
+  it("失败 job 回注：brief 只含分类，不含 error 原文", async () => {
     store.getOrCreate("feishu:p2p:ou_e", { kind: "p2p" });
-    await reinject.onJobComplete({ jobId: "j5", sessionKey: "feishu:p2p:ou_e", sessionVersion: 0, ok: false, error: "超时" });
-    expect(brain.turn.mock.calls[0][0].brief).toContain("失败");
+    await reinject.onJobComplete({
+      jobId: "j5", sessionKey: "feishu:p2p:ou_e", sessionVersion: 0, ok: false,
+      errorKind: "timeout", error: "read_file 在 /srv/secret/workdir 没跑通",
+    });
+    const brief = brain.turn.mock.calls[0][0].brief;
+    expect(brief).toContain("执行失败（分类：timeout）");
+    expect(brief).toContain("不要描述技术细节");
+    expect(brief).not.toContain("read_file");
+    expect(brief).not.toContain("/srv/secret/workdir");
   });
 
   it("origin 会话 actor callback 释放前不进入 brain.turn", async () => {
