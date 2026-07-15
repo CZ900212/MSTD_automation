@@ -1,8 +1,8 @@
 /**
  * Pi provider extension: 注册 GPT 中枢与 DeepSeek 备用中枢。
- * 定型路由（2026-07-12）：
- *   - cz-gpt   -> gpt-5.6-sol       【主脑】工具循环 / 编排推理（medium）
- *   - deepseek -> DeepSeek V4 Flash / V4 Pro（均 non-thinking）
+ * 定型路由（2026-07-15）：
+ *   - cz-gpt   -> gpt-5.6-sol       【主脑】工具循环 / 编排推理（high）
+ *   - deepseek -> DeepSeek V4 Flash（non-thinking）/ V4 Pro（xhigh 兜底主脑）
  * key 走环境变量插值（$CZ_GPT_KEY / $DEEPSEEK_KEY），不写死。
  * 用法: pi -e pi-ext/providers.ts --provider cz-gpt --model gpt-5.6-sol ...
  *
@@ -39,8 +39,8 @@ export default function (pi: ExtensionAPI) {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128000,
         maxTokens: 8192,
-        // 2026-07-15 临时主脑：thinkingFormat "deepseek" 下发 thinking:{type}；实测 deepseek-v4-pro
-        // 吃 {type:"enabled"} 并回 reasoning_content。仅 xhigh 档开思考（主脑用），其余档保持非思考，
+        // thinkingFormat "deepseek" 下发 thinking:{type}；deepseek-v4-pro 接受 {type:"enabled"}
+        // 并返回 reasoning_content。仅 xhigh 档开思考（兜底主脑用），其余档保持非思考，
         // 不影响 caller.mjs 里 disableThinking 的应答/快机链（那条走直连 HTTP，不读本 map）。
         thinkingLevelMap: { off: "none", minimal: null, low: null, medium: null, high: null, xhigh: "enabled" },
         compat: { thinkingFormat: "deepseek", supportsReasoningEffort: false },
@@ -63,8 +63,8 @@ export default function (pi: ExtensionAPI) {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 200000,
         maxTokens: 16384,
-        // 主脑推理强度始终锁定 medium，避免调用方意外改变计算档位。
-        thinkingLevelMap: { off: "medium", minimal: "medium", low: "medium", medium: "medium", high: "medium", xhigh: "medium" },
+        // 主脑推理强度始终锁定 high，避免调用方意外改变计算档位。
+        thinkingLevelMap: { off: "high", minimal: "high", low: "high", medium: "high", high: "high", xhigh: "high" },
         compat: { supportsReasoningEffort: true, maxTokensField: "max_completion_tokens" },
       },
       {

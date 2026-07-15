@@ -35,20 +35,18 @@ function deferred() {
 const nextImmediate = () => new Promise((resolve) => setImmediate(resolve));
 
 describe("brain（GPT-5.6 Sol Pi 会话进程管理）", () => {
-  // 临时主脑切换（2026-07-15）：gpt-5.6-sol 不稳，暂以 DeepSeek V4 Pro(xhigh 思考)为主脑、gpt-5.6-sol 兜底。
-  // gpt-5.6-sol 上游恢复后连同 providers.ts / brain.mjs 一起把顺序与断言换回。
-  it("首选 DeepSeek V4 Pro xhigh(临时主脑)，末级 GPT-5.6 Sol medium(兜底)", () => {
+  it("首选 GPT-5.6 Sol high，末级 DeepSeek V4 Pro xhigh 兜底", () => {
     expect(REASON_PROVIDERS[0]).toEqual({
+      key: "gpt-5.6-sol",
+      provider: "cz-gpt",
+      model: "gpt-5.6-sol",
+      thinking: "high",
+    });
+    expect(REASON_PROVIDERS.at(-1)).toEqual({
       key: "v4-pro",
       provider: "deepseek",
       model: "deepseek-v4-pro",
       thinking: "xhigh",
-    });
-    expect(REASON_PROVIDERS.at(-1)).toEqual({
-      key: "gpt-5.6-sol",
-      provider: "cz-gpt",
-      model: "gpt-5.6-sol",
-      thinking: "medium",
     });
   });
   it("spawn env 带 MSTD_SESSION_KEY；session.chat_id 存在时注入 MSTD_CHAT_ID（lark_read 会话域门禁）", async () => {
@@ -411,7 +409,7 @@ describe("brain（GPT-5.6 Sol Pi 会话进程管理）", () => {
         executionKey: "task:task-a",
         turnId: "daemon-turn-1",
         lease: "brain-lease",
-        closing: { state: "closing", residentEpoch: 2, provider: "gpt-5.6-sol" },
+        closing: { state: "closing", residentEpoch: 2, provider: "v4-pro" },
       },
     });
 

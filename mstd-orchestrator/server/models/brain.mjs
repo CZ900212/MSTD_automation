@@ -8,11 +8,10 @@ import { createContextEnvelope, resolveTurnContext } from "../safety/context-env
 import { TRUST } from "../safety/trust-boundary.mjs";
 
 export const REASON_PROVIDERS = [
-  // 临时主脑切换（2026-07-15）：gpt-5.6-sol 不稳（反复 HTTP 503 / 读懂任务却空产出走 daemon 兜底），
-  // 暂以 DeepSeek V4 Pro 为主脑、gpt-5.6-sol 降为兜底；上游恢复后把下面两行顺序换回即可。
-  // v4-pro 思考档设 xhigh：providers.ts 里 xhigh→thinking:{type:"enabled"}（DeepSeek 思考为二元开关，此即"开到底"）。
+  // 2026-07-15 定案：主脑使用 gpt-5.6-sol high；DeepSeek V4 Pro xhigh 仅作兜底。
+  // v4-pro 的 xhigh 在 providers.ts 映射为 thinking:{type:"enabled"}（DeepSeek 思考为二元开关）。
+  { key: "gpt-5.6-sol", provider: "cz-gpt", model: "gpt-5.6-sol", thinking: "high" },
   { key: "v4-pro", provider: "deepseek", model: "deepseek-v4-pro", thinking: "xhigh" },
-  { key: "gpt-5.6-sol", provider: "cz-gpt", model: "gpt-5.6-sol", thinking: "medium" },
 ];
 
 /** Runtime ownership key: task-scoped when taskId is present; session-scoped legacy otherwise. */
