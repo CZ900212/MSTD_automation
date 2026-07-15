@@ -123,7 +123,7 @@ describe("dispatcher-eval", () => {
       responderText: "synthetic sent reply",
       dispatcherFault: "provider_error",
       activeTaskCandidates: [],
-      expected: { action: "spawn_new", closure: "silent_ok" },
+      expected: { action: "spawn_new", closure: "required" },
     }];
     const caller = { call: async () => {
       calls += 1;

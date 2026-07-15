@@ -593,6 +593,65 @@ describe("reasoning coordinator", () => {
     }
   });
 
+  it("dispatcher error in addressed mode spawns required work and produces a terminal delivery", async () => {
+    const source = sessions.append(session.id, {
+      role: "user",
+      senderOpenId: "ou_a",
+      content: "帮我核实这件事",
+      ts: 1,
+    });
+    const dispatch = taskStore.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [source.id],
+      responderAction: "reply",
+      responderText: "收到，我先处理一下。",
+      mode: "addressed",
+    });
+    const assistant = sessions.append(session.id, {
+      role: "assistant",
+      content: "收到，我先处理一下。",
+      ts: 2,
+    });
+    taskStore.markDispatchSent(dispatch.id, assistant.id);
+    const deliverTerminal = vi.fn(async () => ({ messageId: "om_dispatcher_fallback_terminal" }));
+    const dispatcher = createDispatcher({
+      caller: { call: vi.fn(async () => { throw new Error("dispatcher unavailable"); }) },
+    });
+    const c = createReasoningCoordinator({
+      taskStore,
+      runStore,
+      brain,
+      store: sessions,
+      dispatcher,
+      deliverTerminal,
+      onEvent: (event) => events.push(event),
+    });
+
+    const processed = await c.processDispatch({
+      dispatchId: dispatch.id,
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      mode: "addressed",
+    });
+
+    expect(processed.decision).toMatchObject({
+      action: "spawn_new",
+      closure: "required",
+      reason_code: "dispatcher_fallback_spawn",
+    });
+    await vi.waitFor(() => expect(runStore.getRun(processed.result.runId).status).toBe("completed"));
+    expect(deliverTerminal).toHaveBeenCalledTimes(1);
+    expect(deliverTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: `run:${processed.result.runId}:terminal`,
+      source: "daemon_terminal_fallback",
+    }));
+    expect(runStore.getRun(processed.result.runId)).toMatchObject({
+      closure_mode: "required",
+      closure_state: "safe_fallback_sent",
+      terminal_message_id: "om_dispatcher_fallback_terminal",
+    });
+  });
+
   it("refuses fabricated or cross-session task ids", async () => {
     const other = sessions.getOrCreate("feishu:p2p:ou_b", { kind: "p2p" });
     const foreign = taskStore.createTask({ sessionId: other.id, title: "外会话" });

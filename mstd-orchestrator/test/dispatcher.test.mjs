@@ -173,6 +173,17 @@ describe("bounded transcript + candidates", () => {
 });
 
 describe("createDispatcher.review", () => {
+  it.each(["addressed", "p2p", "private"])(
+    "uses required closure for %s failure fallback",
+    (mode) => {
+      expect(dispatcherFailureFallback(mode)).toMatchObject({
+        action: "spawn_new",
+        closure: "required",
+        reason_code: "dispatcher_fallback_spawn",
+      });
+    },
+  );
+
   it("receives original user text and actual sent reply, not hidden responder metadata", async () => {
     let prompt;
     const caller = {

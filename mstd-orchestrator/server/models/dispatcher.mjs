@@ -160,7 +160,11 @@ export function parseDispatcherDecision(text, { candidateIds = new Set() } = {})
   };
 }
 
-/** Owner-confirmed deterministic failure fallback. */
+/**
+ * Owner-confirmed deterministic failure fallback.
+ * 2026-07-15 定案：addressed/private 失败兜底必须 required；应答机兜底话术已经构成
+ * 后续处理承诺，因此必须最终给出结果、失败或取消状态。ambient 仍保持 no_reasoning。
+ */
 export function dispatcherFailureFallback(mode) {
   if (mode === "ambient") {
     return { action: "no_reasoning", reason_code: "dispatcher_fallback_ambient" };
@@ -170,7 +174,7 @@ export function dispatcherFailureFallback(mode) {
     action: "spawn_new",
     title: "继续处理用户请求",
     brief: "dispatcher 解析失败，需 reasoner 复核并在必要时补全结果",
-    closure: "silent_ok",
+    closure: "required",
     reason_code: "dispatcher_fallback_spawn",
   };
 }

@@ -143,6 +143,6 @@
     "responderText": "正在核查。",
     "dispatcherFault": "provider_error",
     "activeTaskCandidates": [],
-    "expected": { "action": "spawn_new", "closure": "silent_ok", "reason_code": "dispatcher_fallback_spawn" }
+    "expected": { "action": "spawn_new", "closure": "required", "reason_code": "dispatcher_fallback_spawn" }
   }
 ]
