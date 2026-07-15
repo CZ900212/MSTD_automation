@@ -12,7 +12,7 @@ describe("C1 persona hook", () => {
   it("SOUL 只读一次;两次触发逐字节同 prompt;整体替换不拼接默认词", async () => {
     const readFile = vi.fn(() => "# 身份\n你是「小达」…");
     const now = () => new Date(Date.UTC(2026, 6, 10, 4, 0, 0));   // 北京 2026-07-10 12:00
-    const hook = createPersonaHook({ soulPath: "/fake/SOUL.md", readFile, now, workspace: "/tmp/agent-workspace" });
+    const hook = createPersonaHook({ soulPath: "/fake/SOUL.md", readFile, now });
     expect(readFile).toHaveBeenCalledTimes(1);                    // 工厂期读一次
     expect(readFile).toHaveBeenCalledWith("/fake/SOUL.md", "utf8"); // §5.2:锁路径+编码,防读错文件
 
@@ -21,7 +21,7 @@ describe("C1 persona hook", () => {
     expect(readFile).toHaveBeenCalledTimes(1);                    // 回合触发不再读
     expect(r1.systemPrompt).toBe(r2.systemPrompt);                // 逐字节稳定
     const expected = buildPersonaPrompt({
-      soul: "# 身份\n你是「小达」…", dateStr: "2026年7月10日", workspace: "/tmp/agent-workspace",
+      soul: "# 身份\n你是「小达」…", dateStr: "2026年7月10日",
     });
     expect(r1).toEqual({ systemPrompt: expected });               // 精确等于纯函数产物
     expect(r1.systemPrompt).not.toContain("SENTINEL_XYZ");        // 整体替换,默认词零残留
@@ -35,7 +35,7 @@ describe("C1 persona hook", () => {
   // §5.2 审卷采纳:时区杀——UTC 与上海跨日的时刻必须按北京时间取日期,改 UTC 即红
   it("dateStr 按 Asia/Shanghai 取日:UTC 晚间 = 北京次日", async () => {
     const now = () => new Date(Date.UTC(2026, 6, 10, 18, 30, 0)); // UTC 07-10 18:30 = 北京 07-11 02:30
-    const hook = createPersonaHook({ soulPath: "/f", readFile: () => "魂", now, workspace: "/w" });
+    const hook = createPersonaHook({ soulPath: "/f", readFile: () => "魂", now });
     const { systemPrompt } = await hook({});
     expect(systemPrompt).toContain("2026年7月11日");
     expect(systemPrompt).not.toContain("2026年7月10日");

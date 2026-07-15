@@ -10,17 +10,15 @@ export function createPersonaHook({
   soulPath,
   readFile = readFileSync,
   now = () => new Date(),
-  workspace = process.cwd(),
 }: {
   soulPath: string;
   readFile?: (path: string, enc: "utf8") => string;
   now?: () => Date;
-  workspace?: string;
 }) {
   if (!soulPath) throw new Error("persona: MSTD_SOUL_PATH 未配置");
   const soul = readFile(soulPath, "utf8");                    // 每个 Pi 进程初始化时只读一次
   const dateStr = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", dateStyle: "long" }).format(now());
-  const prompt = buildPersonaPrompt({ soul, dateStr, workspace });
+  const prompt = buildPersonaPrompt({ soul, dateStr });
   return async () => ({ systemPrompt: prompt });
 }
 

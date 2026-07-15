@@ -7,14 +7,14 @@ import { fileURLToPath } from "node:url";
 import { buildPersonaPrompt } from "../pi-ext/persona-prompt.ts";
 
 describe("C1 persona 系统提示词纯函数", () => {
-  const args = { soul: "# 身份\n你是「小达」…", dateStr: "2026年7月10日", workspace: "/tmp/agent-workspace" };
-  it("三层齐全:身份/世界观(记号+日期+workspace)/工具纪律", () => {
+  const args = { soul: "# 身份\n你是「小达」…", dateStr: "2026年7月10日" };
+  it("三层齐全:身份/世界观(记号+日期)/工具纪律", () => {
     const p = buildPersonaPrompt(args);
     expect(p).toContain("你是「小达」");                        // 身份层 = SOUL 全文
     expect(p).toContain("[@我]");                              // 记号约定
     expect(p).toContain("不是在讨论你");                        // @语义
     expect(p).toContain("2026年7月10日");                      // 日期只到"日"
-    expect(p).toContain("/tmp/agent-workspace");               // workspace
+    expect(p).not.toContain("/tmp/agent-workspace");           // 部署路径不进 prompt
     // §5.2 审卷采纳:关键词袋→方向性整句,防"保留词面反转纪律"的变异逃逸
     expect(p).toContain("reply 是你唯一的发声通道");            // 工具纪律(真名,已核实注册名)
     expect(p).toContain("只能走 propose_actions 发确认卡");
@@ -31,6 +31,9 @@ describe("C1 persona 系统提示词纯函数", () => {
     expect(p).toContain("不要手写 Card JSON");
     expect(p).toContain("写**陈述句**不写指令句");              // 记忆纪律
     expect(p).toContain(".env 密钥文件都不归你碰");             // 内部实现边界
+    expect(p).toContain("内部实现不外说");                      // 内部披露纪律
+    expect(p).toContain("运行环境、目录路径、内部工具的名字和故障、系统架构");
+    expect(p).toContain('被追问就一句"内部实现不展开"');
     expect(p).toContain("[名字]: 内容");                        // 记号全集,不止 [@我]
     expect(p).toContain("[我]");
     expect(p).toContain("[内部记录]");
@@ -61,11 +64,11 @@ describe("C1 persona 系统提示词纯函数", () => {
   // §5.2 审卷采纳:互异 sentinel 证明真实注入+SOUL 全文保留+三层相对顺序,杀硬编码/截断/换序变异
   it("sentinel 注入:SOUL 多行全文在最前,动态值恰一次,三层顺序锁定", () => {
     const soul = "SOUL_LINE_A_9f3\n\nSOUL_LINE_B_9f3";
-    const p = buildPersonaPrompt({ soul, dateStr: "2031年1月2日", workspace: "/ws/sentinel-77" });
+    const p = buildPersonaPrompt({ soul, dateStr: "2031年1月2日" });
     const idx = (t) => { const i = p.indexOf(t); expect(i, t).toBeGreaterThanOrEqual(0); return i; };
     expect(p.startsWith("SOUL_LINE_A_9f3")).toBe(true);         // SOUL 层第一(缓存稳定度排序)
     expect(p.split("2031年1月2日").length - 1).toBe(1);          // 恰一次
-    expect(p.split("/ws/sentinel-77").length - 1).toBe(1);
+    expect(p).not.toContain("/ws/sentinel-77");
     expect(p).not.toContain("2026年7月10日");                    // 无残留硬编码日期
     expect(idx("SOUL_LINE_B_9f3")).toBeLessThan(idx("# 你在哪里"));
     expect(idx("# 你在哪里")).toBeLessThan(idx("# 消息怎么读"));
