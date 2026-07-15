@@ -13,7 +13,11 @@ function stableBatchKey(sourceMessageIds) {
 export function outboundIdempotencyKey({ sessionId, sourceBatchKey, responderText }) {
   return createHash("sha256")
     .update([sessionId, sourceBatchKey, String(responderText ?? "")].join("\0"))
-    .digest("hex");
+    // Feishu im message client_token rejects the full 64-hex digest with
+    // 99992402. A 128-bit deterministic prefix preserves practical collision
+    // resistance while staying inside the same proven bound as write actions.
+    .digest("hex")
+    .slice(0, 32);
 }
 
 export function createReasoningTaskStore(db, { now = Date.now } = {}) {

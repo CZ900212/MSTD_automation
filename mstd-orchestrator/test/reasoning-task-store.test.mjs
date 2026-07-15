@@ -13,6 +13,7 @@ const MIGRATION = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "../server/db/migrations/019_reasoning_tasks.sql"),
   "utf8",
 );
+const KEY_MIGRATION = "023_reasoning_dispatch_idempotency_key.sql";
 
 describe("019_reasoning_tasks migration shape", () => {
   it("defines tasks, task_messages, dispatches with required columns and checks", () => {
@@ -88,7 +89,29 @@ describe("createReasoningTaskStore", () => {
       sourceBatchKey: a.source_batch_key,
       responderText: "收到",
     }));
-    expect(a.outbound_idempotency_key).toHaveLength(64);
+    // Feishu im message client_token rejects the full 64-hex digest with
+    // 99992402; keep the deterministic key within the proven 32-char bound.
+    expect(a.outbound_idempotency_key).toMatch(/^[a-f0-9]{32}$/);
+  });
+
+  it("migrates persisted 64-hex pending sends to the Feishu-safe bound", () => {
+    const source = append(session.id, "恢复旧 outbox");
+    const dispatch = store.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [source.id],
+      responderAction: "reply",
+      responderText: "恢复回复",
+      mode: "p2p",
+    });
+    const legacyKey = `${dispatch.outbound_idempotency_key}${"a".repeat(32)}`;
+    db.prepare("UPDATE reasoning_dispatches SET outbound_idempotency_key = ? WHERE id = ?")
+      .run(legacyKey, dispatch.id);
+    db.prepare("DELETE FROM schema_migrations WHERE name = ?").run(KEY_MIGRATION);
+
+    migrate(db);
+
+    expect(store.getDispatch(dispatch.id).outbound_idempotency_key)
+      .toBe(legacyKey.slice(0, 32));
   });
 
   it("reply transitions pending_send -> pending_review -> running -> done; claim rejects pending_send", () => {

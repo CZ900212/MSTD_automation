@@ -1,6 +1,6 @@
 # 三模型审核架构 A/B 实验记录
 
-状态：假设已锁定，等待执行（2026-07-15）
+状态：中途终止，结果不确定；用户要求优先切换当前前台白名单（2026-07-15）
 
 ## 假设
 
@@ -67,10 +67,26 @@
 - `model_log` 必须包含 dispatcher 决策以及 task/reasoner/handoff 生命周期关联字段。
 - 启动前确认写入关闭、active target 仅包含测试私聊 canonical session、端口空闲、无其他消费者。
 
-## 结果（执行后填写）
+## 结果
 
-- 实际样本：待填。
-- 主指标：待填。
-- 护栏：待填。
-- 决策：待填。
-- 经验与后续：待填。
+- 实际样本：A1 完成 5 次，首答延迟为 20,346 / 3,858 / 4,399 / 4,473 / 4,179 ms，中位数 4,399 ms；B 组尚未形成任何有效配对样本。
+- 主指标：未达到 10 对，按预注册规则不得比较胜负，也不计算显著性。
+- 中止原因：A1 完成后，用户要求优先把当前前台白名单切到三模型 active；为避免后续 ABBA 块再次切回 legacy，实验立即停止。
+- 决策：`inconclusive`。这些数据不能支持 B 胜出或失败；后续若需要统计结论，必须从新的独占窗口重新跑满 10 对。
+
+## 中止后的定向 active canary
+
+定向切换不计入已冻结的 A/B 样本，但作为发布安全证据单独记录：
+
+- 首次 active canary 暴露真实飞书兼容问题：Responder 已生成答案，但 64 位 dispatch 幂等键被飞书以 `99992402 field validation failed` 拒绝，用户不可见。
+- 修复：新 dispatch 使用 32 位确定性哈希；迁移 023 将数据库内历史 64 位 outbox 键缩短，使 `pending_send` 可在重启后恢复。
+- 恢复验证：旧失败 outbox 成功补发；Dispatcher 使用 `v4-flash`，裁决 `no_reasoning`。
+- 正常简单 canary：Responder 首答 5,073 ms；Dispatcher `v4-flash` 用时 1,614 ms，裁决 `no_reasoning`；无 reasoner。
+- 正常慢机 canary：Responder 首答 4,965 ms；Dispatcher `v4-flash` 用时 2,481 ms，裁决 `spawn_new`；随后 `reasoner_started`，约 19 秒后 `handoff_sent`，run=`completed`、closure=`sent`。
+- 顺序护栏：两条正常 canary 均满足 responder_sent < dispatcher_decision；慢机场景进一步满足 dispatcher_decision < reasoner_started < handoff_sent。
+- 其他护栏：两条正常 canary 均无重复 responder/handoff、无 daemon/safe fallback、无跨会话关联。
+
+## 后续
+
+- 当前仅将一个测试私聊 canonical session 固定为 active；其他会话继续由 allowlist resolver 保持 legacy。
+- 若恢复 A/B，需重新建立 10 对完整样本，不能把上述定向 canary 拼入中止实验。

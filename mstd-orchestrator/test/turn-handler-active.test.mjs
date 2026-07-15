@@ -165,7 +165,7 @@ describe("turn-handler active architecture", () => {
     expect(order.indexOf("commit_send")).toBeLessThan(order.indexOf("schedule"));
     expect(order).not.toContain("reasoner");
     expect(coordinator.schedule).toHaveBeenCalled();
-    expect(outboundCalls[0].opts.idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(outboundCalls[0].opts.idempotencyKey).toMatch(/^[a-f0-9]{32}$/);
   });
 
   it("reaches responder while a task reasoner remains blocked", async () => {
