@@ -52,6 +52,7 @@ describe("createResponder.answerTurn", () => {
     })).resolves.toMatchObject({ action: "reply", text: expect.any(String) });
     expect(onEvent).toHaveBeenCalledWith({
       type: "responder_fallback",
+      fallback_kind: "responder_parse",
       sessionKey: "feishu:p2p:ou_x",
       mode: "p2p",
       action: "reply",

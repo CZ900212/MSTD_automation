@@ -168,7 +168,7 @@ describe("reply egress turn-handler integration", () => {
     await expect(blocked.handler.handleReply({ sessionKey: "feishu:p2p:ou_a", brief: "回复" }))
       .resolves.toMatchObject({ ok: false, text: SAFE_REPLY_FALLBACK });
     expect(blocked.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "reply_egress_fallback", code: "internal_disclosure" }),
+      expect.objectContaining({ type: "reply_egress_fallback", fallback_kind: "egress_safe", code: "internal_disclosure" }),
     ]));
 
     const audited = setup({ text: "read_file 没跑通", internalDisclosure: scanner });
@@ -227,7 +227,11 @@ describe("reply egress turn-handler integration", () => {
     expect(result).toMatchObject({ ok: false, text: SAFE_REPLY_FALLBACK, message_id: "om_1" });
     expect(x.outbound.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: SAFE_REPLY_FALLBACK }));
     expect(JSON.stringify(x.outbound.sendMessage.mock.calls)).not.toContain("abcdefghijklmnop");
-    expect(x.events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "reply_egress_fallback", code: "post_render_dlp" })]));
+    expect(x.events).toEqual(expect.arrayContaining([expect.objectContaining({
+      type: "reply_egress_fallback",
+      fallback_kind: "egress_safe",
+      code: "post_render_dlp",
+    })]));
   });
 
   it("refuses a resident recycled while render is in flight before any outbound call", async () => {

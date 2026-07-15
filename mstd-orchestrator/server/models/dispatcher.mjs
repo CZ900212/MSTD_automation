@@ -248,6 +248,7 @@ export function createDispatcher({
       const fallback = dispatcherFailureFallback(mode);
       emit({
         type: "dispatcher_fallback",
+        fallback_kind: "dispatcher_error",
         sessionKey,
         dispatchId,
         chain: "dispatcher",
@@ -291,6 +292,7 @@ export function createDispatcher({
       const fallback = dispatcherFailureFallback(mode);
       emit({
         type: "dispatcher_fallback",
+        fallback_kind: "dispatcher_parse",
         sessionKey,
         dispatchId,
         chain: "dispatcher",

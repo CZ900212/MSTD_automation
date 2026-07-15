@@ -127,6 +127,7 @@ export function createTurnHandler({
     }
     onEvent({
       type: "business_turn_terminal",
+      fallback_kind: "daemon_terminal",
       sessionKey: turn.sessionKey,
       turnId: turn.turnId,
       outcome: "daemon_fallback_sent",

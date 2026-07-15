@@ -33,23 +33,31 @@ const asDetail = (evt) => {
 };
 
 export function createModelLog(db, { now = Date.now, log = console.error } = {}) {
-  // Prefer extended schema when migration 020 is applied; fall back for older DBs in tests.
-  const hasTaskCols = (() => {
+  // Prefer extended schemas when migrations 020/024 are applied; fall back for older DBs in tests.
+  const columns = (() => {
     try {
-      const cols = db.prepare("PRAGMA table_info(model_log)").all().map((c) => c.name);
-      return cols.includes("task_id");
+      return new Set(db.prepare("PRAGMA table_info(model_log)").all().map((c) => c.name));
     } catch {
-      return false;
+      return new Set();
     }
   })();
+  const hasTaskCols = columns.has("task_id");
+  const hasFallbackKind = columns.has("fallback_kind");
 
   const insert = hasTaskCols
-    ? db.prepare(
-      `INSERT INTO model_log
-        (id, kind, chain, from_key, to_key, session_key, attempt, detail, ts,
-         task_id, dispatch_id, run_id, decision, reason_code, latency_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
+    ? hasFallbackKind
+      ? db.prepare(
+        `INSERT INTO model_log
+          (id, kind, chain, from_key, to_key, session_key, attempt, detail, ts,
+           task_id, dispatch_id, run_id, decision, reason_code, latency_ms, fallback_kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      : db.prepare(
+        `INSERT INTO model_log
+          (id, kind, chain, from_key, to_key, session_key, attempt, detail, ts,
+           task_id, dispatch_id, run_id, decision, reason_code, latency_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
     : db.prepare(
       "INSERT INTO model_log (id, kind, chain, from_key, to_key, session_key, attempt, detail, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
@@ -57,7 +65,7 @@ export function createModelLog(db, { now = Date.now, log = console.error } = {})
   function record(evt) {
     try {
       if (hasTaskCols) {
-        insert.run(
+        const values = [
           randomUUID(),
           evt.type,
           evt.chain ?? null,
@@ -73,7 +81,9 @@ export function createModelLog(db, { now = Date.now, log = console.error } = {})
           evt.decision ?? evt.action ?? null,
           evt.reason_code ?? evt.reasonCode ?? null,
           evt.latencyMs ?? null,
-        );
+        ];
+        if (hasFallbackKind) values.push(evt.fallback_kind ?? null);
+        insert.run(...values);
       } else {
         insert.run(
           randomUUID(),

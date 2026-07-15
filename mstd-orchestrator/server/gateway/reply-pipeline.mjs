@@ -153,11 +153,13 @@ export function createReplyPipeline({
     }
     if (!recorded.ok && recordFailure) throw new Error(recordFailure);
     if (recorded.receipt) {
+      const terminalOutcome = recorded.receipt.terminal?.outcome ?? null;
       onEvent({
         type: "business_turn_terminal",
+        ...(terminalOutcome === "daemon_fallback_sent" ? { fallback_kind: "daemon_terminal" } : {}),
         sessionKey: recorded.receipt.sessionKey,
         turnId: recorded.receipt.turnId,
-        outcome: recorded.receipt.terminal?.outcome ?? null,
+        outcome: terminalOutcome,
         messageId,
       });
     }
@@ -296,7 +298,14 @@ export function createReplyPipeline({
           atomic: true,
           recordFailure: "安全 fallback 物理发送后回执提交失败",
         });
-        onEvent({ type: "reply_egress_fallback", sessionKey, messageId, code: post.code, audit: post.audit });
+        onEvent({
+          type: "reply_egress_fallback",
+          fallback_kind: "egress_safe",
+          sessionKey,
+          messageId,
+          code: post.code,
+          audit: post.audit,
+        });
         return { ok: false, error: `reply egress 拒绝: ${post.code}`, text: SAFE_REPLY_FALLBACK, message_id: messageId };
       }
       if (kind === "card_copy") return { ok: true, text: rendered.text, audit: post.audit };

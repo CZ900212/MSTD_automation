@@ -105,6 +105,7 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
       try {
         onEvent?.({
           type: "responder_fallback",
+          fallback_kind: "responder_parse",
           sessionKey,
           mode,
           action: verdict.action,

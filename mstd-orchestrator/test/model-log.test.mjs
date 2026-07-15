@@ -55,6 +55,28 @@ describe("model_log（模型链路可观测落库）", () => {
     expect(row.detail).not.toContain("must-not-log");
   });
 
+  it("persists the five fallback kinds as one structured model_log field", () => {
+    const fallbackEvents = [
+      ["responder_fallback", "responder_parse"],
+      ["dispatcher_fallback", "dispatcher_error"],
+      ["dispatcher_fallback", "dispatcher_parse"],
+      ["business_turn_terminal", "daemon_terminal"],
+      ["reply_egress_fallback", "egress_safe"],
+    ];
+    for (const [type, fallback_kind] of fallbackEvents) {
+      mlog.record({ type, fallback_kind, sessionKey: "feishu:p2p:ou_x" });
+    }
+
+    const rows = mlog.list();
+    expect(rows.map((row) => row.fallback_kind).sort()).toEqual([
+      "daemon_terminal",
+      "dispatcher_error",
+      "dispatcher_parse",
+      "egress_safe",
+      "responder_parse",
+    ]);
+  });
+
   it("list 支持 kind 过滤与 limit", () => {
     for (let i = 0; i < 5; i++) mlog.record({ type: "model_retry", chain: "fast", model: "v4-flash", attempt: i + 1, error: "e" });
     mlog.record({ type: "pipeline_error", chain: "fast", error: "x" });

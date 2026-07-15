@@ -272,8 +272,28 @@ describe("createDispatcher.review", () => {
     await expect(dispatcher.review({ mode: "ambient", items: [{ content: "x" }], responderAction: "no_reply" }))
       .resolves.toMatchObject(dispatcherFailureFallback("ambient"));
     expect(events.some((e) => e.type === "dispatcher_invalid")).toBe(true);
-    expect(events.some((e) => e.type === "dispatcher_fallback")).toBe(true);
+    expect(events.find((e) => e.type === "dispatcher_fallback")).toMatchObject({
+      fallback_kind: "dispatcher_parse",
+    });
     expect(events.some((e) => e.type === "dispatcher_started")).toBe(true);
+  });
+
+  it("classifies provider errors separately from invalid dispatcher output", async () => {
+    const events = [];
+    const dispatcher = createDispatcher({
+      caller: { call: vi.fn(async () => { throw new Error("provider unavailable"); }) },
+      onEvent: (event) => events.push(event),
+    });
+
+    await expect(dispatcher.review({
+      mode: "addressed",
+      items: [{ content: "查一下" }],
+      responderText: "我去核实",
+    })).resolves.toMatchObject({ action: "spawn_new", closure: "required" });
+
+    expect(events.find((event) => event.type === "dispatcher_fallback")).toMatchObject({
+      fallback_kind: "dispatcher_error",
+    });
   });
 
   it("emits decision events with latency and reason code", async () => {

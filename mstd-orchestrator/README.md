@@ -119,6 +119,7 @@ cd ../mstd-ui && npx vitest run     # UI 测试
 - 新群接入 SOP、写闸逐步放开、dreaming shadow→apply 切换、告警响应：见 `../docs/superpowers/runbooks/agent-rollout.md`。
 - 观察期：群策略 `observe_only` 判定照跑只落 `observe_log` 不出站，周一 09:00 DM 管理员信噪报告。
 - 模型链路可观测：降级/重试/全链耗尽/预算命中/出站重试落 `model_log` 表（caller/brain/outbound 的 onEvent + budget onExceed，落库 fail-safe 不反噬主链路）；调试台看板「模型链路事件」或 `GET /api/admin/model-log?kind=` 查询。
+- 兜底事件保留原事件名，并用 `fallback_kind` 横向归类：`responder_parse` 表示应答机输出无法按协议采用；`dispatcher_error` 表示调度器调用失败；`dispatcher_parse` 表示调度器输出无法解析或校验；`daemon_terminal` 表示 daemon 在业务回合缺少正式终态投递时发出安全终态；`egress_safe` 表示候选回复未通过出站治理后改发安全兜底。
 - 安全/可用性评测：`test/fixtures/policy-eval-v1.json` 是版本化 synthetic corpus，`npm run policy:eval` 输出正常只读硬拒绝率、不必要 step-up 率、安全 fallback 率、case mismatch 数、`sensitive_bytes_out` 与本地 p95 延迟。门禁会从 `expected/result` 重算每个 case，字段缺失、伪造 `pass`、敌意 case 未 hard reject 均 fail-closed；通过仅表示 synthetic fixture gate，真机/生产评测明确为 pending。`prompt-guard-shadow` 是可注入、可选的 shadow adapter，缺 classifier 只报 `skipped`，不下载模型、不装 Python 依赖、绝不参与 hard block（中文亦未校准）。
 - 外部上下文统一经 `mstd.context-envelope.v1`：生产默认 `MSTD_CONTEXT_ENVELOPE_MODE=enforce`，HMAC 绑定内容、来源、scope、敏感级别和 parent provenance；非 canonical 数组、accessor/Proxy、签名或 hash 漂移在 Pi 拉起前拒绝。仅迁移诊断可显式 `shadow`，其验证/遥测不得改变 legacy context 正文。
 - lark-cli 真机硬约束（单事件/stdin 保活/扁平 NDJSON/mentions 缺失靠 botName 文本匹配）：见 spec §Phase A。

@@ -98,7 +98,12 @@ describe("foreground business turn terminal receipt", () => {
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "business_turn_admitted", turnId: "turn-1" }),
       expect.objectContaining({ type: "business_turn_ack", turnId: "turn-1", terminal: false }),
-      expect.objectContaining({ type: "business_turn_terminal", turnId: "turn-1", outcome: "daemon_fallback_sent" }),
+      expect.objectContaining({
+        type: "business_turn_terminal",
+        fallback_kind: "daemon_terminal",
+        turnId: "turn-1",
+        outcome: "daemon_fallback_sent",
+      }),
       expect.objectContaining({
         type: "brain_turn_outcome",
         turnId: "turn-1",
