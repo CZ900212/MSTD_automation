@@ -33,13 +33,16 @@ export default function (pi: ExtensionAPI) {
       },
       {
         id: "deepseek-v4-pro",
-        name: "DeepSeek V4 Pro (non-thinking)",
+        name: "DeepSeek V4 Pro",
         reasoning: true,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128000,
         maxTokens: 8192,
-        thinkingLevelMap: { off: "none", minimal: null, low: null, medium: null, high: null, xhigh: null },
+        // 2026-07-15 临时主脑：thinkingFormat "deepseek" 下发 thinking:{type}；实测 deepseek-v4-pro
+        // 吃 {type:"enabled"} 并回 reasoning_content。仅 xhigh 档开思考（主脑用），其余档保持非思考，
+        // 不影响 caller.mjs 里 disableThinking 的应答/快机链（那条走直连 HTTP，不读本 map）。
+        thinkingLevelMap: { off: "none", minimal: null, low: null, medium: null, high: null, xhigh: "enabled" },
         compat: { thinkingFormat: "deepseek", supportsReasoningEffort: false },
       },
     ],
