@@ -1,6 +1,6 @@
-# 真公司（日晟行）飞书接入前置清单
+# 真实公司（民商通达）飞书接入前置清单
 
-> 2026-07-12 起草（迭代二 Track 3）。目标：把小达（mstd-orchestrator 常驻助手）接入日晟行正式飞书组织。能力开发继续在测试组织（成都民商通达）进行；本清单是正式组织侧需要**人**去办的事，按顺序执行。
+> 2026-07-12 起草（迭代二 Track 3）。目标：把小达（mstd-orchestrator 常驻助手）接入民商通达的**正式飞书租户**（与验证环境是两个独立租户）。能力开发继续在验证租户（成都民商通达供应链管理有限公司，profile 由运维环境配置）进行；本清单是正式组织侧需要**人**去办的事，按顺序执行。
 
 ## 0. 决策前提（老板/管理员拍板）
 
@@ -16,22 +16,28 @@
 
 ## 2. 权限（管理员，约 10 分钟）
 
-- [ ] 权限管理 → 批量处理 → 批量导入，粘贴 scope JSON（终版以测试组织跑通后导出为准；当前版本见 `docs/superpowers/specs/2026-07-12-perception-and-automation.md` 附录的差集 JSON + 已授 26 scope 的并集）。
-- [ ] tenant（bot）侧至少含：im:message:send_as_bot、im:resource、im:chat、im:chat:delete。
+- [ ] 权限管理 → 批量处理 → 批量导入，粘贴 **`mstd-prod-scope-import.json`**（本目录；2026-07-13 从测试组织应用线上版 v1.0.4 导出，tenant 54 + user 104，即"终版"）。
 - [ ] 数据范围选"全部成员"（tenant 任务权限发版时要求）。
+- [ ] 其中 `im:message.group_msg`（读群消息）是**敏感权限**，导入后可能需管理员在控制台单独审批通过。
 
 ## 3. 事件与回调（管理员，约 5 分钟）
 
 - [ ] 事件与回调 → 订阅方式选**长连接**（免公网回调地址）。
-- [ ] 事件订阅：`im.message.receive_v1`（接收消息）、`minutes.minute.generated_v1`（妙记生成）。
+- [ ] 事件订阅（与测试组织 v1.0.4 对齐，共 7 项）：接收消息（`im.message.receive_v1`）、妙记生成、纪要生成、参与的会议结束、消息已读、消息被 reaction、消息被取消 reaction。
 - [ ] 回调订阅：`card.action.trigger`（确认卡按钮）。
 - [ ] **创建版本并发布**（企业自建免审，管理员自过）。注意：之后每次加 scope/事件都要重新发版才生效。
 
 ## 4. 服务账号授权（服务账号本人，约 5 分钟）
 
 - [ ] 服务账号加入所有灰度群、以及需要小达感知的群。
-- [ ] 运维方发起 device flow（`lark-cli auth login --scope "..."`），服务账号在浏览器扫码/确认授权（user 身份全量只读 scope + offline_access）。
-- [ ] 注意：refresh token 7 天滚动，正常使用不会断；服务端有到期告警，收到提醒后重新走一次授权即可。
+- [ ] 运维方在生产机建 profile：`lark-cli config init --profile mstd-prod --app-id <正式AppID> --app-secret-stdin`。
+- [ ] 发起 device flow，服务账号扫码授权。scope 串用测试组织实测通过的 48 项（47 + offline_access）：
+
+  ```
+  lark-cli --profile mstd-prod auth login --scope "attendance:task:readonly auth:user.id:read base:record:read base:table:read calendar:calendar.event:create calendar:calendar.event:read calendar:calendar.free_busy:read calendar:calendar:create calendar:calendar:read contact:user.base:readonly contact:user.basic_profile:readonly contact:user:search docs:document.content:read docx:document:readonly docx:document:write_only im:chat.members:read im:chat:read im:chat:readonly im:message im:message.group_msg:get_as_user im:message.p2p_msg:get_as_user im:message.reactions:read im:message.send_as_user im:message:readonly im:resource mail:user_mailbox.message.address:read mail:user_mailbox.message.body:read mail:user_mailbox.message.subject:read mail:user_mailbox.message:readonly minutes:minutes.artifacts:read minutes:minutes.basic:read minutes:minutes.search:read minutes:minutes.transcript:export okr:okr.period:readonly profile:user_profile:read search:docs:read search:message sheets:spreadsheet:read space:document:retrieve task:task:read task:task:write vc:meeting.meetingevent:read vc:meeting.search:read vc:meeting:readonly vc:note:read vc:record:readonly wiki:node:retrieve wiki:space:retrieve offline_access"
+  ```
+
+- [ ] 注意：refresh token 名义 7 天滚动，但**存在提前失效实例**（2026-07-13 测试组织 refresh 剩 7 天额度时被服务端以 code=20064 拒绝）。token-watch 哨兵会提前 48h 私聊告警；收到告警或发现读取失效，重新走一次扫码即可。
 
 ## 5. 灰度上线（运维方执行，管理员知情）
 

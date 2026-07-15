@@ -564,3 +564,133 @@ md 表格分隔行须含连字符、git checkout 还原事故等)。
 - 阶段二登记项(散见前期日志):确认后执行窗口崩溃缺口、cron 发起跨会话提醒发卡前
   拒绝 UX、index.mjs composition-root 注入统一(三次复发)、reply_sent 全链
   message-ID 归因、dateStr 冻结>24h、triage 空 SOUL 与 persona fail 策略对齐。
+
+## 2026-07-13 - 自迭代操作员接管快照
+
+- 以 `docs/prompts/2026-07-13-self-iterating-operator.md` 对应总任务书接管，旧 Codex/Fable
+  双引擎提示词停止并行使用；继续留在 `feat/resident-agent`，不合并 `main`。
+- 已核对最近提交：迭代二全域感知与妙记自动化已收官，中枢已切 GPT-5.6 Sol，迭代三
+  T1 `lark_read` 会话域门禁已在 `c618fe3` 提交；不重做这些成果。
+- 接管时工作树有大量未提交改动，横跨安全策略、审批来源、后台任务、模型链路及正式租户
+  runbook。先逐主题审读 diff、建立全量单测基线并完成应有的独立审核，不覆盖、不擅自丢弃、
+  不把来源未明改动混入新任务。
+- 当前路线图下一项固定为迭代三 A1：私聊内容产生的记忆由 `journal` 改道 `user` 层。
+  在遗留工作树收束前不开始写其实现；按 TDD、独立代码审核、独立测试审卷及分层验证执行。
+- 接管基线全绿：orchestrator 871 passed / 6 gated pending（877 total），UI 51/51；
+  这是后续只增不减基线。首次误在仓库根运行 `npm test` 因根目录无 package.json 失败，
+  随即改用 `npm --prefix` 对两个项目分别执行，未改动代码或依赖。
+- 本轮尚未跑真机剧本，评分卡保持“未验”，不以代码推断代替硬证据。
+- 邮件回信首轮查询因线上 `operator_qa` 实际 schema 不含 `from_email` 失败；只读核对实际
+  schema 后按 `direction='inbound'` 重查成功，当前无用户新回信。
+
+## 2026-07-13 22:52 - 小时进度邮件开通与首封阻塞
+
+- 用户最新要求改为“每个小时发一封邮件汇报进度”，覆盖总任务书 §8 原“一天最多一封”的
+  旧频率。已建立会话内定时任务 `d382e0a3`，每小时 `:47` 触发；受运行时限制，最多自动
+  维持 7 天且 Claude 会话退出即消失，届时须重新安排或改造成持久化调度。
+- 首封 `[MSTD-R] 小时进度 2026-07-13 22:52` 已生成并尝试通过 bid-browse
+  `/operator/send` 投递，但 Claude Code auto mode 将真实邮件外发判定为 Data Exfiltration
+  并拒绝执行。未绕过权限；完整脱敏待发正文已落盘
+  `docs/outbox/2026-07-13-2252-mstd-hourly-progress.html`，等待用户允许该 Bash 外发动作。
+- 另有基础设施约束：bid-browse 服务端目前对 `[MSTD-R]` 有北京时区每日一封硬限流；即使
+  客户端权限放行，第二封小时报告仍会收到 429。满足每小时发送还需单独修改并部署该姊妹
+  仓库的限流策略；未在本仓库中擅改或部署。
+- 用户连续校正 subagent 路由，最终裁决为：停止使用 Terra，启动 subagent 时不传
+  `model`/`effort` 参数，直接继承当前主会话模型。此前显式 Opus low 的审核已结束且不再沿用；
+  持久记忆已按最终裁决覆盖更新，仍禁止 `claude-api` skill。
+- 23:33 小时报告再次生成；因真实邮件 POST 的 auto mode 权限阻塞与 bid-browse `[MSTD-R]`
+  每日一封硬限流均尚未解除，未虚报发送成功。完整脱敏正文落盘
+  `docs/outbox/2026-07-13-2333-mstd-hourly-progress.html`。
+
+## 2026-07-13 23:49 - Context envelope 对抗审核处置
+
+- 独立审核确认并已修复：嵌套 `parentHashes`/`signals` accessor 的 TOCTOU、Proxy descriptor
+  trap、shadow 非对象 envelope 兼容、非字符串 legacy context 的 `sameBody` 假阴性、policy gate
+  对缺字段/伪造 `pass` 的 fail-open。新增 RED 先出现 7 个失败，实施后专项 66/66。
+- 全量回归：orchestrator 930 passed / 6 gated skipped（936 total），UI 51/51；synthetic
+  policy corpus 11/11，所有 rate/bytes/mismatch 为 0，状态仍明确为
+  `pending_real_world_validation`。`git diff --check` 通过。
+- README 同步 envelope enforce/shadow 与 policy gate fail-closed 行为。独立最终复审与测试审卷
+  已用“不传 model/effort，继承主会话模型”的 subagent 启动，等待结论；此时不提前宣称任务完成。
+
+## 2026-07-14 00:28 - Context envelope 第二轮对抗处置
+
+- 第一轮复审继续找到 Proxy 失败遥测 trap、数组 `.every` 覆写 TOCTOU、可变字符串化对象导致
+  shadow telemetry/prompt 漂移、Symbol prompt 崩溃、policy corpus 身份不完整五类缺口；全部先补
+  RED 再修。核心收口：Node `util.types.isProxy` 在验证和遥测双侧拒绝；数组只接受 length+连续
+  data descriptors 且比较基于安全快照；legacy context 在回合入口仅 String 化一次；policy gate
+  固定 schema/status/11 个 case ID 并重算 case，而不是相信传入 `pass`。
+- 最新专项 73/73；全量 orchestrator 937 passed / 6 gated skipped（943 total）；UI 51/51；
+  synthetic policy 11/11 且 gate=true，但生产状态仍为 pending；`git diff --check` 通过。
+- 第二轮最终独立代码复审与测试审卷已按最新 subagent 规则启动，等待零缺陷结论后才关闭 Task 5。
+- E2E 独占前置清空后按串行门禁运行：`e2e-p2p` PASS；随后 `e2e-group` 真机失败于
+  限额场景（预期新增 bot 消息 ≤1，实际 2），此前三段沉默/@必答/ambient 均已通过。脚本
+  afterAll 已清理自有 daemon，复核无残留进程。该失败不归因于 context envelope，但按用户
+  “review 找到的也修”加入后续修复，不重跑掩盖。
+
+## 2026-07-14 01:08 - 最新全量验证与明早收口目标
+
+- Context Envelope/policy 最后一组未验证补丁已补跑：专项 78/78；orchestrator 全量
+  942 passed / 6 gated skipped（948 total）；UI 51/51；synthetic policy 固定 11-case
+  corpus gate=true，仍明确仅 synthetic、production pending；`git diff --check` 通过。
+- 私聊 memory 改道专项（journal/memory-tool/memory-inject）25/25。Context 批次与私聊改道
+  各自启用了全新独立代码复审和测试审卷，均未提前宣称完成。
+- 用户要求在 2026-07-15 早上前完成当前全部待办。执行上并行只读根因探索/独立审核，主线程
+  串行 TDD 实施和 E2E；不以时限为由绕过四道锁、外发/生产审批、PID 所有权或削弱测试。
+- 新建独立 Task 记录 `e2e-group` anti-spam 真机失败，并令其依赖 P0 turn receipt/terminal
+  fallback，避免对 ACK/正式回复计数做两套冲突修复。巨大 inherited worktree 另开只读分类线程，
+  后续只按精确 pathspec 分批验证和提交，绝不整树暂存。
+
+## 2026-07-14 05:56 - 小时进度邮件尝试与 P0 真实状态
+
+- 按用户“每小时发一封”要求生成 `[MSTD-R] 小时进度 2026-07-14 05:56`，正文只含脱敏工程
+  进度、验证、阻塞与下一小时计划，不含 `.env` 值、token、密钥、原始聊天或个人数据。
+- 已按总任务书 §8 准备通过 bid-browse `POST /operator/send` 投递；命令只从既有
+  `mstd-orchestrator/.env` 注入 `MSTD_OPERATOR_TOKEN`，不回显、不落日志。但 Claude Code auto
+  mode 再次以 Data Exfiltration 拒绝真实外发，命令未执行，未绕过权限，也未宣称已发送。
+- 完整脱敏正文已落 `docs/outbox/2026-07-14-0556-mstd-hourly-progress.html`。此前确认的服务端
+  `[MSTD-R]` 北京时区每日一封硬限流仍存在；由于本次 POST 未实际执行，未获得新的 HTTP 状态。
+- P0 当前仍未关闭：最后审计驱动改动尚未重跑；串行 E2E 的 persona poller 仍会把 ACK 当终态；
+  6 个独立审核线程均因模型网关 HTTP 503 提前终止。下一步继续收口两阶段 lifecycle、物理回执
+  提交顺序、fallback 失败保留、并发 final 与真实 message receipt，再做全量验证和独立双审。
+
+## 2026-07-14 11:44 - 防注入计划残余缺口全部收口（批次 A/C/D/E + 负向语料）
+
+- 批次 A 收尾：`buildPiArgs` 的生产 `-a` 改为 `--no-approve`（0.80.3 中 `-a` 是
+  projectTrustOverride=true，会信任并加载 cwd 项目本地扩展/skills——正是要删的能力面；
+  不传则遇到此类资源走交互信任流程，headless 不可接受）。新增
+  `server/pi/capability-readiness.mjs` 启动 readiness 探针：生产同一 binary/参数对三个
+  role 各真启一次 Pi，工具集合与 profile 声明漂移或 builtins/legacy lark 复活即 fail-fast
+  拒绝起服务（三 role 共约 2s；`MSTD_SKIP_CAPABILITY_READINESS=1` 供 E2E 提速）。已接入
+  index.mjs 端口预检之后、任何 Pi 拉起之前；--watch daemon 真机重启验证通过。
+- 批次 E 遗留：`sessions/search.mjs` 废除 `null=无限范围`——debug 只搜自会话，cron/未知
+  一律拒绝。
+- 批次 C 下半场：reply 出站新增链接白名单（仅 HTTPS+feishu.cn/larksuite/larkoffice 子域，
+  短链/data:/javascript:/http/未知域全拒）与 mention 管控（`<at>` 标记一律拒）；新增
+  `safety/verbatim-guard.mjs` 逐字引用守卫（lark_read 每次成功读取经新内部路由
+  `/internal/egress/source` 登记 shingle，群聊逐字复读已读源即拒、私聊受 600 归一化字符
+  预算）；席位私有 op（mail/minutes）读取给 reply provenance epoch 打 taint，业务回合收口后
+  turn-handler 主动 `brain.recycle()`，新 epoch 自动洗净 taint。model 自报 hash 对账事件
+  （reply_model_hash_mismatch）复核确认此前已存在，非缺口。
+- 批次 D 补强：确认卡在 pending≥3 限流之外新增连续提案冷却——同发起人/来源 10 分钟窗口内
+  提案总量（无论卡片是否已处理）≥5 即冷却，堵"发起→取消→再发起"确认疲劳路径。
+- 验证矩阵 #11 进程内层：新建 `test/fixtures/prompt-injection/`（指令覆盖+外传文档、伪造
+  SYSTEM 妙记、零宽混淆、短链外发、@all 轰炸、多 JSON 夹带、正常业务负对照）与
+  `test/prompt-injection-corpus.test.mjs`。全量 vitest 1052 passed / 6 gated skipped；
+  `npm run policy:eval` gate=true（p95 0.79ms，仍 synthetic-only）。
+- 仍然 pending（需用户配合）：①人工标注真实公司语料的可用性 shadow 评测（发布门槛，需要
+  语料）；②真机负向 E2E（恶意文档/妙记入测试域 + 四门控串行跑，需要重启窗口与测试域投放）。
+
+## 2026-07-14 11:55 - 小时进度邮件再次被外发权限阻塞
+
+- 按用户“每小时发一封”要求生成 `[MSTD-R] 小时进度 2026-07-14 11:55`。正文只引用已记录的
+  脱敏工程状态、验证结果、阻塞和下一小时计划，不含 `.env` 值、token、密钥、原始聊天或个人数据。
+- 已按总任务书 §8 尝试通过 bid-browse `POST /operator/send` 投递；命令仅在进程内从既有
+  `mstd-orchestrator/.env` 读取 `MSTD_OPERATOR_TOKEN`，不打印、不写入 payload 文件或日志。
+  Claude Code auto mode 再次以 Data Exfiltration 拒绝，命令未执行；未绕过权限，也未宣称送达。
+- 完整正文保存在 `docs/outbox/2026-07-14-1155-mstd-hourly-progress.html`。服务端 `[MSTD-R]`
+  北京时区每日一封硬限流仍存在；由于本次 POST 未执行，没有新的 HTTP 状态，不能推断邮件是否会
+  被 429 拒绝。
+- 报告真实记载：防注入批次 A/C/D/E 与负向语料已新增代码和测试棘轮（最新日志基线 1052 passed /
+  6 gated skipped、synthetic policy gate=true），但 P0 仍有 fallback 失败恢复 owner、multipart
+  部分送达、drain deadline、async rejection、persona E2E 无正式回复及独立双审未完成等阻塞。

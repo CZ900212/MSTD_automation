@@ -6,7 +6,7 @@
 
 1. **稳定读取公司在飞书中已有的信息**——群/单聊历史、云文档、日历、任务、妙记、attendance……"所有有权限的内容"。
 2. **自动化**——会议纪要→提取行动项→派发任务，**全自动接管**形态：妙记一生成，小达自动读逐字稿、提行动项、逐条发确认卡（可改负责人）、确认即建任务、指定群播报。
-3. **两条并行**：能力开发在测试组织（MSTD/成都民商通达）做；真公司（日晟行）接入的前置条件整理成清单交用户执行。
+3. **两条并行**：能力开发在验证租户（成都民商通达供应链管理有限公司）做；真实公司（民商通达）接入的前置条件整理成清单交用户执行。
 
 ## 现状盘点（迭代起点）
 
@@ -70,9 +70,9 @@ TDD：safety/lark-read.mjs 每个 op 的 argv 构造 + 拒绝路径单测；pi-e
 - calendar 建带 auto_record=true 的会 → 开会说几条带负责人的行动项 → 妙记生成 → 观察：自动读稿/确认卡/改负责人/点确认/任务真建/群播报。
 - 阶段一改造（8899 端口、agent 运行时、C6 出口）之后这条链没再跑过，复验是主要工作量。
 
-## Track 3 · 真公司（日晟行）接入前置清单
+## Track 3 · 真实公司（民商通达）接入前置清单
 
-产出 `docs/runbooks/rsh-org-onboarding.md`，内容：
+产出 `docs/runbooks/mstd-prod-onboarding.md`，内容：
 - 建应用（或用现有企业自建应用）+ 凭证交接方式；
 - scope 终版清单（直接复用测试组织批量导入 JSON）；
 - 服务账号硬要求：**持牌真人席位**（妙记 owner 不能是 bot，`feishu-pipeline-validation` 已验证）；
@@ -86,7 +86,7 @@ TDD：safety/lark-read.mjs 每个 op 的 argv 构造 + 拒绝路径单测；pi-e
 2. ✅ T1.2 白名单扩容（3→27 op，commit 38dfc5c）+ ✅ T1.3 token 哨兵（token-watch，6h 巡检+48h 告警）
 3. ✅ T1.4 真机验收（E2E群2 三题全过：my_tasks 列任务识别噪音 / search_docs+read_doc 搜 11 中 3 并概括 / agenda 一周窗空日历如实报；快机先应答全程正常）
 4. ✅ T2.1-2.3 妙记接管全链真机通（commits 0bd6d2d/04d1d1f/6414e76；修复三个"从未真跑过"断点：select_person tag / consumer stdin 保活 / 扁平回调形状）
-5. ✅ Track 3 清单文档（docs/superpowers/runbooks/rsh-org-onboarding.md）
+5. ✅ Track 3 清单文档（docs/superpowers/runbooks/mstd-prod-onboarding.md）
 
 ## 附录：全域只读命令目录与 scope 差集（2026-07-12 调研）
 
