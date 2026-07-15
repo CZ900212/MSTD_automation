@@ -19,6 +19,15 @@ describe("mstd CLI process ownership", () => {
     expect(source).toMatch(/rm -f[^\n]+PID_FILE/);
   });
 
+  it("braces shell variables before adjacent non-ASCII text", () => {
+    const unsafeExpansions = source
+      .split(/\r?\n/u)
+      .filter((line) => /\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]/u.test(line));
+
+    expect(unsafeExpansions).toEqual([]);
+    expect(source).toContain('echo "▶ 停止 pid ${pid}…"');
+  });
+
   it("takes profile and port from environment instead of personal constants", () => {
     expect(source).toMatch(/PROFILE="\$\{MSTD_LARK_PROFILE:-\}"/);
     expect(source).toMatch(/PORT="\$\{PORT:-8899\}"/);
