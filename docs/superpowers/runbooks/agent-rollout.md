@@ -13,6 +13,44 @@
 - [ ] 本机无残留 event consumer（`pgrep -fl "event consume"`；同 EventKey 每主机只能一个消费者）
 - [ ] web 调试台可登录、六 tab 正常（会话/看板/调试台/记忆/调试对话）
 
+## 0.5 可复现构建与发布证据（Phase 7）
+
+发布候选必须来自一个 **clean SHA**，安装、验证、构建和清单生成都在该 SHA 的独立工作树完成。不得从开发中的脏工作树复制 `node_modules` 或 `dist`。运行时契约为 package 中声明的 Node 22.19+（且小于 23）与 npm 10.9.8；锁文件只能通过 `npm ci` 消费，不在发布窗口更新依赖。
+
+```bash
+git status --porcelain --untracked-files=all   # 必须无输出
+node --version                                 # v22.19+ 且 <23
+npm --version                                  # 10.9.8
+npm --prefix mstd-orchestrator ci
+npm --prefix mstd-ui ci
+npm --prefix mstd-orchestrator test
+npm --prefix mstd-orchestrator run policy:eval
+node mstd-orchestrator/scripts/dispatcher-eval.mjs --offline
+npm --prefix mstd-ui test
+npm --prefix mstd-ui run build
+(cd mstd-orchestrator && node -e "import('better-sqlite3').then(() => console.log('better-sqlite3 load ok'))")
+```
+
+全部通过后生成非敏感发布清单；`--output` 必须指向仓库外的受控证据目录，以保持工作树干净。清单记录 commit、Node/npm、两个 lockfile 摘要、migration ceiling、UI artifact 摘要、架构开关和 target 集合摘要；不记录密钥或原始 session key。
+
+```bash
+node mstd-orchestrator/scripts/release-manifest.mjs \
+  --verification-json '{"orchestrator_tests":"passed","policy_eval":"passed","dispatcher_eval":"passed","ui_tests":"passed","ui_build":"passed","native_module_load":"passed"}' \
+  --output /受控证据目录/mstd-release-manifest.json
+```
+
+发布操作者把清单、测试输出和 UI artifact 摘要一并交给复核者。真实 provider eval、测试企业七段 E2E 和真机 smoke 必须另附时间、操作者、测试组织、结果和日志位置；没有生产/测试企业授权时不得用本地通过替代这些证据。
+
+## 0.6 停机排空、启动恢复与回滚
+
+1. **准备下一次启动配置**：rollout owner 先把候选版本固定为 `MSTD_AGENT_ARCHITECTURE_MODE=legacy`、`MSTD_ENABLE_WRITE=0`；记录变更时间和旧进程 PID。已有 daemon 不属于本次发布时按 PID 所有权规则暂停，不能代杀或启动第二个 consumer。
+2. **维护窗口与排空**：当前 daemon 没有 SIGTERM 级的全局 graceful-shutdown hook，修改 env 也不会动态关闭正在运行的 consumer。因此只在无新消息的维护窗口切换；从调试台/日志确认没有活跃回合，并检查 `reasoning_dispatches` 无 `running`、`reasoning_runs` 无 `running`/`closing` 后才停旧 PID。若仍有在途工作就延期，不能用强杀冒充排空。代码中的 30 秒 **drain timeout** 只保护单个 active reasoner 回合的 final send；出现 `drainTimedOut=true` 时记录 session/task/run 和 in-flight 数，不重放用户消息，并在切换前等待 durable 状态收口或走事故回滚。
+3. **切换与迁移**：只启动 clean SHA 的新进程。启动日志须显示 `schema_migrations` 已到发布清单中的 migration ceiling；迁移仅前向、幂等执行，回滚不删表、不降 schema。
+4. **stale run 恢复**：新进程会先重试 dispatch `pending_send`（沿用稳定幂等键）、释放 stale running review 回 `pending_review`，再恢复 durable reasoner run 的 pending terminal send。准入新 review 前，核对启动日志没有持续 recovery failure，并抽查 DB 中没有超过恢复窗口仍卡住的记录。
+5. **开闸顺序**：先 `legacy + write=0` smoke，再 shadow，最后只对已批准 targets active；写闸始终单独审批。每一步记录配置摘要、起止时间、健康指标和操作者。
+6. **回滚条件**：重复发送、错误 target 出站、恢复队列不下降、migration 启动失败、drain timeout 持续发生或错误率越阈值时立即回滚。rollback owner 关闭 agent/write，切回上一份已验清单对应 SHA，以 `npm ci` 重建并启动 `legacy`；不得恢复旧数据库文件覆盖新 schema。
+7. **回滚验收**：rollback evidence 至少包含上一/当前 SHA、两份 release manifest、开关摘要、PID、`schema_migrations` ceiling、`pending_send`/`pending_review`/running run 计数、smoke 结果、日志位置和事件时间线。确认 legacy 回复正常且无重复出站后才结束事故状态。
+
 ## 1. 生产应用发版（含敏感权限）
 
 1. 飞书开放平台 → 应用 → 权限管理：确认已勾 `im:message`（收发）、`im:message.group_msg`（**敏感权限，需管理员审批**）、任务/日历写权限。
