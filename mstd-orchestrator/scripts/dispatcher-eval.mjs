@@ -12,6 +12,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const defaultFixtures = join(HERE, "../test/fixtures/dispatcher-cases.json");
 const ACTIONS = new Set(["no_reasoning", "attach_existing", "spawn_new"]);
 const MODES = new Set(["p2p", "private", "addressed", "ambient"]);
+const DISPATCHER_FAULTS = new Set(["provider_error"]);
 
 function loadFixtures(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -31,6 +32,15 @@ function validateFixture(fx, seenIds) {
   if (typeof fx?.label !== "string" || !fx.label.trim()) errors.push("missing_label");
   if (!MODES.has(fx?.mode)) errors.push("invalid_mode");
   if (typeof fx?.userText !== "string" || !fx.userText.trim()) errors.push("missing_synthetic_user_text");
+  if (fx?.dispatcherFault != null && !DISPATCHER_FAULTS.has(fx.dispatcherFault)) {
+    errors.push("invalid_dispatcher_fault");
+  }
+  if (fx?.responderAction != null && !["reply", "no_reply"].includes(fx.responderAction)) {
+    errors.push("invalid_responder_action");
+  }
+  if (fx?.responderAction === "no_reply" && fx?.responderText != null) {
+    errors.push("no_reply_with_text");
+  }
   if (!ACTIONS.has(fx?.expected?.action)) errors.push("invalid_expected_action");
   if (fx?.expected?.closure && !["required", "silent_ok"].includes(fx.expected.closure)) errors.push("invalid_expected_closure");
   if (fx?.expected?.action === "attach_existing") {
@@ -67,16 +77,30 @@ export async function evaluateDispatcherCases({
     }
 
     const events = [];
-    const responder = createResponder({ caller, onEvent: (event) => events.push(event) });
-    const dispatcher = createDispatcher({ caller, onEvent: (event) => events.push(event) });
     try {
       const items = [{ content: fx.userText, senderName: "synthetic-eval" }];
-      const answer = await responder.answerTurn({
-        sessionKey: `eval:${fx.id}`,
-        items,
-        mode: fx.mode,
-        recentConversation: (fx.recentConversation ?? []).map((item) => `${item.role}: ${item.content}`).join("\n"),
-      });
+      const hasFixtureReply = Object.hasOwn(fx, "responderText") || Object.hasOwn(fx, "responderAction");
+      let answer;
+      let responderSource;
+      if (hasFixtureReply) {
+        const action = fx.responderAction ?? (fx.responderText == null ? "no_reply" : "reply");
+        answer = action === "reply" ? { action, text: fx.responderText } : { action };
+        responderSource = "fixture";
+      } else {
+        const responder = createResponder({ caller, onEvent: (event) => events.push(event) });
+        answer = await responder.answerTurn({
+          sessionKey: `eval:${fx.id}`,
+          items,
+          mode: fx.mode,
+          recentConversation: (fx.recentConversation ?? []).map((item) => `${item.role}: ${item.content}`).join("\n"),
+        });
+        responderSource = "live";
+      }
+      const faultInjected = fx.dispatcherFault === "provider_error";
+      const dispatcherCaller = faultInjected
+        ? { call: async () => { throw new Error("synthetic dispatcher provider failure"); } }
+        : caller;
+      const dispatcher = createDispatcher({ caller: dispatcherCaller, onEvent: (event) => events.push(event) });
       const decision = await dispatcher.review({
         dispatchId: `eval:${fx.id}`,
         sessionKey: `eval:${fx.id}`,
@@ -93,12 +117,14 @@ export async function evaluateDispatcherCases({
         action: decision.action,
         ...(decision.task_id ? { task_id: decision.task_id } : {}),
         ...(decision.closure ? { closure: decision.closure } : {}),
+        responder_source: responderSource,
+        fault_injected: faultInjected,
         provider: decision.meta?.provider ?? null,
         fallback: Boolean(decision.meta?.fallback),
         latencyMs: decisionEvent?.latencyMs ?? null,
       };
       if (events.some((event) => event.type === "responder_fallback")) row.errors.push("responder_fallback");
-      if (decision.meta?.fallback) row.errors.push("dispatcher_fallback");
+      if (decision.meta?.fallback && !faultInjected) row.errors.push("dispatcher_fallback");
       if (row.actual.action !== fx.expected.action) row.errors.push("action_mismatch");
       if (fx.expected.closure && row.actual.closure !== fx.expected.closure) row.errors.push("closure_mismatch");
       if (fx.expected.task_id && row.actual.task_id !== fx.expected.task_id) row.errors.push("task_mismatch");
@@ -114,6 +140,9 @@ export async function evaluateDispatcherCases({
     passed: results.filter((row) => row.ok).length,
     failed: results.filter((row) => !row.ok).length,
     inventedTaskIds: results.filter((row) => row.errors.includes("invented_task_id")).length,
+    fixture_responder_cases: results.filter((row) => row.actual?.responder_source === "fixture").length,
+    live_responder_cases: results.filter((row) => row.actual?.responder_source === "live").length,
+    synthetic_faults: results.filter((row) => row.actual?.fault_injected === true).length,
     structural_only: mode === "offline",
   };
   return { results, summary };

@@ -37,7 +37,7 @@
     "userText": "帮我查一下周五会议室有没有空",
     "responderText": "收到，我去查一下周五会议室情况。",
     "activeTaskCandidates": [],
-    "expected": { "action": "spawn_new", "closure": "silent_ok", "reason_code": "needs_tools" }
+    "expected": { "action": "spawn_new", "closure": "required", "reason_code": "needs_tools" }
   },
   {
     "id": "tool-required",
@@ -90,7 +90,7 @@
     "activeTaskCandidates": [
       { "id": "task-meeting-1", "title": "改会议时间", "summary": "会议改周五", "status": "active" }
     ],
-    "expected": { "action": "spawn_new", "closure": "silent_ok", "reason_code": "needs_tools" }
+    "expected": { "action": "spawn_new", "closure": "required", "reason_code": "needs_tools" }
   },
   {
     "id": "context-followup",
@@ -141,6 +141,7 @@
     "mode": "addressed",
     "userText": "请核查一个需要工具的合成请求",
     "responderText": "正在核查。",
+    "dispatcherFault": "provider_error",
     "activeTaskCandidates": [],
     "expected": { "action": "spawn_new", "closure": "silent_ok", "reason_code": "dispatcher_fallback_spawn" }
   }

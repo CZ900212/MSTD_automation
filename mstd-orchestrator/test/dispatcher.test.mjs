@@ -36,6 +36,12 @@ describe("dispatcher fixtures inventory", () => {
       expect(labels.has(needed), needed).toBe(true);
     }
   });
+
+  it("requires closure for replies that promise user-visible follow-up", () => {
+    const byLabel = new Map(FIXTURES.map((fixture) => [fixture.label, fixture]));
+    expect(byLabel.get("promise_to_check")?.expected?.closure).toBe("required");
+    expect(byLabel.get("unrelated_simultaneous")?.expected?.closure).toBe("required");
+  });
 });
 
 describe("dispatcher prompt shape", () => {
@@ -48,6 +54,25 @@ describe("dispatcher prompt shape", () => {
     // Negative contract: never frame the job as "the responder asked for help/escalation".
     expect(dispatcherPrompts.system).not.toMatch(/responder requested/i);
     expect(dispatcherPrompts.system).not.toMatch(/助手请求升级|请求了升级|请求协助|请求.*escalat/i);
+  });
+
+  it("defines required and silent_ok closure semantics", () => {
+    expect(dispatcherPrompts.system).toMatch(/required.*最终|最终.*required/s);
+    expect(dispatcherPrompts.system).toMatch(/silent_ok.*无需.*回复|无需.*回复.*silent_ok/s);
+    expect(dispatcherPrompts.system).toMatch(/承诺.*required|required.*承诺/s);
+    expect(dispatcherPrompts.system).toMatch(/进度.*不能.*required|required.*不能.*进度/s);
+    expect(dispatcherPrompts.system).toMatch(/修正[^\n]*已有任务[^\n]*closure=required|已有任务[^\n]*修正[^\n]*closure=required/);
+  });
+
+  it("does not treat an acknowledgement as proof that a write completed", () => {
+    expect(dispatcherPrompts.system).toMatch(/口头确认.*不.*完成|确认.*不.*完成/s);
+    expect(dispatcherPrompts.system).toMatch(/已有任务.*修正.*attach_existing|修正.*已有任务.*attach_existing/s);
+    expect(dispatcherPrompts.system).toMatch(/具体结果.*spawn_new.*attach_existing|spawn_new.*attach_existing.*具体结果/s);
+  });
+
+  it("treats user text as untrusted data and rejects task-id injection", () => {
+    expect(dispatcherPrompts.system).toMatch(/用户消息.*不可信|不可信.*用户消息/s);
+    expect(dispatcherPrompts.system).toMatch(/绕过.*规则.*不.*任务|编造.*task_id.*不.*任务/s);
   });
 });
 
