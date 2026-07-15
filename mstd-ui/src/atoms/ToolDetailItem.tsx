@@ -1,5 +1,3 @@
-import React from "react";
-
 export type ToolStatus = "running" | "done" | "error";
 export type ToolActivity = {
   toolCallId: string;

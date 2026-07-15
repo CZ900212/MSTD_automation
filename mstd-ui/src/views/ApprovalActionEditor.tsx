@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { ActionDraft } from "../api/jobs";
 
 const isValidOpenId = (v: unknown): v is string => typeof v === "string" && /^ou_/.test(v);

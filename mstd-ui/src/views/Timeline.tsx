@@ -1,4 +1,3 @@
-import React from "react";
 import { MarkdownContent } from "../atoms/MarkdownContent";
 import { ToolDetailItem } from "../atoms/ToolDetailItem";
 import type { JobEventLog } from "../state/job-event-log";

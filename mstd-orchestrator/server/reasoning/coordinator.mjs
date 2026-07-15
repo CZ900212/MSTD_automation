@@ -103,7 +103,7 @@ export function createReasoningCoordinator({
     return `task:${taskId}`;
   }
 
-  async function closeRun({ session, sessionKey, task, run, lifecycle = null, finalText = null, failed = false }) {
+  async function closeRun({ session, sessionKey, task, run, lifecycle = null, finalText = null, failed = false, dispatchId = null }) {
     let currentRun = runStore.getRun(run.id) ?? run;
     if (["completed", "failed", "interrupted", "cancelled"].includes(currentRun.status)) return currentRun;
     const executionKey = lifecycle?.executionKey ?? taskExecutionKey(task.id);
@@ -144,7 +144,7 @@ export function createReasoningCoordinator({
             safeFallback = false;
             source = failed ? "responder_failure_handoff" : "responder_handoff";
           } catch {
-            emit({ type: "responder_handoff_fallback", sessionKey, taskId: task.id, runId: run.id });
+            emit({ type: "responder_handoff_fallback", sessionKey, taskId: task.id, runId: run.id, dispatchId });
           }
         }
         const delivered = await deliverTerminal({
@@ -175,13 +175,14 @@ export function createReasoningCoordinator({
         sessionKey,
         taskId: task.id,
         runId: run.id,
+        dispatchId,
         turnId: lifecycle?.turnId ?? null,
         messageId,
         source,
       });
     } else {
       currentRun = runStore.closeSilent(run.id);
-      emit({ type: "silent_closed", sessionKey, taskId: task.id, runId: run.id, turnId: lifecycle?.turnId ?? null });
+      emit({ type: "silent_closed", sessionKey, taskId: task.id, runId: run.id, dispatchId, turnId: lifecycle?.turnId ?? null });
     }
 
     if (activeBrainTurns && lifecycle) {
@@ -251,7 +252,7 @@ export function createReasoningCoordinator({
     const job = { session, sessionKey, task, run, brief, messageIds, contextEnvelope, dispatchId, inputId };
     if (sessionRunning(sessionKey).size >= maxReasonersPerSession) {
       enqueue(sessionKey, job);
-      emit({ type: "reasoner_queued", sessionKey, taskId: task.id, runId: run.id });
+      emit({ type: "reasoner_queued", sessionKey, taskId: task.id, runId: run.id, dispatchId });
       return { queued: true, taskId: task.id, runId: run.id };
     }
     void runJob(job).catch((e) => log(`[coordinator] reasoner failed: ${e?.message ?? e}`));
@@ -318,7 +319,7 @@ export function createReasoningCoordinator({
         ?? pendingInputs.find((input) => input.dispatch_id)?.dispatch_id
         ?? run.origin_dispatch_id
         ?? null;
-      emit({ type: "reasoner_started", sessionKey, taskId: task.id, runId: run.id, turnId });
+      emit({ type: "reasoner_started", sessionKey, taskId: task.id, runId: run.id, dispatchId: effectiveDispatchId, turnId });
       const result = await brain.turn({
         session,
         sessionKey,
@@ -337,13 +338,21 @@ export function createReasoningCoordinator({
       if (inputId && !pendingInputs.some((input) => input.id === inputId)) runStore.markInputDelivered(inputId);
       const lifecycle = result?.turnLifecycle ?? null;
       closureAttempted = true;
-      await closeRun({ session, sessionKey, task, run, lifecycle, finalText: result?.finalText ?? null });
+      await closeRun({
+        session,
+        sessionKey,
+        task,
+        run,
+        lifecycle,
+        finalText: result?.finalText ?? null,
+        dispatchId: effectiveDispatchId,
+      });
       taskStore.updateTaskProgress(task.id, {
         summary: typeof result?.finalText === "string" && result.finalText.trim()
           ? result.finalText.slice(0, 500)
           : null,
       });
-      emit({ type: "reasoner_completed", sessionKey, taskId: task.id, runId: run.id });
+      emit({ type: "reasoner_completed", sessionKey, taskId: task.id, runId: run.id, dispatchId: effectiveDispatchId });
       const followup = preparePendingFollowup({ session, sessionKey, task, run });
       if (followup) {
         const scheduled = await startReasoner(followup);
@@ -366,6 +375,7 @@ export function createReasoningCoordinator({
             run,
             lifecycle: e?.turnLifecycle ?? null,
             failed: true,
+            dispatchId: run.origin_dispatch_id ?? dispatchId,
           });
         } catch (closureError) {
           emit({
@@ -385,7 +395,7 @@ export function createReasoningCoordinator({
           error: e?.message ?? e,
         });
       }
-      emit({ type: "run_failed", sessionKey, taskId: task.id, runId: run.id, error: e?.message ?? e });
+      emit({ type: "run_failed", sessionKey, taskId: task.id, runId: run.id, dispatchId: run.origin_dispatch_id ?? dispatchId, error: e?.message ?? e });
       throw e;
     } finally {
       scheduledRunIds.delete(run.id);
@@ -432,7 +442,7 @@ export function createReasoningCoordinator({
         continue;
       }
       try {
-        await closeRun({ session, sessionKey, task, run: row, failed: true });
+        await closeRun({ session, sessionKey, task, run: row, failed: true, dispatchId: row.origin_dispatch_id });
         results.push({ runId: row.id, taskId: row.task_id, status: "closed" });
       } catch (error) {
         log(`[coordinator] run recovery failed run=${row.id}: ${error?.message ?? error}`);
@@ -562,18 +572,18 @@ export function createReasoningCoordinator({
     dispatchId = null,
   }) {
     if (!decision || decision.action === "no_reasoning") {
-      emit({ type: "dispatcher_decision", sessionKey, action: "no_reasoning", reason_code: decision?.reason_code });
+      emit({ type: "dispatcher_decision", sessionKey, dispatchId, action: "no_reasoning", reason_code: decision?.reason_code });
       return { action: "no_reasoning" };
     }
 
     if (decision.action === "attach_existing") {
       const task = taskStore.getTask(decision.task_id);
       if (!task || task.session_id !== session.id) {
-        emit({ type: "dispatcher_invalid", sessionKey, error: "fabricated_or_cross_session_task" });
+        emit({ type: "dispatcher_invalid", sessionKey, dispatchId, error: "fabricated_or_cross_session_task" });
         throw new Error("coordinator: attach 拒绝跨会话或不存在的 task");
       }
       if (task.status !== "active") {
-        emit({ type: "dispatcher_invalid", sessionKey, error: "terminal_task_attach" });
+        emit({ type: "dispatcher_invalid", sessionKey, dispatchId, error: "terminal_task_attach" });
         throw new Error("coordinator: attach 只接受 active task");
       }
       for (const mid of sourceMessageIds) {
@@ -673,6 +683,7 @@ export function createReasoningCoordinator({
     let decision;
     try {
       decision = await review({
+        dispatchId,
         sessionKey,
         items: effectiveItems,
         mode: claimed.mode || mode,

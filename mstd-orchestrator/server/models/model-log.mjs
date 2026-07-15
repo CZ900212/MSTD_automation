@@ -92,18 +92,22 @@ export function createModelLog(db, { now = Date.now, log = console.error } = {})
     }
   }
 
-  function list({ kind = null, limit = 200, taskId = null, decision = null } = {}) {
-    if (taskId && hasTaskCols) {
-      return kind
-        ? db.prepare("SELECT * FROM model_log WHERE kind = ? AND task_id = ? ORDER BY ts DESC LIMIT ?").all(kind, taskId, limit)
-        : db.prepare("SELECT * FROM model_log WHERE task_id = ? ORDER BY ts DESC LIMIT ?").all(taskId, limit);
+  function list({ kind = null, limit = 200, taskId = null, runId = null, dispatchId = null, decision = null } = {}) {
+    const filters = [];
+    const params = [];
+    if (kind) { filters.push("kind = ?"); params.push(kind); }
+    if (hasTaskCols) {
+      for (const [column, value] of [
+        ["task_id", taskId],
+        ["run_id", runId],
+        ["dispatch_id", dispatchId],
+        ["decision", decision],
+      ]) {
+        if (value) { filters.push(`${column} = ?`); params.push(value); }
+      }
     }
-    if (decision && hasTaskCols) {
-      return db.prepare("SELECT * FROM model_log WHERE decision = ? ORDER BY ts DESC LIMIT ?").all(decision, limit);
-    }
-    return kind
-      ? db.prepare("SELECT * FROM model_log WHERE kind = ? ORDER BY ts DESC LIMIT ?").all(kind, limit)
-      : db.prepare("SELECT * FROM model_log ORDER BY ts DESC LIMIT ?").all(limit);
+    const where = filters.length ? ` WHERE ${filters.join(" AND ")}` : "";
+    return db.prepare(`SELECT * FROM model_log${where} ORDER BY ts DESC LIMIT ?`).all(...params, limit);
   }
 
   return { record, list };

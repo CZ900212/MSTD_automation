@@ -131,4 +131,13 @@ describe("model_log（模型链路可观测落库）", () => {
     ]));
     expect(kinds).toEqual(expect.arrayContaining(["dispatcher_decision", "task_created", "reasoner_started", "handoff_sent"]));
   });
+
+  it("combines task/run/dispatch/decision filters for one correlated timeline", () => {
+    mlog.record({ type: "reasoner_started", taskId: "t1", runId: "r1", dispatchId: "d1", action: "spawn_new" });
+    mlog.record({ type: "handoff_sent", taskId: "t1", runId: "r2", dispatchId: "d1", action: "spawn_new" });
+    mlog.record({ type: "handoff_sent", taskId: "t2", runId: "r1", dispatchId: "d2", action: "attach_existing" });
+
+    expect(mlog.list({ taskId: "t1", runId: "r1", dispatchId: "d1", decision: "spawn_new" }))
+      .toEqual([expect.objectContaining({ kind: "reasoner_started", task_id: "t1", run_id: "r1", dispatch_id: "d1" })]);
+  });
 });

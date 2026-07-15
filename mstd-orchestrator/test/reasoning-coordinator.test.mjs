@@ -7,6 +7,8 @@ import { createReasoningCoordinator } from "../server/reasoning/coordinator.mjs"
 import { createActiveTurnRegistry } from "../server/sessions/active-turn.mjs";
 import { createReplyPipeline } from "../server/gateway/reply-pipeline.mjs";
 import { createReplyProvenanceRegistry } from "../server/safety/reply-egress.mjs";
+import { createDispatcher } from "../server/models/dispatcher.mjs";
+import { createModelLog } from "../server/models/model-log.mjs";
 
 describe("reasoning coordinator", () => {
   let db, sessions, taskStore, runStore, session, brain, events;
@@ -530,6 +532,65 @@ describe("reasoning coordinator", () => {
       })],
       recentRows: [expect.objectContaining({ content: "之前的话题" })],
     }));
+  });
+
+  it("records a real dispatch-to-terminal event timeline correlated by dispatch/task/run", async () => {
+    const source = sessions.append(session.id, {
+      role: "user",
+      senderOpenId: "ou_a",
+      content: "查会议室",
+      ts: 1,
+    });
+    const dispatch = taskStore.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [source.id],
+      responderAction: "reply",
+      responderText: "我去查",
+      mode: "p2p",
+    });
+    const assistant = sessions.append(session.id, { role: "assistant", content: "我去查", ts: 2 });
+    taskStore.markDispatchSent(dispatch.id, assistant.id);
+    const modelLog = createModelLog(db, { now: () => 10 });
+    const dispatcher = createDispatcher({
+      caller: { call: vi.fn(async () => ({
+        text: '{"action":"spawn_new","title":"查会议室","brief":"查周五空档","closure":"silent_ok","reason_code":"needs_tools"}',
+        model: "dispatcher-model",
+        usage: null,
+      })) },
+      onEvent: modelLog.record,
+    });
+    const c = createReasoningCoordinator({
+      taskStore,
+      runStore,
+      brain,
+      store: sessions,
+      dispatcher,
+      onEvent: modelLog.record,
+    });
+
+    const processed = await c.processDispatch({
+      dispatchId: dispatch.id,
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+    });
+    await vi.waitFor(() => expect(runStore.getRun(processed.result.runId).status).toBe("completed"));
+
+    const timeline = modelLog.list({ dispatchId: dispatch.id });
+    expect(timeline.map((row) => row.kind)).toEqual(expect.arrayContaining([
+      "dispatcher_started",
+      "dispatcher_decision",
+      "task_created",
+      "reasoner_started",
+      "silent_closed",
+      "reasoner_completed",
+    ]));
+    for (const kind of ["task_created", "reasoner_started", "silent_closed", "reasoner_completed"]) {
+      expect(timeline.find((row) => row.kind === kind)).toMatchObject({
+        task_id: processed.result.taskId,
+        run_id: processed.result.runId,
+        dispatch_id: dispatch.id,
+      });
+    }
   });
 
   it("refuses fabricated or cross-session task ids", async () => {

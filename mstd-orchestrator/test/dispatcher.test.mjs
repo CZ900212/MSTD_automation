@@ -30,6 +30,8 @@ describe("dispatcher fixtures inventory", () => {
       "unrelated_simultaneous",
       "context_dependent_followup",
       "ambient",
+      "prompt_injection",
+      "provider_failure",
     ]) {
       expect(labels.has(needed), needed).toBe(true);
     }
@@ -251,6 +253,7 @@ describe("createDispatcher.review", () => {
       onEvent: (e) => events.push(e),
     });
     const out = await dispatcher.review({
+      dispatchId: "dispatch-1",
       sessionKey: "p2p:ou_x",
       mode: "p2p",
       items: [{ content: "你好" }],
@@ -258,9 +261,10 @@ describe("createDispatcher.review", () => {
     });
     expect(out.action).toBe("no_reasoning");
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "dispatcher_started", sessionKey: "p2p:ou_x" }),
+      expect.objectContaining({ type: "dispatcher_started", sessionKey: "p2p:ou_x", dispatchId: "dispatch-1" }),
       expect.objectContaining({
         type: "dispatcher_decision",
+        dispatchId: "dispatch-1",
         action: "no_reasoning",
         reason_code: "complete_answer",
         latencyMs: expect.any(Number),

@@ -54,10 +54,14 @@ export const listAdminJobs = () =>
 export type ModelLogEntry = {
   id: string; kind: string; chain: string | null; from_key: string | null; to_key: string | null;
   session_key: string | null; attempt: number | null; detail: string | null; ts: number;
+  task_id?: string | null; run_id?: string | null; dispatch_id?: string | null;
+  decision?: string | null; reason_code?: string | null; latency_ms?: number | null;
 };
 
-export const getModelLog = (kind?: string) =>
-  apiFetch<{ entries: ModelLogEntry[] }>(`/api/admin/model-log${kind ? `?kind=${kind}` : ""}`).then((r) => r.entries);
+export const getModelLog = (filters: { kind?: string; taskId?: string; runId?: string; dispatchId?: string; decision?: string } = {}) => {
+  const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => Boolean(value)) as [string, string][]);
+  return apiFetch<{ entries: ModelLogEntry[] }>(`/api/admin/model-log${query.size ? `?${query}` : ""}`).then((r) => r.entries);
+};
 
 // 模型链路事件可读化（降级/重试/预算命中一眼看穿）
 export const MODEL_LOG_LABEL: Record<string, string> = {

@@ -1,5 +1,3 @@
-import React from "react";
-
 export function LoginFeishu({ onStart }: { onStart: () => void }) {
   return (
     <main className="login-shell">

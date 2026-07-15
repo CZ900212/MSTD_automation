@@ -98,14 +98,26 @@ export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore
   app.get("/api/admin/model-log", guard((req, res) => {
     const kind = req.query.kind ? String(req.query.kind) : null;
     const taskId = req.query.taskId ? String(req.query.taskId) : null;
+    const runId = req.query.runId ? String(req.query.runId) : null;
+    const dispatchId = req.query.dispatchId ? String(req.query.dispatchId) : null;
     const decision = req.query.decision ? String(req.query.decision) : null;
     const limit = Math.min(Number(req.query.limit) || 200, 500);
     if (typeof modelLog?.list === "function") {
-      return res.json({ entries: modelLog.list({ kind, taskId, decision, limit }) });
+      return res.json({ entries: modelLog.list({ kind, taskId, runId, dispatchId, decision, limit }) });
     }
-    const entries = kind
-      ? db.prepare("SELECT * FROM model_log WHERE kind = ? ORDER BY ts DESC LIMIT ?").all(kind, limit)
-      : db.prepare("SELECT * FROM model_log ORDER BY ts DESC LIMIT ?").all(limit);
+    const filters = [];
+    const params = [];
+    for (const [column, value] of [
+      ["kind", kind],
+      ["task_id", taskId],
+      ["run_id", runId],
+      ["dispatch_id", dispatchId],
+      ["decision", decision],
+    ]) {
+      if (value) { filters.push(`${column} = ?`); params.push(value); }
+    }
+    const where = filters.length ? ` WHERE ${filters.join(" AND ")}` : "";
+    const entries = db.prepare(`SELECT * FROM model_log${where} ORDER BY ts DESC LIMIT ?`).all(...params, limit);
     res.json({ entries });
   }));
 

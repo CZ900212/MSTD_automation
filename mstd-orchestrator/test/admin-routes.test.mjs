@@ -88,7 +88,7 @@ describe("调试台管理 API（admin 白名单）", () => {
 
   it("模型链路事件：GET model-log 倒序返回，支持 kind 过滤；非管理员 403", async () => {
     const mlog = createModelLog(db, { now: () => 9000 });
-    mlog.record({ type: "model_fallback", chain: "fast", from: "v4-flash", to: "opus-4.6", error: "HTTP 500" });
+    mlog.record({ type: "model_fallback", chain: "fast", from: "v4-flash", to: "gpt-5.5", error: "HTTP 500" });
     mlog.record({ type: "budget_exceeded", sessionKey: "feishu:p2p:ou_x", detail: "session" });
 
     const all = (await asAdmin(request(app).get("/api/admin/model-log"))).body;
@@ -96,8 +96,20 @@ describe("调试台管理 API（admin 白名单）", () => {
     expect(all.entries.map((e) => e.kind).sort()).toEqual(["budget_exceeded", "model_fallback"]);
 
     const filtered = (await asAdmin(request(app).get("/api/admin/model-log?kind=model_fallback"))).body;
-    expect(filtered.entries).toEqual([expect.objectContaining({ kind: "model_fallback", from_key: "v4-flash", to_key: "opus-4.6" })]);
+    expect(filtered.entries).toEqual([expect.objectContaining({ kind: "model_fallback", from_key: "v4-flash", to_key: "gpt-5.5" })]);
 
     expect((await asUser(request(app).get("/api/admin/model-log"))).status).toBe(403);
+  });
+
+  it("模型链路事件支持 task/run/dispatch/decision 组合过滤", async () => {
+    const mlog = createModelLog(db, { now: () => 9001 });
+    mlog.record({ type: "reasoner_started", taskId: "t1", runId: "r1", dispatchId: "d1", action: "spawn_new" });
+    mlog.record({ type: "handoff_sent", taskId: "t1", runId: "r2", dispatchId: "d1", action: "spawn_new" });
+    const result = (await asAdmin(request(app).get(
+      "/api/admin/model-log?taskId=t1&runId=r1&dispatchId=d1&decision=spawn_new",
+    ))).body;
+    expect(result.entries).toEqual([
+      expect.objectContaining({ task_id: "t1", run_id: "r1", dispatch_id: "d1", decision: "spawn_new" }),
+    ]);
   });
 });

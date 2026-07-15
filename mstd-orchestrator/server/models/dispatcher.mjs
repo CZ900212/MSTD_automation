@@ -193,6 +193,7 @@ export function createDispatcher({
   const emit = (evt) => { try { onEvent?.(evt); } catch { /* fail-safe */ } };
 
   async function review({
+    dispatchId = null,
     sessionKey = null,
     items = [],
     mode = "p2p",
@@ -202,7 +203,7 @@ export function createDispatcher({
     activeTaskCandidates = [],
   } = {}) {
     const started = Date.now();
-    emit({ type: "dispatcher_started", sessionKey, mode, chain: "dispatcher" });
+    emit({ type: "dispatcher_started", sessionKey, dispatchId, mode, chain: "dispatcher" });
 
     const candidates = renderTaskCandidates(activeTaskCandidates);
     const candidateIds = new Set(candidates.map((c) => c.id));
@@ -238,6 +239,7 @@ export function createDispatcher({
       emit({
         type: "dispatcher_fallback",
         sessionKey,
+        dispatchId,
         chain: "dispatcher",
         reason_code: fallback.reason_code,
         latencyMs: Date.now() - started,
@@ -251,6 +253,7 @@ export function createDispatcher({
       emit({
         type: "dispatcher_decision",
         sessionKey,
+        dispatchId,
         chain: "dispatcher",
         action: decision.action,
         reason_code: decision.reason_code,
@@ -269,6 +272,7 @@ export function createDispatcher({
       emit({
         type: "dispatcher_invalid",
         sessionKey,
+        dispatchId,
         chain: "dispatcher",
         latencyMs: Date.now() - started,
         error: e?.message ?? e,
@@ -278,6 +282,7 @@ export function createDispatcher({
       emit({
         type: "dispatcher_fallback",
         sessionKey,
+        dispatchId,
         chain: "dispatcher",
         reason_code: fallback.reason_code,
         latencyMs: Date.now() - started,
