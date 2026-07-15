@@ -67,6 +67,7 @@ import { createServer as createNetServer } from "node:net";
 import { createContextBudget } from "./safety/context-budget.mjs";
 import { createReplyProvenanceRegistry, assertSafeCardCopy } from "./safety/reply-egress.mjs";
 import { createVerbatimGuard } from "./safety/verbatim-guard.mjs";
+import { createInternalDisclosureScanner } from "./safety/internal-disclosure.mjs";
 import { createLarkReadEgressSource } from "./safety/lark-read-egress-source.mjs";
 import { createProactiveLimiter } from "./gateway/rate-limit.mjs";
 import { createObserveReport } from "./gateway/observe-report.mjs";
@@ -208,6 +209,9 @@ if (config.enableAgent && config.botOpenId) {
   // C1:中枢 bash/文件工具的工作目录迁出源码树(S1 纵深缓解)
   const agentWorkspace = process.env.MSTD_AGENT_WORKSPACE || join(ROOT, "agent-workspace");
   mkdirSync(agentWorkspace, { recursive: true });
+  const internalDisclosure = createInternalDisclosureScanner({
+    knownStrings: [agentWorkspace, ROOT, `127.0.0.1:${config.port}`, `localhost:${config.port}`],
+  });
   // C0.3：内部通道改会话绑定 token(per-spawn 签发,吊销随 Pi 生命周期),废除静态共享 token
   const sessionTokens = createSessionTokenRegistry();
   const replyEgress = createReplyProvenanceRegistry();
@@ -317,6 +321,7 @@ if (config.enableAgent && config.botOpenId) {
     grants: deliverGrants,
     replyEgress,
     verbatimGuard,
+    internalDisclosure,
     activeBrainTurns,
     onEvent: observeAgentEvent,
   });
@@ -441,7 +446,14 @@ if (config.enableAgent && config.botOpenId) {
     outbound,
     renderCardCopy: async ({ brief }) => {
       const { text } = await renderReply({ caller, soul: "", context: "", brief, kind: "card_copy" });
-      return assertSafeCardCopy(text);
+      return assertSafeCardCopy(text, {
+        internalDisclosure,
+        onAudit: ({ phase, matches }) => observeAgentEvent({
+          type: "internal_disclosure_audit",
+          phase,
+          detail: matches.join(","),
+        }),
+      });
     },
     runLark: config.enableWrite ? makeRunLark({ profile: config.larkProfile }) : async () => ({ exitCode: 1, stdout: "", stderr: "MSTD_ENABLE_WRITE 未开" }),
     testTarget: testTargetFromEnv(process.env),

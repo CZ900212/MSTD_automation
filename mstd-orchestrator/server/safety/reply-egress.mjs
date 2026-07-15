@@ -65,9 +65,23 @@ export function scanReplyMentions(value) {
 
 // 卡片文案与 reply 出口过同一 DLP/注入/链接/mention 门禁：命中即抛。
 // 调用方（confirm-flow renderCardCopy）以异常为信号降级为确定性权威预览。
-export function assertSafeCardCopy(text) {
+function scanInternalDisclosure(internalDisclosure, value, deliverKey = null) {
+  if (!internalDisclosure || audienceForReplyTarget(deliverKey)?.kind === "debug") {
+    return { blocked: [], audit: [] };
+  }
+  return internalDisclosure.scan(value);
+}
+
+function attachInternalDisclosureAudit(audit, result) {
+  return result.audit.length ? { ...audit, internalDisclosure: result.audit } : audit;
+}
+
+export function assertSafeCardCopy(text, { internalDisclosure = null, onAudit = null } = {}) {
   const dlp = scanReplyDlp(text);
   if (dlp.length) throw new Error(`card_copy DLP 拒绝: ${dlp.join(",")}`);
+  const disclosure = scanInternalDisclosure(internalDisclosure, text);
+  if (disclosure.audit.length) onAudit?.({ phase: "card_copy", matches: disclosure.audit });
+  if (disclosure.blocked.length) throw new Error(`card_copy internal_disclosure 拒绝: ${disclosure.blocked.join(",")}`);
   const signals = scanInjectionSignals(text);
   if (signals.length) throw new Error(`card_copy 注入信号拒绝: ${signals.join(",")}`);
   const links = scanReplyLinks(text);
@@ -203,6 +217,7 @@ export function checkReplyPreRender({
   deliverKey,
   brief,
   kind = "message",
+  internalDisclosure = null,
 } = {}) {
   const provenance = registry?.resolve(sessionKey, { residentKey, taskId }) ?? null;
   if (registry && staleResident(provenance, { residentEpoch })) {
@@ -220,7 +235,10 @@ export function checkReplyPreRender({
   }
   const dlp = scanReplyDlp(brief);
   if (dlp.length) return { ok: false, code: "pre_render_dlp", dlp, audit: auditBase({ provenance, deliverKey }) };
-  return { ok: true, provenance, audit: auditBase({ provenance, deliverKey }) };
+  const disclosure = scanInternalDisclosure(internalDisclosure, brief, deliverKey);
+  const audit = attachInternalDisclosureAudit(auditBase({ provenance, deliverKey }), disclosure);
+  if (disclosure.blocked.length) return { ok: false, code: "internal_disclosure", disclosure: disclosure.blocked, audit };
+  return { ok: true, provenance, audit };
 }
 
 export function checkReplyPostRender({
@@ -235,6 +253,7 @@ export function checkReplyPostRender({
   modelHash = null,
   allowedLinkDomains = DEFAULT_ALLOWED_LINK_DOMAINS,
   verbatimGuard = null,
+  internalDisclosure = null,
 } = {}) {
   const current = registry && sessionKey
     ? registry.resolve(sessionKey, { residentKey: residentKey ?? provenance?.residentKey, taskId: taskId ?? provenance?.taskId })
@@ -247,18 +266,21 @@ export function checkReplyPostRender({
   if (!rendered) return { ok: false, code: "empty_render", audit };
   const dlp = scanReplyDlp(rendered);
   if (dlp.length) return { ok: false, code: "post_render_dlp", dlp, audit };
+  const disclosure = scanInternalDisclosure(internalDisclosure, rendered, deliverKey);
+  const disclosureAudit = attachInternalDisclosureAudit(audit, disclosure);
+  if (disclosure.blocked.length) return { ok: false, code: "internal_disclosure", disclosure: disclosure.blocked, audit: disclosureAudit };
   const injectionSignals = scanInjectionSignals(rendered);
-  if (injectionSignals.length) return { ok: false, code: "post_render_instructional_payload", injectionSignals, audit };
+  if (injectionSignals.length) return { ok: false, code: "post_render_instructional_payload", injectionSignals, audit: disclosureAudit };
   const linkViolations = scanReplyLinks(rendered, allowedLinkDomains);
-  if (linkViolations.length) return { ok: false, code: "post_render_link_policy", linkViolations, audit };
+  if (linkViolations.length) return { ok: false, code: "post_render_link_policy", linkViolations, audit: disclosureAudit };
   const mentionViolations = scanReplyMentions(rendered);
-  if (mentionViolations.length) return { ok: false, code: "post_render_mention_policy", mentionViolations, audit };
+  if (mentionViolations.length) return { ok: false, code: "post_render_mention_policy", mentionViolations, audit: disclosureAudit };
   // 逐字引用（批次 C）：群聊默认禁止逐字复制已读源；私聊受总量预算。
   if (verbatimGuard && sessionKey) {
-    const verbatim = verbatimGuard.check(sessionKey, rendered, { audience: audit.audience?.kind ?? null });
-    if (!verbatim.ok) return { ok: false, code: verbatim.code, verbatim, audit };
+    const verbatim = verbatimGuard.check(sessionKey, rendered, { audience: disclosureAudit.audience?.kind ?? null });
+    if (!verbatim.ok) return { ok: false, code: verbatim.code, verbatim, audit: disclosureAudit };
   }
-  return { ok: true, audit };
+  return { ok: true, audit: disclosureAudit };
 }
 
 // 装配期绑定一次（registry/verbatimGuard/链接白名单是进程级依赖），调用点只传每次数据。
@@ -267,9 +289,10 @@ export function createReplyEgressChecker({
   registry = null,
   verbatimGuard = null,
   allowedLinkDomains = DEFAULT_ALLOWED_LINK_DOMAINS,
+  internalDisclosure = null,
 } = {}) {
   return {
-    preRender: (args) => checkReplyPreRender({ registry, ...args }),
-    postRender: (args) => checkReplyPostRender({ registry, verbatimGuard, allowedLinkDomains, ...args }),
+    preRender: (args) => checkReplyPreRender({ registry, internalDisclosure, ...args }),
+    postRender: (args) => checkReplyPostRender({ registry, verbatimGuard, allowedLinkDomains, internalDisclosure, ...args }),
   };
 }

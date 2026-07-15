@@ -4,12 +4,42 @@ import { createSessionStore } from "../server/sessions/store.mjs";
 import { createTurnHandler } from "../server/gateway/turn-handler.mjs";
 import {
   SAFE_REPLY_FALLBACK,
+  assertSafeCardCopy,
   checkReplyPostRender,
   checkReplyPreRender,
+  createReplyEgressChecker,
   createReplyProvenanceRegistry,
 } from "../server/safety/reply-egress.mjs";
+import { createInternalDisclosureScanner } from "../server/safety/internal-disclosure.mjs";
 
 describe("reply egress server boundary", () => {
+  const internalDisclosure = createInternalDisclosureScanner({
+    knownStrings: ["/srv/mstd/agent-workspace"],
+    auditPatterns: ["read_file"],
+  });
+
+  it("mounts internal disclosure checks at pre/post/card and keeps tool names audit-only", () => {
+    const checker = createReplyEgressChecker({ internalDisclosure });
+    expect(checker.preRender({ sessionKey: "feishu:p2p:ou_a", deliverKey: "feishu:p2p:ou_a", brief: "路径是 /srv/mstd/agent-workspace" }))
+      .toMatchObject({ ok: false, code: "internal_disclosure" });
+    expect(checker.postRender({ deliverKey: "feishu:p2p:ou_a", text: "路径是 /srv/mstd/agent-workspace" }))
+      .toMatchObject({ ok: false, code: "internal_disclosure" });
+    expect(checker.postRender({ deliverKey: "feishu:p2p:ou_a", text: "read_file 没跑通" }))
+      .toMatchObject({ ok: true, audit: { internalDisclosure: ["read_file"] } });
+    expect(() => assertSafeCardCopy("路径是 /srv/mstd/agent-workspace", { internalDisclosure }))
+      .toThrow(/internal_disclosure/);
+  });
+
+  it("debug sessions bypass only the internal disclosure category", () => {
+    const checker = createReplyEgressChecker({ internalDisclosure });
+    expect(checker.preRender({ sessionKey: "debug:owner", deliverKey: "debug:owner", brief: "路径是 /srv/mstd/agent-workspace" }))
+      .toMatchObject({ ok: true });
+    expect(checker.postRender({ deliverKey: "debug:owner", text: "路径是 /srv/mstd/agent-workspace" }))
+      .toMatchObject({ ok: true });
+    expect(checker.postRender({ deliverKey: "debug:owner", text: "Bearer abcdefghijklmnopqrstuvwxyz" }))
+      .toMatchObject({ ok: false, code: "post_render_dlp" });
+  });
+
   it("mints server-owned epochs, binds provenance to the session, and refuses recycled residents", () => {
     const registry = createReplyProvenanceRegistry();
     const one = registry.activate("feishu:p2p:ou_a");
@@ -113,7 +143,7 @@ describe("reply egress server boundary", () => {
 });
 
 describe("reply egress turn-handler integration", () => {
-  function setup({ text = "安全回复", modelHash = null } = {}) {
+  function setup({ text = "安全回复", modelHash = null, internalDisclosure = null } = {}) {
     const db = openDb();
     migrate(db);
     const store = createSessionStore(db);
@@ -124,10 +154,30 @@ describe("reply egress turn-handler integration", () => {
     const renderReply = vi.fn(async () => ({ text, modelHash, usage: null }));
     const handler = createTurnHandler({
       triage: { triage: vi.fn() }, brain: { isBusy: () => false, turn: vi.fn(), steer: vi.fn() }, renderReply, outbound, store,
-      budget: { allow: () => ({ ok: true }), record: vi.fn() }, replyEgress: registry, onEvent: (e) => events.push(e),
+      budget: { allow: () => ({ ok: true }), record: vi.fn() }, replyEgress: registry, internalDisclosure, onEvent: (e) => events.push(e),
     });
     return { store, registry, outbound, renderReply, events, handler };
   }
+
+  it("falls back on a known internal string and emits audit-only tool observations", async () => {
+    const scanner = createInternalDisclosureScanner({
+      knownStrings: ["/srv/mstd/agent-workspace"],
+      auditPatterns: ["read_file"],
+    });
+    const blocked = setup({ text: "工作区在 /srv/mstd/agent-workspace", internalDisclosure: scanner });
+    await expect(blocked.handler.handleReply({ sessionKey: "feishu:p2p:ou_a", brief: "回复" }))
+      .resolves.toMatchObject({ ok: false, text: SAFE_REPLY_FALLBACK });
+    expect(blocked.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "reply_egress_fallback", code: "internal_disclosure" }),
+    ]));
+
+    const audited = setup({ text: "read_file 没跑通", internalDisclosure: scanner });
+    await expect(audited.handler.handleReply({ sessionKey: "feishu:p2p:ou_a", brief: "回复" }))
+      .resolves.toMatchObject({ ok: true });
+    expect(audited.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "internal_disclosure_audit", phase: "post_render", detail: "read_file" }),
+    ]));
+  });
 
   it("rejects a stale resident before rendering or outbound side effects", async () => {
     const x = setup();

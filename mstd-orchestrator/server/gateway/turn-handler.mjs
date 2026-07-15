@@ -30,6 +30,7 @@ export function createTurnHandler({
   grants = null,              // C0.4 接缝：reply.target 投递授权表（缺省 fail-closed：只许本会话）
   replyEgress = null,         // Batch C：常驻 Pi 生命周期绑定的 server-owned provenance/epoch
   verbatimGuard = null,       // Batch C：逐字引用守卫（群禁止/私聊预算，比对已读源 shingle）
+  internalDisclosure = null,  // 内部实现披露 scanner
   activeTurns = null,         // daemon-issued business turn identity + formal reply receipt
   activeBrainTurns = null,    // 当前 Pi execution 的 daemon turnId/purpose 绑定
   caller = null,              // 供 renderReply 使用（renderReply 已柯里化时可为 null）
@@ -48,7 +49,7 @@ export function createTurnHandler({
   }
   const pipeline = replyPipeline ?? createReplyPipeline({
     outbound, store, budget, renderReply, caller, soul, snapshotFn,
-    grants, replyEgress, verbatimGuard, activeBrainTurns, onEvent, log,
+    grants, replyEgress, verbatimGuard, internalDisclosure, activeBrainTurns, onEvent, log,
   });
   const { deliverText, deliverTerminal, handleReply, renderAutomationReply, deliverTrusted } = pipeline;
   const receipts = activeTurns ?? createActiveTurnRegistry().receipts;

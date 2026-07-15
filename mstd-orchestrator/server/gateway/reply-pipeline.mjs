@@ -40,6 +40,7 @@ export function createReplyPipeline({
   grants = null,              // C0.4 接缝：reply.target 投递授权表（缺省 fail-closed：只许本会话）
   replyEgress = null,         // Batch C：常驻 Pi 生命周期绑定的 server-owned provenance/epoch
   verbatimGuard = null,       // Batch C：逐字引用守卫（群禁止/私聊预算，比对已读源 shingle）
+  internalDisclosure = null,  // 内部已知字符串硬拦 + 工具名 audit-only
   activeBrainTurns = null,    // 当前 Pi execution 的 daemon turnId/purpose 绑定
   onEvent = () => {},
   log = console.error,
@@ -48,8 +49,13 @@ export function createReplyPipeline({
     throw new Error("createReplyPipeline: store.promptRecent 安全接口必填");
   }
   // 进程级 egress 依赖装配期绑定一次；automation 是 daemon-only 场景，走无 registry 语义。
-  const egress = createReplyEgressChecker({ registry: replyEgress, verbatimGuard });
-  const automationEgress = createReplyEgressChecker();
+  const egress = createReplyEgressChecker({ registry: replyEgress, verbatimGuard, internalDisclosure });
+  const automationEgress = createReplyEgressChecker({ internalDisclosure });
+
+  function emitInternalDisclosureAudit(sessionKey, phase, audit) {
+    const matches = audit?.internalDisclosure ?? [];
+    if (matches.length) onEvent({ type: "internal_disclosure_audit", sessionKey, phase, detail: matches.join(",") });
+  }
 
   // C6 唯一文本出口:命中富 Markdown → 消息卡(markdown 组件),否则纯 text。
   // budget refusal/quick_reply/正式 handleReply/deliverTrusted 四条路径都只许走这里。
@@ -247,6 +253,7 @@ export function createReplyPipeline({
         brief,
         kind,
       });
+      emitInternalDisclosureAudit(sessionKey, "pre_render", pre.audit);
       if (!pre.ok) {
         onEvent({ type: "reply_egress_rejected", sessionKey, phase: "pre_render", code: pre.code, audit: pre.audit });
         return { ok: false, error: `reply egress 拒绝: ${pre.code}` };
@@ -264,6 +271,7 @@ export function createReplyPipeline({
         text: rendered.text,
         modelHash: rendered.modelHash ?? rendered.model_hash ?? null,
       });
+      emitInternalDisclosureAudit(sessionKey, "post_render", post.audit);
       if (post.audit.modelHashMismatch) {
         onEvent({ type: "reply_model_hash_mismatch", sessionKey, audit: post.audit });
       }
