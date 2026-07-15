@@ -9,6 +9,11 @@ const SCENE = {
   p2p: "本条发到私聊:可适度展开,但每句都要有信息量,不写铺垫和客套。",
 };
 
+const PROGRESS_SCENE = {
+  group: "本条发到群聊:默认三句话以内说完,只说当前状态与尚未完成的下一步。",
+  p2p: "本条发到私聊:简洁说明当前状态与尚未完成的下一步,不写铺垫和客套。",
+};
+
 const ANSWER_SYSTEM = (soul) => `${soul ? `${soul}\n\n` : ""}你是这位助手本人，直接对用户说话。
 对每批消息输出严格 JSON，二选一:
 1. {"action":"reply","text":"..."} —— 给用户的正式回复（完整答案或诚实的临时答复均可）。
@@ -31,6 +36,19 @@ const HANDOFF_SYSTEM = ({ soul, kind, deliverKind }) => `${soul ? `${soul}\n\n` 
 }
 要求:自然中文,像同事说话,不用模板腔;直接输出成品文本,不加解释、不加引号;不编造事实,简报里没有的信息不要补。
 飞书渲染约定:支持加粗/列表/链接/代码块/表格(含 Markdown 时系统会自动走卡片渲染,放心输出规范 Markdown);表格一律用规范 md 表格语法;不要输出图片语法、数学公式、HTML 或 Card JSON(飞书渲染不了或结构由服务端负责)。`;
+
+const PROGRESS_HANDOFF_SYSTEM = ({ soul, deliverKind }) => `${soul ? `${soul}\n\n` : ""}你是团队的对外表达出口(执笔人)，同时负责检查这份简报是否真的是非终态进度。${PROGRESS_SCENE[deliverKind] ?? PROGRESS_SCENE.p2p}
+输出严格 JSON，且只能包含两个字段:
+{"effective_stage":"progress|final","text":"发给用户的消息成品"}
+
+阶段判定:
+- 只有仍有明确未完成工作，而且本条不包含用户所求的答案、结论、建议、执行结果、失败结果或取消状态时，effective_stage 才能是 progress。
+- 简报已经回答用户问题、给出结论或建议、报告操作结果，或给出失败/取消等收口状态时，即使调用方声明 progress，也必须判为 final。
+- 不得为了保留 progress 而隐去简报中已经存在的答案；应完整表达简报，并把 effective_stage 判为 final。
+
+文案要求:自然中文,像同事说话,不用模板腔;不编造事实,简报里没有的信息不要补。
+飞书渲染约定:支持加粗/列表/链接/代码块/表格;不要输出图片语法、数学公式、HTML 或 Card JSON。
+只输出一个 JSON 对象，不要 Markdown 围栏，不要额外文字。`;
 
 function renderItems(items) {
   return (items ?? [])
@@ -58,6 +76,32 @@ export function parseResponderOutput(text) {
   if (typeof j.text !== "string" || !j.text.trim()) throw new Error("reply requires non-empty text");
   if (j.text.length > REPLY_MAX) throw new Error("reply text too long");
   return { action: "reply", text: j.text.trim() };
+}
+
+/** Strict parser for stage-aware progress handoff output. */
+export function parseProgressHandoffOutput(text) {
+  if (typeof text !== "string" || !text.trim()) throw new Error("empty progress handoff output");
+  const trimmed = text.trim();
+  if (trimmed.startsWith("```") || /```/.test(trimmed)) {
+    throw new Error("fenced or mixed progress handoff output");
+  }
+  let j;
+  try {
+    j = JSON.parse(trimmed);
+  } catch (error) {
+    throw new Error(`invalid progress handoff JSON: ${error?.message ?? error}`);
+  }
+  if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("bad progress handoff schema");
+  const keys = Object.keys(j);
+  if (keys.length !== 2 || !keys.includes("effective_stage") || !keys.includes("text")) {
+    throw new Error("progress handoff must contain effective_stage and text only");
+  }
+  if (j.effective_stage !== "progress" && j.effective_stage !== "final") {
+    throw new Error("unsupported progress handoff stage");
+  }
+  if (typeof j.text !== "string" || !j.text.trim()) throw new Error("progress handoff requires non-empty text");
+  if (j.text.length > REPLY_MAX) throw new Error("progress handoff text too long");
+  return { effectiveStage: j.effective_stage, text: j.text.trim() };
 }
 
 function isAddressedOrPrivate(mode) {
@@ -142,6 +186,7 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
     brief,
     tone = "",
     kind = "message",
+    stage = "final",
     deliverKind = "p2p",
     recentConversation = "",
     soul: soulOverride,
@@ -158,16 +203,25 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
       "铁律:只转述简报中的事实与决定,不得添加简报未给出的事实、数字、人名、结论。",
     ].filter(Boolean).join("\n\n");
 
+    const stageAwareProgress = kind === "message" && stage === "progress";
     const out = await caller.call("responder", {
-      system: HANDOFF_SYSTEM({ soul: soulText, kind, deliverKind }),
+      system: stageAwareProgress
+        ? PROGRESS_HANDOFF_SYSTEM({ soul: soulText, deliverKind })
+        : HANDOFF_SYSTEM({ soul: soulText, kind, deliverKind }),
       messages: [{ role: "user", content: user }],
     });
 
+    const assessed = stageAwareProgress
+      ? parseProgressHandoffOutput(out.text)
+      : { text: out.text, effectiveStage: stage === "final" ? "final" : stage };
+
     return {
-      text: out.text,
+      text: assessed.text,
       model: out.model,
       usage: out.usage,
       kind,
+      declaredStage: stage,
+      effectiveStage: assessed.effectiveStage,
       deliverKind,
       meta: { sessionKey, taskId, provider: out.model ?? null },
     };
@@ -185,5 +239,6 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
 export const responderPrompts = {
   answerSystem: ANSWER_SYSTEM,
   handoffSystem: HANDOFF_SYSTEM,
+  progressHandoffSystem: PROGRESS_HANDOFF_SYSTEM,
   scene: SCENE,
 };

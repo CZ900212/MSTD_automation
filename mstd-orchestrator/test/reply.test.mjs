@@ -27,6 +27,22 @@ describe("renderReply（respond 链出口渲染）", () => {
     expect(caller.call.mock.calls[0][1].system).toContain("卡片");
   });
 
+  it("progress 把 stage 传给 responder 并返回有效阶段", async () => {
+    const caller = {
+      call: vi.fn(async () => ({
+        text: '{"effective_stage":"final","text":"完整答案"}',
+        model: "v4-pro",
+        usage: null,
+      })),
+    };
+    const out = await renderReply({ caller, brief: "完整答案", kind: "message", stage: "progress" });
+    expect(out).toMatchObject({
+      text: "完整答案",
+      declaredStage: "progress",
+      effectiveStage: "final",
+    });
+  });
+
   // Task 10 C4/C6:投递场景感知——群短平快,私聊可展开;渲染子集向模型declare
   it("C4 deliverKind 注入长度策略;系统提示词含飞书渲染声明", async () => {
     let sys;

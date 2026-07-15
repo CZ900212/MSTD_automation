@@ -170,7 +170,7 @@ export function createReplyPipeline({
   // handleReply / renderAutomationReply 共享的渲染核心：session 取用、近期语义拼装、
   // 投递场景判定、respond 渲染、budget 记账一份实现。egress 裁决与投递由调用方按各自
   // 策略（admission/安全兜底 vs 直拒）完成。
-  async function renderCandidate({ sessionKey, deliverKey, brief, kind, tone = null, signal = null }) {
+  async function renderCandidate({ sessionKey, deliverKey, brief, kind, stage = "final", tone = null, signal = null }) {
     const session = store.getOrCreate(sessionKey);
     // C3.2/P0:近期语义只用 promptRecent allowlist，历史行走统一 helper;
     // 排除 system——压缩摘要不得以 [用户] 身份泄入 reply 上下文
@@ -181,7 +181,7 @@ export function createReplyPipeline({
     let deliverKind = "p2p";
     try { if (parseSessionKey(deliverKey).kind === "group") deliverKind = "group"; } catch { /* debug 等按 p2p */ }
     const rendered = await abortable(renderReply({
-      caller, soul: snapshot?.soul ?? soul, context: recent, brief, kind, tone, deliverKind,
+      caller, soul: snapshot?.soul ?? soul, context: recent, brief, kind, stage, tone, deliverKind,
     }), signal);
     if (rendered.usage) budget.record(sessionKey, rendered.usage);
     return { session, rendered };
@@ -261,7 +261,7 @@ export function createReplyPipeline({
         return { ok: false, error: `reply egress 拒绝: ${pre.code}` };
       }
       const { session, rendered } = await renderCandidate({
-        sessionKey, deliverKey, brief, kind, tone, signal: admissionSignal,
+        sessionKey, deliverKey, brief, kind, stage, tone, signal: admissionSignal,
       });
       const post = egress.postRender({
         sessionKey,
@@ -310,24 +310,32 @@ export function createReplyPipeline({
       }
       if (kind === "card_copy") return { ok: true, text: rendered.text, audit: post.audit };
 
+      // Responder is authoritative only for the one-way semantic correction progress→final.
+      // A declared final can never be downgraded; custom/legacy renderers without stage metadata
+      // preserve the caller-declared stage for compatibility.
+      const effectiveStage = stage === "progress" && rendered.effectiveStage === "final"
+        ? "final"
+        : stage;
+      const stageCorrected = effectiveStage !== stage;
+
       // post 裁决与首次物理发送之间没有任何 await，post 在发送时刻仍然有效——
       // 若将来在这中间插入异步步骤，需在发送前重做（廉价的）epoch/registry 校验。
       if (activeBrainTurns && !activeBrainTurns.reserveDelivery(replyAdmission, {
-        stage,
+        stage: effectiveStage,
         source: "rendered_reply",
       })) {
-        return { ok: false, error: stage === "final" ? "reply 拒绝: terminal reply 已在发送或已完成" : "reply 拒绝: delivery reservation 失败" };
+        return { ok: false, error: effectiveStage === "final" ? "reply 拒绝: terminal reply 已在发送或已完成" : "reply 拒绝: delivery reservation 失败" };
       }
       const { messageId } = await deliverTerminal({
         deliverKey,
         sessionId: session.id,
         text: rendered.text,
-        stage,
+        stage: effectiveStage,
         source: "rendered_reply",
-        appendSource: stage === "final" ? "formal_reply_sent" : "progress_reply_sent",
+        appendSource: effectiveStage === "final" ? "formal_reply_sent" : "progress_reply_sent",
         admission: replyAdmission,
         signal: admissionSignal,
-        atomic: stage === "final",
+        atomic: effectiveStage === "final",
         recordFailure: "reply 物理发送后回执提交失败",
       });
       // C3.4 跨目标回写:目标会话自己的窗口里必须有这条投递(带 meta,不许造 chat_id=null 的群 session)。
@@ -347,6 +355,20 @@ export function createReplyPipeline({
           }
         }
       }
+      if (stageCorrected) {
+        onEvent({
+          type: "reply_stage_corrected",
+          sessionKey,
+          taskId,
+          runId,
+          residentKey,
+          turnId: replyAdmission?.turnId ?? turnId ?? null,
+          declaredStage: stage,
+          effectiveStage,
+          provider: rendered.model ?? rendered.meta?.provider ?? null,
+          messageId,
+        });
+      }
       onEvent({
         type: "reply_sent",
         sessionKey,
@@ -354,12 +376,21 @@ export function createReplyPipeline({
         runId,
         residentKey,
         turnId: replyAdmission?.turnId ?? turnId ?? null,
-        stage,
+        stage: effectiveStage,
+        declaredStage: stage,
         source: "rendered_reply",
         messageId,
         audit: post.audit,
       });
-      return { ok: true, text: rendered.text, message_id: messageId, audit: post.audit };
+      return {
+        ok: true,
+        text: rendered.text,
+        message_id: messageId,
+        declared_stage: stage,
+        effective_stage: effectiveStage,
+        stage_corrected: stageCorrected,
+        audit: post.audit,
+      };
     } finally {
       if (replyAdmission) activeBrainTurns?.release(replyAdmission);
     }
@@ -372,7 +403,7 @@ export function createReplyPipeline({
     const pre = automationEgress.preRender({ sessionKey, deliverKey: sessionKey, brief, kind: "message" });
     if (!pre.ok) return { ok: false, error: `automation reply 拒绝: ${pre.code}` };
     const { session, rendered } = await renderCandidate({
-      sessionKey, deliverKey: sessionKey, brief, kind: "message", tone,
+      sessionKey, deliverKey: sessionKey, brief, kind: "message", stage: "final", tone,
     });
     const post = automationEgress.postRender({ deliverKey: sessionKey, text: rendered.text });
     if (!post.ok) return { ok: false, error: `automation reply 拒绝: ${post.code}` };

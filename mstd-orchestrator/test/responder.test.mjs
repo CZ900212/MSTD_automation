@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   createResponder,
+  parseProgressHandoffOutput,
   parseResponderOutput,
   responderPrompts,
 } from "../server/models/responder.mjs";
@@ -148,6 +149,52 @@ describe("createResponder.answerTurn", () => {
 });
 
 describe("createResponder.renderHandoff", () => {
+  it("keeps a genuinely unfinished status as progress", async () => {
+    const caller = mockCaller('{"effective_stage":"progress","text":"资料已经收齐，还在核对版本差异。"}');
+    const responder = createResponder({ caller, soul: SOUL });
+    const out = await responder.renderHandoff({
+      brief: "资料已经收齐，正在核对版本差异，核对完成后再给结论",
+      kind: "message",
+      stage: "progress",
+      deliverKind: "p2p",
+    });
+
+    expect(out).toMatchObject({
+      text: "资料已经收齐，还在核对版本差异。",
+      effectiveStage: "progress",
+      declaredStage: "progress",
+    });
+    expect(caller.call.mock.calls[0][1].system).toContain("effective_stage");
+    expect(caller.call.mock.calls[0][1].system).toContain("仍有明确未完成工作");
+  });
+
+  it.each([
+    ["完整答案", "我倾向 TypeScript，因为现有基建可以复用。"],
+    ["明确建议", "建议选方案 A，维护成本更低。"],
+    ["执行结果", "任务已经创建成功。"],
+    ["失败结论", "这次没有查到结果，请稍后重试。"],
+  ])("promotes a mislabeled progress %s to final", async (_label, text) => {
+    const caller = mockCaller(JSON.stringify({ effective_stage: "final", text }));
+    const responder = createResponder({ caller, soul: SOUL });
+    const out = await responder.renderHandoff({
+      brief: text,
+      kind: "message",
+      stage: "progress",
+      deliverKind: "group",
+    });
+
+    expect(out).toMatchObject({ text, effectiveStage: "final", declaredStage: "progress" });
+  });
+
+  it("fails closed when progress stage assessment is not strict JSON", async () => {
+    const responder = createResponder({ caller: mockCaller("已经查完了，答案是 4。"), soul: SOUL });
+    await expect(responder.renderHandoff({
+      brief: "答案是 4",
+      kind: "message",
+      stage: "progress",
+    })).rejects.toThrow(/progress handoff/i);
+  });
+
   it("forbids unsupported factual additions in the handoff prompt", async () => {
     const caller = mockCaller("已完成检查。");
     const responder = createResponder({ caller, soul: SOUL });
@@ -189,6 +236,19 @@ describe("createResponder.renderHandoff", () => {
     const responder = createResponder({ caller, soul: "" });
     await responder.renderHandoff({ brief: "x", kind: "message", deliverKind: "group" });
     expect(caller.call.mock.calls[0][0]).toBe("responder");
+  });
+});
+
+describe("parseProgressHandoffOutput", () => {
+  it("accepts only effective_stage + text", () => {
+    expect(parseProgressHandoffOutput('{"effective_stage":"final","text":"答案"}'))
+      .toEqual({ effectiveStage: "final", text: "答案" });
+    expect(() => parseProgressHandoffOutput('{"effective_stage":"progress","text":"处理中","extra":1}'))
+      .toThrow();
+    expect(() => parseProgressHandoffOutput('```json\n{"effective_stage":"progress","text":"处理中"}\n```'))
+      .toThrow();
+    expect(() => parseProgressHandoffOutput('{"effective_stage":"other","text":"处理中"}'))
+      .toThrow();
   });
 });
 

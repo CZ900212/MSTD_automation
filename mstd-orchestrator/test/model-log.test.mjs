@@ -55,6 +55,32 @@ describe("model_log（模型链路可观测落库）", () => {
     expect(row.detail).not.toContain("must-not-log");
   });
 
+  it("persists stage corrections separately without content or fallback classification", () => {
+    mlog.record({
+      type: "reply_stage_corrected",
+      sessionKey: "feishu:p2p:ou_x",
+      taskId: "task-1",
+      runId: "run-1",
+      turnId: "turn-1",
+      declaredStage: "progress",
+      effectiveStage: "final",
+      brief: "must-not-log",
+      text: "also-must-not-log",
+    });
+    const [row] = mlog.list({ kind: "reply_stage_corrected" });
+    expect(row).toMatchObject({
+      kind: "reply_stage_corrected",
+      session_key: "feishu:p2p:ou_x",
+      task_id: "task-1",
+      run_id: "run-1",
+      fallback_kind: null,
+    });
+    expect(row.detail).toContain("turn_id=turn-1");
+    expect(row.detail).toContain("declared_stage=progress");
+    expect(row.detail).toContain("effective_stage=final");
+    expect(row.detail).not.toContain("must-not-log");
+  });
+
   it("persists the five fallback kinds as one structured model_log field", () => {
     const fallbackEvents = [
       ["responder_fallback", "responder_parse"],

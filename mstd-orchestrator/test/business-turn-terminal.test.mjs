@@ -154,6 +154,12 @@ describe("foreground business turn terminal receipt", () => {
   });
 
   it("progress-only message is user-visible but remains non-terminal, so daemon sends final fallback", async () => {
+    deps.renderReply.mockResolvedValueOnce({
+      text: "还在查",
+      declaredStage: "progress",
+      effectiveStage: "progress",
+      usage: null,
+    });
     deps.brain.turn.mockImplementationOnce((args) => runActive(args, async (turnContext) => {
       const reply = await handler.handleReply({
         sessionKey: "feishu:p2p:ou_a",
@@ -170,12 +176,85 @@ describe("foreground business turn terminal receipt", () => {
       kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed",
     });
     expect(deps.outbound.sendMessage.mock.calls.map(([arg]) => arg.text))
-      .toEqual(["正式答复", DAEMON_TERMINAL_FALLBACK]);
+      .toEqual(["还在查", DAEMON_TERMINAL_FALLBACK]);
     expect(result.receipt.terminal.outcome).toBe("daemon_fallback_sent");
     expect(events).toContainEqual(expect.objectContaining({
       type: "brain_turn_outcome",
       outcome: "daemon_terminal_fallback",
       replyCounts: { progress: 1, final: 0, safeFallback: 0, daemonFallback: 1 },
+    }));
+  });
+
+  it("promotes a complete progress to one atomic final and rejects the duplicate final", async () => {
+    deps.renderReply
+      .mockResolvedValueOnce({
+        text: "第一段完整答案\n\n第二段完整答案",
+        declaredStage: "progress",
+        effectiveStage: "final",
+        model: "v4-pro",
+        usage: null,
+      })
+      .mockResolvedValueOnce({
+        text: "重复最终答案",
+        declaredStage: "final",
+        effectiveStage: "final",
+        model: "v4-pro",
+        usage: null,
+      });
+    deps.brain.turn.mockImplementationOnce((args) => runActive(args, async (turnContext) => {
+      const corrected = await handler.handleReply({
+        sessionKey: args.sessionKey,
+        kind: "message",
+        stage: "progress",
+        brief: "完整答案",
+        ...turnContext,
+      });
+      expect(corrected).toMatchObject({
+        ok: true,
+        declared_stage: "progress",
+        effective_stage: "final",
+        stage_corrected: true,
+        message_id: "om_card",
+      });
+
+      const duplicate = await handler.handleReply({
+        sessionKey: args.sessionKey,
+        kind: "message",
+        stage: "final",
+        brief: "再发一次最终答案",
+        ...turnContext,
+      });
+      expect(duplicate).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("terminal reply"),
+      });
+      return { finalText: "内部完成", events: [] };
+    }));
+
+    const result = await handler.handleTurn({
+      kind: "message", session, sessionKey: "feishu:p2p:ou_a", items, mode: "addressed",
+    });
+
+    expect(deps.outbound.sendCard).toHaveBeenCalledTimes(1);
+    expect(deps.outbound.sendMessage).not.toHaveBeenCalled();
+    expect(result.receipt).toMatchObject({
+      state: "terminal",
+      terminal: { outcome: "formal_reply_sent", messageId: "om_card" },
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "reply_stage_corrected",
+      declaredStage: "progress",
+      effectiveStage: "final",
+      turnId: "turn-1",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "brain_turn_outcome",
+      outcome: "rendered_reply",
+      replyCounts: { progress: 0, final: 1, safeFallback: 0, daemonFallback: 0 },
+    }));
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "business_turn_terminal",
+      fallback_kind: "daemon_terminal",
     }));
   });
 

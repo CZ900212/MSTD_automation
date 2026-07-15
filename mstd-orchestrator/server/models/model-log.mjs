@@ -22,6 +22,8 @@ const asDetail = (evt) => {
     evt.turnId ? `turn_id=${String(evt.turnId).slice(0, 200)}` : null,
     evt.purpose ? `purpose=${String(evt.purpose).slice(0, 40)}` : null,
     evt.stage ? `stage=${String(evt.stage).slice(0, 20)}` : null,
+    evt.declaredStage ? `declared_stage=${String(evt.declaredStage).slice(0, 20)}` : null,
+    evt.effectiveStage ? `effective_stage=${String(evt.effectiveStage).slice(0, 20)}` : null,
     evt.outcome ? `outcome=${String(evt.outcome).slice(0, 60)}` : null,
     evt.provider && !dispatcher ? `provider=${String(evt.provider).slice(0, 60)}` : null,
     evt.source ? `source=${String(evt.source).slice(0, 60)}` : null,

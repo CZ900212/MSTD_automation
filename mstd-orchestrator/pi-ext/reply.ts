@@ -19,6 +19,7 @@ export default function (pi: ExtensionAPI) {
       "你不是用户可见出口：禁止假设你的 finalText 会直达用户。" +
       "kind=message 发消息；kind=card_copy 供确认卡片文案槽位。" +
       "stage=progress 仅播报进度且不完成回合；stage=final 发送最终答复。" +
+      "如果 progress 简报已经包含答案、结论、建议或执行/失败结果，responder 会在发送前自动按 final 收口。" +
       "可多次调用（如中途 progress + 最终 final）。你不调用 final，daemon 会用 responder 安全收口。" +
       "brief 写清事实、结论、数据与决定；不要自己写成品文案。",
     parameters: Type.Object({
@@ -62,8 +63,18 @@ export default function (pi: ExtensionAPI) {
           return { content: [{ type: "text", text: `reply 失败: ${errText}` }], details: data };
         }
         return {
-          content: [{ type: "text", text: `已${params.kind === "card_copy" ? "生成卡片文案" : "发送"}：${String(data.text ?? "").slice(0, 500)}` }],
-          details: { messageId: data.message_id ?? null },
+          content: [{
+            type: "text",
+            text: params.kind === "card_copy"
+              ? `已生成卡片文案：${String(data.text ?? "").slice(0, 500)}`
+              : `已发送（声明阶段=${data.declared_stage ?? params.stage}，有效阶段=${data.effective_stage ?? params.stage}）：${String(data.text ?? "").slice(0, 500)}`,
+          }],
+          details: {
+            messageId: data.message_id ?? null,
+            declaredStage: data.declared_stage ?? params.stage,
+            effectiveStage: data.effective_stage ?? params.stage,
+            stageCorrected: data.stage_corrected === true,
+          },
         };
       } catch (e) {
         return { content: [{ type: "text", text: `reply 异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };

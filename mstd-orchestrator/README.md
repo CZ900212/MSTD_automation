@@ -16,6 +16,7 @@
   → ↘ no_reasoning
     ↘ attach_existing / spawn_new → task-scoped Pi reasoner（同会话多 task 可并发；全局 MSTD_MAX_CONCURRENT_PI + MSTD_MAX_REASONERS_PER_SESSION）
         · reasoner 经 reply 工具把事实/决定交给 responder.renderHandoff → egress → outbound
+        · message progress 由 responder 复核阶段；已含答案/结论/结果的误标 progress 自动升级为唯一 final
         · 写意图仍走 propose-actions 卡片确认与确定性安全闸
   记忆：SOUL / ORG / journal / groups/<chat_id> / users/<open_id>
 ```
