@@ -114,7 +114,7 @@ describe("createResponder.answerTurn", () => {
       mode: "private",
     });
     expect(out.action).toBe("reply");
-    expect(out.text.trim().length).toBeGreaterThan(0);
+    expect(out.text).toBe("收到，我先处理一下。");
   });
 
   it("can answer identity questions directly from SOUL", async () => {
@@ -198,5 +198,14 @@ describe("responder prompt shape", () => {
     expect(sys).toContain(SOUL);
     expect(sys).toMatch(/reply|no_reply/);
     expect(sys).not.toMatch(/请求升级|responder requested|needs_reasoning|dispatcher|reasoner/i);
+  });
+
+  it("limits direct answers to known context and requires verification for new facts", () => {
+    const sys = responderPrompts.answerSystem(SOUL);
+    expect(sys).toMatch(/身份.*寒暄.*对话中已有信息|对话中已有信息.*身份.*寒暄/s);
+    expect(sys).toMatch(/新事实.*查证.*工具.*最新数据|最新数据.*工具.*查证.*新事实/s);
+    expect(sys).toMatch(/不得.*模型.*记忆.*直接作答|不能.*模型.*记忆.*直接作答/s);
+    expect(sys).toMatch(/自己的话.*自然.*核实|自然.*自己的话.*核实/s);
+    expect(sys).not.toMatch(/例如|比如|譬如|我查一下|我去查查|稳稳|接住/);
   });
 });
