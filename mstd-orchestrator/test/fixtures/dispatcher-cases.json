@@ -60,6 +60,16 @@
     "expected": { "action": "spawn_new", "closure": "required", "reason_code": "needs_judgment" }
   },
   {
+    "id": "advice-already-answered",
+    "synthetic": true,
+    "label": "advice_already_answered",
+    "mode": "ambient",
+    "userText": "小达你认为做一个 agent 项目使用 Python 架构更好还是 TS 更好？",
+    "responderText": "这俩我倾向 Python，主要是生态成熟，相关轮子支持得更多。TS 的社区小一些，遇到问题容易卡住。",
+    "activeTaskCandidates": [],
+    "expected": { "action": "spawn_new", "closure": "required", "reason_code": "needs_judgment" }
+  },
+  {
     "id": "correction-attach",
     "synthetic": true,
     "label": "correction",

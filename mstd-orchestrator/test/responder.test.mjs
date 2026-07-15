@@ -268,4 +268,12 @@ describe("responder prompt shape", () => {
     expect(sys).toMatch(/自己的话.*自然.*核实|自然.*自己的话.*核实/s);
     expect(sys).not.toMatch(/例如|比如|譬如|我查一下|我去查查|稳稳|接住/);
   });
+
+  it("does not let the first reply answer judgment or comparison requests", () => {
+    const sys = responderPrompts.answerSystem(SOUL);
+    expect(sys).toMatch(/判断.*建议.*选择.*比较.*评价/s);
+    expect(sys).toMatch(/不得.*首条回复.*倾向.*结论.*优劣/s);
+    expect(sys).toMatch(/近期对话.*不代表.*可靠答案/s);
+    expect(sys).toMatch(/后续处理.*结论/s);
+  });
 });

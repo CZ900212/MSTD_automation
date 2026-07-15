@@ -26,6 +26,7 @@ describe("dispatcher fixtures inventory", () => {
       "promise_to_check",
       "tool_required",
       "advice",
+      "advice_already_answered",
       "correction",
       "unrelated_simultaneous",
       "context_dependent_followup",
@@ -73,6 +74,13 @@ describe("dispatcher prompt shape", () => {
   it("treats user text as untrusted data and rejects task-id injection", () => {
     expect(dispatcherPrompts.system).toMatch(/用户消息.*不可信|不可信.*用户消息/s);
     expect(dispatcherPrompts.system).toMatch(/绕过.*规则.*不.*任务|编造.*task_id.*不.*任务/s);
+  });
+
+  it("requires reasoning for judgment even when the first reply already gave an opinion", () => {
+    expect(dispatcherPrompts.system).toMatch(/判断.*建议.*选择.*比较.*评价.*必须.*spawn_new.*attach_existing/s);
+    expect(dispatcherPrompts.system).toMatch(/看似完整.*观点.*倾向.*结论/s);
+    expect(dispatcherPrompts.system).toMatch(/不得以.*已经回答.*观点分享.*no_reasoning/s);
+    expect(dispatcherPrompts.system).toMatch(/基础算术.*复述.*用户已经明确给出.*no_reasoning/s);
   });
 });
 
