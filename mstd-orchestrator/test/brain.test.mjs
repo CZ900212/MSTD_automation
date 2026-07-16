@@ -34,19 +34,19 @@ function deferred() {
 
 const nextImmediate = () => new Promise((resolve) => setImmediate(resolve));
 
-describe("brain（GPT-5.6 Sol Pi 会话进程管理）", () => {
-  it("首选 GPT-5.6 Sol high，末级 DeepSeek V4 Pro xhigh 兜底", () => {
+describe("brain（DeepSeek V4 Pro Pi 会话进程管理）", () => {
+  it("首选 DeepSeek V4 Pro xhigh，末级 GPT-5.6 Sol high 兜底", () => {
     expect(REASON_PROVIDERS[0]).toEqual({
-      key: "gpt-5.6-sol",
-      provider: "cz-gpt",
-      model: "gpt-5.6-sol",
-      thinking: "high",
-    });
-    expect(REASON_PROVIDERS.at(-1)).toEqual({
       key: "v4-pro",
       provider: "deepseek",
       model: "deepseek-v4-pro",
       thinking: "xhigh",
+    });
+    expect(REASON_PROVIDERS.at(-1)).toEqual({
+      key: "gpt-5.6-sol",
+      provider: "cz-gpt",
+      model: "gpt-5.6-sol",
+      thinking: "high",
     });
   });
   it("spawn env 带 MSTD_SESSION_KEY；session.chat_id 存在时注入 MSTD_CHAT_ID（lark_read 会话域门禁）", async () => {
@@ -56,7 +56,7 @@ describe("brain（GPT-5.6 Sol Pi 会话进程管理）", () => {
     expect(startPi.mock.calls[0][0].env).toMatchObject({
       MSTD_SESSION_KEY: "feishu:p2p:ou_x",
       MSTD_CHAT_ID: "oc_p2p_chat",
-      MSTD_PI_MODEL_FAMILY: "gpt", // 首 provider gpt-5.6-sol → 族 gpt;persona 据此追加推理机纪律块
+      MSTD_PI_MODEL_FAMILY: "deepseek", // 首 provider v4-pro → 族 deepseek;persona 据此追加推理机纪律块
     });
     // chat_id 为空（跨目标投递先建的会话）→ 不注入，门禁侧 fail-closed
     await brain.turn({ session, sessionKey: "feishu:p2p:ou_y", brief: "问" });
@@ -410,7 +410,7 @@ describe("brain（GPT-5.6 Sol Pi 会话进程管理）", () => {
         executionKey: "task:task-a",
         turnId: "daemon-turn-1",
         lease: "brain-lease",
-        closing: { state: "closing", residentEpoch: 2, provider: "v4-pro" },
+        closing: { state: "closing", residentEpoch: 2, provider: REASON_PROVIDERS[1].key },
       },
     });
 

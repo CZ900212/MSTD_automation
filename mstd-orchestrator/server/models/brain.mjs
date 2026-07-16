@@ -1,4 +1,4 @@
-// 中枢：task-scoped Pi(GPT-5.6 Sol) 常驻进程；同 task 串行、异 task 可并发；steer/recycle 按 task 隔离。
+// 中枢：task-scoped Pi(DeepSeek V4 Pro) 常驻进程；同 task 串行、异 task 可并发；steer/recycle 按 task 隔离。
 // sessionKey 仍是受众元数据；pool/turnTails 以 executionKey（taskId 优先，否则 sessionKey）为键。
 
 import { setMaxListeners } from "node:events";
@@ -9,10 +9,10 @@ import { TRUST } from "../safety/trust-boundary.mjs";
 import { familyForModelId } from "./prompt-variants.mjs";
 
 export const REASON_PROVIDERS = [
-  // 2026-07-15 定案：主脑使用 gpt-5.6-sol high；DeepSeek V4 Pro xhigh 仅作兜底。
+  // 2026-07-16 定案：主脑使用 DeepSeek V4 Pro xhigh（其最高推理档）；GPT-5.6 Sol high 仅作兜底。
   // v4-pro 的 xhigh 在 providers.ts 映射为 thinking:{type:"enabled"}（DeepSeek 思考为二元开关）。
-  { key: "gpt-5.6-sol", provider: "cz-gpt", model: "gpt-5.6-sol", thinking: "high" },
   { key: "v4-pro", provider: "deepseek", model: "deepseek-v4-pro", thinking: "xhigh" },
+  { key: "gpt-5.6-sol", provider: "cz-gpt", model: "gpt-5.6-sol", thinking: "high" },
 ];
 
 /** Runtime ownership key: task-scoped when taskId is present; session-scoped legacy otherwise. */

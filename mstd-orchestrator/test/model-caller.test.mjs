@@ -139,15 +139,15 @@ describe("model caller", () => {
     expect(sleepFn).not.toHaveBeenCalledWith(7);
   });
 
-  it("fast 链显式关闭 thinking；reason 链 gpt-5.6-sol 带 medium effort", async () => {
+  it("fast 链显式关闭 thinking；reason 链 DeepSeek V4 Pro 开启最高推理档", async () => {
     const bodies = [];
     const fetchFn = vi.fn(async (_url, opts) => { bodies.push(JSON.parse(opts.body)); return okResponse("ok", "m"); });
     const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {} });
     await caller.call("fast", { messages: [{ role: "user", content: "x" }] });
     expect(bodies[0].reasoning_effort).toBeUndefined();
     await caller.call("reason", { messages: [{ role: "user", content: "x" }] });
-    expect(bodies[1].model).toBe("gpt-5.6-sol");
-    expect(bodies[1].reasoning_effort).toBe("medium");
+    expect(bodies[1].model).toBe("deepseek-v4-pro");
+    expect(bodies[1].thinking).toEqual({ type: "enabled" });
   });
 
   it("system 注入为首条 system message；网关鉴权头正确", async () => {
@@ -215,9 +215,9 @@ describe("model caller", () => {
     },
   );
 
-  it("三条链定义与用户定案一致：Opus 全面移出备用链，GPT-5.6 Sol medium 中枢，DeepSeek 出口首选", () => {
+  it("三条链定义与用户定案一致：Opus 全面移出备用链，DeepSeek V4 Pro 推理与出口首选", () => {
     expect(CHAINS.fast).toEqual(["v4-flash", "gpt-5.5"]);
-    expect(CHAINS.reason).toEqual(["gpt-5.6-sol", "v4-pro"]);
+    expect(CHAINS.reason).toEqual(["v4-pro", "gpt-5.6-sol"]);
     expect(CHAINS.improvise).toEqual(["gpt-5.6-sol"]);
     expect(CHAINS.respond).toEqual(["v4-pro", "gpt-5.6-sol"]);
   });

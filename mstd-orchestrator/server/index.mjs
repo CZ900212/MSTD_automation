@@ -89,7 +89,7 @@ const config = loadServerConfig(process.env);
     if (!config.botOpenId) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 MSTD_BOT_OPEN_ID（自回环判定依赖）");
     if (!config.botName) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 MSTD_BOT_NAME（扁平事件无 mentions，点名判定依赖）");
     if (!config.larkProfile) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 LARK_PROFILE（收发消息通道）");
-    if (!process.env.CZ_GPT_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 CZ_GPT_KEY（reason 链主脑）");
+    if (!process.env.CZ_GPT_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 CZ_GPT_KEY（reason 链兜底）");
     if (!process.env.DEEPSEEK_KEY) fatal.push("MSTD_ENABLE_AGENT=1 时必须配置 DEEPSEEK_KEY（fast 链分诊）");
   }
   if (config.enableWrite) {

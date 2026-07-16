@@ -16,7 +16,7 @@ function modelRegistry(env) {
       base: env.MSTD_DEEPSEEK_BASE ?? DEEPSEEK_BASE,
       key: env.DEEPSEEK_KEY,
       model: env.MSTD_MODEL_V4_PRO ?? "deepseek-v4-pro",
-      disableThinking: true,
+      deepseekThinking: true,
     },
     "gpt-5.5": {
       base: env.MSTD_CZ_BASE ?? CZ_BASE,
@@ -43,7 +43,7 @@ const NON_THINKING_CHAINS = new Set(["fast", "dispatcher", "responder"]);
 
 export const CHAINS = {
   fast: FAST_CHAIN,
-  reason: ["gpt-5.6-sol", "v4-pro"],
+  reason: ["v4-pro", "gpt-5.6-sol"],
   // Actor dialogue generation is intentionally pinned to GPT-5.6 Sol. It uses
   // the existing CZ endpoint/key and does not silently change model identity.
   improvise: ["gpt-5.6-sol"],
@@ -85,14 +85,15 @@ export function createModelCaller({
   // 可观测上报 fail-safe：观察者出错绝不反噬调用主链路
   const emit = (evt) => { try { onEvent?.(evt); } catch { /* 忽略 */ } };
 
-  async function callOne(modelKey, { system, messages, thinking }) {
+  async function callOne(modelKey, { system, messages, thinking, deepseekThinking }) {
     const m = registry[modelKey];
     const body = {
       model: m.model,
       messages: system ? [{ role: "system", content: system }, ...messages] : messages,
       [m.maxTokensField ?? "max_tokens"]: maxTokens,
     };
-    if (m.disableThinking) body.thinking = { type: "disabled" };
+    if (m.deepseekThinking) body.thinking = { type: deepseekThinking ? "enabled" : "disabled" };
+    else if (m.disableThinking) body.thinking = { type: "disabled" };
     else if (thinking && m.effort) body.reasoning_effort = m.effort;
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -134,7 +135,14 @@ export function createModelCaller({
       let lastErr = null;
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
-          return await callOne(modelKey, { system: perModelSystem, messages, thinking: wantThinking });
+          return await callOne(modelKey, {
+            system: perModelSystem,
+            messages,
+            thinking: wantThinking,
+            // DeepSeek V4 Pro is shared by the reason and response chains. Only reason
+            // requests turn on its binary thinking mode; response calls stay non-thinking.
+            deepseekThinking: chain === "reason" && wantThinking,
+          });
         } catch (e) {
           lastErr = e;
           emit({ type: "model_retry", chain, model: modelKey, attempt, error: e.message });
