@@ -91,4 +91,22 @@ describe("startPi 运行时（fake spawn）", () => {
     expect(child.kill).toHaveBeenCalled();        // 后兵:3s 不退硬杀
     await expect(closing).resolves.toBeUndefined();
   });
+
+  it.each(["exit", "close"])("%s immediately rejects a pending runJob and future calls", async (event) => {
+    const child = fakePiChild();
+    const client = startPi({ spawnFn: () => child });
+    const pending = client.runJob("hi", { timeoutMs: 240000 });
+    child.emit(event, 1, null);
+    await expect(pending).rejects.toThrow(/pi process (exited|closed)/);
+    await expect(client.prompt("again")).rejects.toThrow(/pi process (exited|closed)/);
+  });
+
+  it("child error rejects prompt without becoming an unhandled EventEmitter error", async () => {
+    const child = fakePiChild();
+    const client = startPi({ spawnFn: () => child });
+    const pending = client.prompt("hi", { timeoutMs: 240000 });
+    child.emit("error", new Error("spawn broke"));
+    await expect(pending).rejects.toThrow(/spawn broke/);
+    await expect(client.close()).resolves.toBeUndefined();
+  });
 });

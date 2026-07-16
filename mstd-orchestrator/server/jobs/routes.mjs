@@ -1,5 +1,5 @@
 import { requireUser } from "../http/auth-middleware.mjs";
-import { getJobRow, getJob, listJobs, updateJobStatus } from "../store/jobs.mjs";
+import { getJobRow, getJob, listJobs, transitionJobStatus } from "../store/jobs.mjs";
 import { TEMPLATES } from "./templates.mjs";
 import { createJobLauncher } from "./launcher.mjs";
 import { streamJobEvents } from "../http/sse.mjs";
@@ -82,12 +82,10 @@ export function mountJobRoutes(app, ctx) {
     const job = getJobRow(db, req.params.id);
     if (!job) return res.status(404).json({ error: "job 不存在" });
     if (!canAccess(req.user, job)) return res.status(403).json({ error: "无权操作该任务" });
-    if (job.status === "running_write") {
-      return res.status(409).json({ error: "写阶段执行中不可中止（已批准动作正在落地，请等待收敛后在看板核对）" });
-    }
+    const aborted = transitionJobStatus(db, job.id, { from: ["queued", "running_readonly"], to: "aborted" }, now());
+    if (!aborted) return res.status(409).json({ error: `当前状态 ${job.status} 不可中止` });
     const handle = registry.get(job.id);
     if (handle) { try { handle.abort(); } catch { /* 已退出 */ } registry.remove(job.id); }
-    updateJobStatus(db, job.id, "aborted", now());
     bus.publish(job.id, { event: "job_status", data: { status: "aborted" } });
     res.json({ ok: true, status: "aborted" });
   });

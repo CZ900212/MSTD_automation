@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { openDb, migrate } from "../server/db/index.mjs";
-import { createJob, getJobRow } from "../server/store/jobs.mjs";
+import { createJob, getJobRow, transitionJobStatus } from "../server/store/jobs.mjs";
 import { createEventBus } from "../server/jobs/event-bus.mjs";
 import { createEventBuffer } from "../server/jobs/event-buffer.mjs";
 import { createRuntimeRegistry } from "../server/jobs/runtime.mjs";
@@ -119,6 +119,23 @@ describe("runReadonlyPhase", () => {
     expect(out.status).toBe("failed");
     expect(getJobRow(db, job.id).status).toBe("failed");
     expect(registry.has(job.id)).toBe(false);
+  });
+
+  it("a Pi failure after abort cannot overwrite aborted with failed", async () => {
+    const job = makeJob();
+    const gate = Promise.withResolvers();
+    const client = {
+      child: { kill: () => gate.reject(new Error("killed")) },
+      runJob: () => gate.promise,
+      close: () => Promise.resolve(),
+    };
+    const running = runReadonlyPhase({ db, startPi: () => client, bus, buffer, registry, job, now: () => 2000 });
+    await vi.waitFor(() => expect(registry.has(job.id)).toBe(true));
+    expect(transitionJobStatus(db, job.id, { from: "running_readonly", to: "aborted" }, 2001)).toBeTruthy();
+    client.child.kill();
+    await expect(running).resolves.toEqual({ status: "aborted" });
+    expect(getJobRow(db, job.id).status).toBe("aborted");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM job_events WHERE job_id=? AND type='error'").get(job.id).n).toBe(0);
   });
 });
 

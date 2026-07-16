@@ -31,6 +31,18 @@ export function updateJobStatus(db, id, status, now = Date.now()) {
   db.prepare("UPDATE orch_jobs SET status = ?, updated_at = ? WHERE id = ?").run(status, now, id);
 }
 
+export function transitionJobStatus(db, id, { from, to }, now = Date.now()) {
+  const allowed = Array.isArray(from) ? from : [from];
+  if (!id || !to || allowed.length === 0 || allowed.some((status) => typeof status !== "string" || !status)) {
+    throw new Error("transitionJobStatus: id/from/to 非法");
+  }
+  const placeholders = allowed.map(() => "?").join(",");
+  const result = db.prepare(
+    `UPDATE orch_jobs SET status = ?, updated_at = ? WHERE id = ? AND status IN (${placeholders})`
+  ).run(to, now, id, ...allowed);
+  return result.changes === 1 ? getJobRow(db, id) : null;
+}
+
 export function saveJobDraft(db, jobId, { cardText = null, itemsJson = null, actionSetJson = null, rawOutput = null }) {
   db.prepare(
     "INSERT INTO job_draft (job_id, card_text, items_json, action_set_json, raw_output) VALUES (?,?,?,?,?) " +

@@ -5,6 +5,7 @@ import { createEventBus } from "../server/jobs/event-bus.mjs";
 import { createEventBuffer } from "../server/jobs/event-buffer.mjs";
 import { createRuntimeRegistry } from "../server/jobs/runtime.mjs";
 import { createJobLauncher } from "../server/jobs/launcher.mjs";
+import { transitionJobStatus } from "../server/store/jobs.mjs";
 
 const goodIntent = JSON.stringify({
   card_text: "请确认",
@@ -86,5 +87,29 @@ describe("createJobLauncher", () => {
       now: () => 1000,
     });
     expect(() => launcher.submit({ templateId: "nope" })).toThrow(/未知模板/);
+  });
+
+  it("pump skips a queued job that was aborted while waiting for a semaphore", async () => {
+    const sem = createSemaphore(1);
+    const first = Promise.withResolvers();
+    let spawns = 0;
+    const launcher = createJobLauncher({
+      db, config: { pi: {} }, semaphore: sem, bus, buffer, registry, extensions: [], now: () => 1000,
+      startPi: () => {
+        spawns += 1;
+        return {
+          child: { kill() {} },
+          runJob: () => spawns === 1 ? first.promise : Promise.resolve({ finalText: goodIntent }),
+          close: () => Promise.resolve(),
+        };
+      },
+    });
+    launcher.submit({ templateId: "meeting_to_task", params: {}, createdBy: "u-1" });
+    const queued = launcher.submit({ templateId: "meeting_to_task", params: {}, createdBy: "u-1" });
+    expect(transitionJobStatus(db, queued.id, { from: "queued", to: "aborted" }, 1001)).toBeTruthy();
+    first.resolve({ finalText: goodIntent });
+    await waitFor(() => launcher.queueLength === 0);
+    expect(spawns).toBe(1);
+    expect(db.prepare("SELECT status FROM orch_jobs WHERE id=?").get(queued.id).status).toBe("aborted");
   });
 });

@@ -115,4 +115,21 @@ describe("jobs API", () => {
     const detail = await request(app).get(`/api/jobs/${res.body.jobId}`).set("Authorization", `Bearer ${t2}`);
     expect(detail.status).toBe(403);
   });
+
+  it("abort only accepts queued/running_readonly and never rewrites terminal history", async () => {
+    db.prepare("INSERT INTO orch_jobs (id, template_id, status, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?)")
+      .run("queued-job", "meeting_to_task", "queued", "u-1", 1, 1);
+    const aborted = await auth(request(app).post("/api/jobs/queued-job/abort"));
+    expect(aborted.status).toBe(200);
+    expect(db.prepare("SELECT status FROM orch_jobs WHERE id='queued-job'").get().status).toBe("aborted");
+
+    for (const [i, status] of ["done", "failed", "rejected", "partial_failed", "executing", "awaiting_confirm"].entries()) {
+      const id = `terminal-${i}`;
+      db.prepare("INSERT INTO orch_jobs (id, template_id, status, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?)")
+        .run(id, "meeting_to_task", status, "u-1", i + 2, i + 2);
+      const res = await auth(request(app).post(`/api/jobs/${id}/abort`));
+      expect(res.status, status).toBe(409);
+      expect(db.prepare("SELECT status FROM orch_jobs WHERE id=?").get(id).status).toBe(status);
+    }
+  });
 });

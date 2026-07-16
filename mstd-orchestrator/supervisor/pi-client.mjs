@@ -76,41 +76,96 @@ export function startPi({ provider, model, extensions = [], capabilityProfile = 
 
   const send = (obj) => child.stdin.write(JSON.stringify(obj) + "\n");
   const on = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  const pending = new Set();
+  let terminalError = null;
+  let closePromise = null;
+
+  function terminatePending(error) {
+    if (!terminalError) terminalError = error instanceof Error ? error : new Error(String(error));
+    for (const operation of [...pending]) operation.reject(terminalError);
+  }
+  child.on("error", (error) => terminatePending(new Error(`pi process error: ${error?.message ?? error}`)));
+  child.on("exit", (code, signal) => terminatePending(new Error(`pi process exited code=${code ?? "null"} signal=${signal ?? "null"}`)));
+  child.on("close", (code, signal) => terminatePending(new Error(`pi process closed code=${code ?? "null"} signal=${signal ?? "null"}`)));
+  child.stdin?.on?.("error", (error) => terminatePending(new Error(`pi stdin error: ${error?.message ?? error}`)));
+
+  function beginOperation({ timeoutMs, timeoutMessage, subscribe }) {
+    if (terminalError) return Promise.reject(terminalError);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let unsubscribe = () => {};
+      const operation = {
+        reject: (error) => finish(reject, error),
+      };
+      const timer = setTimeout(() => finish(reject, new Error(timeoutMessage)), timeoutMs);
+      function cleanup() {
+        clearTimeout(timer);
+        unsubscribe();
+        pending.delete(operation);
+      }
+      function finish(fn, value) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn(value);
+      }
+      pending.add(operation);
+      const subscribed = subscribe((value) => finish(resolve, value), (error) => finish(reject, error));
+      if (settled) subscribed();
+      else unsubscribe = subscribed;
+      if (terminalError) operation.reject(terminalError);
+    });
+  }
 
   // 不变量（调用方契约）：runJob/prompt 超时只 reject、不 kill 子进程——进程仍可被 steer 或复用；
   // 调用方 catch 后必须 close() 收尸（brain turn-fallback / orchestrator / background-executor 均如此），
   // 否则每次超时泄漏一个完整 headless pi 子进程。
   function runJob(message, { id = "job", images, onEvent = () => {}, timeoutMs = 240000 } = {}) {
-    return new Promise((resolve, reject) => {
-      const proc = makeStreamProcessor({ onEvent, onDone: ({ finalText }) => { cleanup(); resolve({ finalText }); } });
+    return beginOperation({
+      timeoutMs,
+      timeoutMessage: "pi runJob timeout",
+      subscribe: (resolve, reject) => {
+      const proc = makeStreamProcessor({ onEvent, onDone: ({ finalText }) => resolve({ finalText }) });
       const offEvt = on((msg) => proc.pushLine(JSON.stringify(msg)));   // 复用 processor：把已解析事件回灌
       const offErr = (() => { stderrListeners.add(proc.pushStderr); return () => stderrListeners.delete(proc.pushStderr); })();
-      const timer = setTimeout(() => { cleanup(); reject(new Error("pi runJob timeout")); }, timeoutMs);
-      function cleanup() { clearTimeout(timer); offEvt(); offErr(); }
-      send(images ? { id, type: "prompt", message, images } : { id, type: "prompt", message });
+      try { send(images ? { id, type: "prompt", message, images } : { id, type: "prompt", message }); }
+      catch (error) { reject(error); }
+      return () => { offEvt(); offErr(); };
+      },
     });
   }
 
   function prompt(message, { images, timeoutMs = 240000 } = {}) {
-    return new Promise((resolve, reject) => {
+    return beginOperation({
+      timeoutMs,
+      timeoutMessage: "pi prompt timeout",
+      subscribe: (resolve, reject) => {
       let lastAssistant = "";
-      const timer = setTimeout(() => { off(); reject(new Error("pi prompt timeout")); }, timeoutMs);
       const off = on((msg) => {
         if ((msg.type === "message_end" || msg.type === "message") && msg.message?.role === "assistant" && Array.isArray(msg.message.content)) {
           const txt = msg.message.content.filter((b) => b.type === "text").map((b) => b.text).join(""); if (txt) lastAssistant = txt;
         }
-        if (isTerminalEvent(msg)) { clearTimeout(timer); off(); resolve(lastAssistant); }
+        if (isTerminalEvent(msg)) resolve(lastAssistant);
       });
-      send(images ? { type: "prompt", message, images } : { type: "prompt", message });
+      try { send(images ? { type: "prompt", message, images } : { type: "prompt", message }); }
+      catch (error) { reject(error); }
+      return off;
+      },
     });
   }
 
   function close() {
-    return new Promise((res) => {
-      child.on("close", () => res());
+    if (closePromise) return closePromise;
+    if (terminalError) return Promise.resolve();
+    closePromise = new Promise((res) => {
+      let settled = false;
+      let timer = null;
+      const finish = () => { if (!settled) { settled = true; clearTimeout(timer); res(); } };
+      child.once("close", finish);
       try { child.stdin.end(); } catch { /* ignore */ }
-      setTimeout(() => { try { child.kill(); } catch { /* ignore */ } res(); }, 3000);
+      timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish(); }, 3000);
     });
+    return closePromise;
   }
 
   return { child, send, on, runJob, prompt, close, seenTypes };
