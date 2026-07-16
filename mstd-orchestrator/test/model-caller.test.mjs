@@ -289,3 +289,50 @@ describe("model caller", () => {
     ]));
   });
 });
+
+describe("per-model 纪律块注入(prompt-variants)", () => {
+  const sysOf = (body) => body.messages.find((m) => m.role === "system")?.content ?? null;
+
+  it("无 promptVariant → system 逐字节不变(dispatcher/其他链天然豁免)", async () => {
+    let body;
+    const fetchFn = vi.fn(async (_url, opts) => { body = JSON.parse(opts.body); return okResponse("ok", "m"); });
+    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {} });
+    await caller.call("dispatcher", { system: "DISPATCH_SYS", messages: [{ role: "user", content: "x" }] });
+    expect(sysOf(body)).toBe("DISPATCH_SYS");
+  });
+
+  it("answer 变体 style 关 → 首答 system no-op(不破前缀缓存)", async () => {
+    let body;
+    const fetchFn = vi.fn(async (_url, opts) => { body = JSON.parse(opts.body); return okResponse("ok", "m"); });
+    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {} });
+    await caller.call("responder", { system: "ANSWER_SYS", messages: [{ role: "user", content: "x" }], promptVariant: "answer" });
+    expect(sysOf(body)).toBe("ANSWER_SYS");
+  });
+
+  it("answer 变体 style 开 → 前置语体块,角色词仍在末尾", async () => {
+    let body;
+    const fetchFn = vi.fn(async (_url, opts) => { body = JSON.parse(opts.body); return okResponse("ok", "m"); });
+    const caller = createModelCaller({ fetchFn, env: { ...ENV, MSTD_ENABLE_STYLE_BLOCK: "1" }, sleepFn: async () => {} });
+    await caller.call("responder", { system: "ANSWER_SYS", messages: [{ role: "user", content: "x" }], promptVariant: "answer" });
+    const s = sysOf(body);
+    expect(s).toContain("# 表达纪律");
+    expect(s.endsWith("ANSWER_SYS")).toBe(true);
+  });
+
+  it("handoff anti-hedge 常开;跨 fallback 每个模型都在模型循环内重新注入", async () => {
+    let n = 0;
+    const bodies = [];
+    const fetchFn = vi.fn(async (_url, opts) => {
+      bodies.push(JSON.parse(opts.body));
+      n += 1;
+      return n <= 5 ? errResponse : okResponse("ok", "gpt-5.6-sol");
+    });
+    const caller = createModelCaller({ fetchFn, env: ENV, sleepFn: async () => {}, log: () => {} });
+    await caller.call("responder", { system: "HANDOFF_SYS", messages: [{ role: "user", content: "x" }], promptVariant: "handoff" });
+    // responder 链 = [v4-pro, gpt-5.6-sol];bodies[0]=v4-pro 首次尝试, bodies[5]=gpt-5.6-sol 降级尝试
+    expect(sysOf(bodies[0])).toContain("照实表达");
+    expect(sysOf(bodies[0])).toContain("HANDOFF_SYS");
+    expect(sysOf(bodies[5])).toContain("照实表达"); // 降级换模型后仍注入(块按当前模型在模型循环内重算)
+    expect(sysOf(bodies[5])).toContain("HANDOFF_SYS");
+  });
+});

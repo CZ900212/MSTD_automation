@@ -142,6 +142,7 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
       out = await caller.call("responder", {
         system: ANSWER_SYSTEM(soulText),
         messages: [{ role: "user", content: prompt }],
+        promptVariant: "answer",
       });
       verdict = parseResponderOutput(out.text);
     } catch {
@@ -210,6 +211,7 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
         ? PROGRESS_HANDOFF_SYSTEM({ soul: soulText, deliverKind })
         : HANDOFF_SYSTEM({ soul: soulText, kind, deliverKind }),
       messages: [{ role: "user", content: user }],
+      promptVariant: "handoff",
     });
 
     const assessed = stageAwareProgress

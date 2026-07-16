@@ -79,3 +79,41 @@ describe("C1 persona 系统提示词纯函数", () => {
     expect(() => buildPersonaPrompt({ ...args, soul })).toThrow(/SOUL/);
   });
 });
+
+describe("按模型族追加推理机作答纪律块", () => {
+  const base = { soul: "SOUL_X", dateStr: "2026年7月10日" };
+  it("family=gpt 追加 GPT 推理块;SOUL 仍在最前", () => {
+    const p = buildPersonaPrompt({ ...base, family: "gpt" });
+    expect(p.startsWith("SOUL_X")).toBe(true);
+    expect(p).toContain("# 作答纪律");
+    expect(p).toContain("增强推理反而更容易"); // GPT 专属:高 effort 不等于可断言
+  });
+  it("family=deepseek 追加 DeepSeek 推理块,不含 GPT 专属句", () => {
+    const p = buildPersonaPrompt({ ...base, family: "deepseek" });
+    expect(p).toContain("以工具真实回执为准");
+    expect(p).not.toContain("增强推理反而更容易");
+  });
+  it("未知/缺省 family → 都落 default 块", () => {
+    const d1 = buildPersonaPrompt({ ...base }); // 缺省
+    const d2 = buildPersonaPrompt({ ...base, family: "zzz" }); // 未知
+    expect(d1).toContain("# 作答纪律");
+    expect(d1).toBe(d2);
+  });
+  it("原型链成员 family(constructor/__proto__)也落 default,不把非字符串插进提示词", () => {
+    const d = buildPersonaPrompt({ ...base });
+    expect(buildPersonaPrompt({ ...base, family: "constructor" })).toBe(d);
+    expect(buildPersonaPrompt({ ...base, family: "__proto__" })).toBe(d);
+    expect(d).not.toContain("function Object");
+  });
+  it("三态+立即调用公共纪律三族一致(单一来源不漂移)", () => {
+    for (const family of ["gpt", "deepseek", "default"]) {
+      const p = buildPersonaPrompt({ ...base, family });
+      expect(p, family).toContain("需要调用工具就立即调用");
+      expect(p, family).toContain("调用已发出、返回成功、状态已验证是三件事");
+    }
+  });
+  it("作答纪律块在人格三层之后(末段),不破坏三层顺序", () => {
+    const p = buildPersonaPrompt({ soul: "S", dateStr: "2026年7月10日", family: "gpt" });
+    expect(p.indexOf("# 怎么干活")).toBeLessThan(p.indexOf("# 作答纪律"));
+  });
+});

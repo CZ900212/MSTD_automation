@@ -1,3 +1,5 @@
+import { pickVariantBlock, withFamilyBlockPrefix, familyForModelId } from "./prompt-variants.mjs";
+
 const CZ_BASE = "https://api.cz900212.com/v1";
 const DEEPSEEK_BASE = "https://api.deepseek.com";
 
@@ -76,6 +78,7 @@ export function createModelCaller({
   onEvent = null,
 } = {}) {
   const registry = modelRegistry(env);
+  const familyOf = (modelKey) => familyForModelId(registry[modelKey]?.model);
   if (!Number.isSafeInteger(attemptTimeoutMs) || attemptTimeoutMs < 1) {
     throw new Error("model attemptTimeoutMs 必须是正整数");
   }
@@ -116,7 +119,7 @@ export function createModelCaller({
     }
   }
 
-  async function call(chain, { system, messages, thinking }) {
+  async function call(chain, { system, messages, thinking, promptVariant = null }) {
     const keys = CHAINS[chain];
     if (!keys) throw new Error(`未知模型链: ${chain}`);
     const wantThinking = NON_THINKING_CHAINS.has(chain) ? false : (thinking ?? true);
@@ -124,10 +127,14 @@ export function createModelCaller({
     const errors = [];
     for (let i = 0; i < keys.length; i++) {
       const modelKey = keys[i];
+      // 按调用点变体 + 当前模型族前置纪律块;无 promptVariant 时零改动(dispatcher 等天然豁免)。
+      const perModelSystem = promptVariant
+        ? withFamilyBlockPrefix(system, pickVariantBlock(promptVariant, familyOf(modelKey), env))
+        : system;
       let lastErr = null;
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
-          return await callOne(modelKey, { system, messages, thinking: wantThinking });
+          return await callOne(modelKey, { system: perModelSystem, messages, thinking: wantThinking });
         } catch (e) {
           lastErr = e;
           emit({ type: "model_retry", chain, model: modelKey, attempt, error: e.message });

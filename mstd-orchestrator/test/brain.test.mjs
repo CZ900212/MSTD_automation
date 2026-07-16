@@ -56,6 +56,7 @@ describe("brain（GPT-5.6 Sol Pi 会话进程管理）", () => {
     expect(startPi.mock.calls[0][0].env).toMatchObject({
       MSTD_SESSION_KEY: "feishu:p2p:ou_x",
       MSTD_CHAT_ID: "oc_p2p_chat",
+      MSTD_PI_MODEL_FAMILY: "gpt", // 首 provider gpt-5.6-sol → 族 gpt;persona 据此追加推理机纪律块
     });
     // chat_id 为空（跨目标投递先建的会话）→ 不注入，门禁侧 fail-closed
     await brain.turn({ session, sessionKey: "feishu:p2p:ou_y", brief: "问" });

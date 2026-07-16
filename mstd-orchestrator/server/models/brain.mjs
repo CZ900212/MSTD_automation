@@ -6,6 +6,7 @@ import { formatHistoryLine } from "../sessions/history-format.mjs";
 import { createContextBudget } from "../safety/context-budget.mjs";
 import { createContextEnvelope, resolveTurnContext } from "../safety/context-envelope.mjs";
 import { TRUST } from "../safety/trust-boundary.mjs";
+import { familyForModelId } from "./prompt-variants.mjs";
 
 export const REASON_PROVIDERS = [
   // 2026-07-15 定案：主脑使用 gpt-5.6-sol high；DeepSeek V4 Pro xhigh 仅作兜底。
@@ -186,6 +187,9 @@ export function createBrain({
             cwd: piCwd,
             env: {
               ...piEnv,
+              // 按当前 provider 的模型族注入,persona 扩展据此追加推理机作答纪律块;
+              // spawn 与 turn 两种 fallback 都重走此处,天然带新 family。
+              MSTD_PI_MODEL_FAMILY: familyForModelId(p.model),
               MSTD_SESSION_KEY: sessionKey,
               ...(taskId ? { MSTD_TASK_ID: taskId } : {}),
               ...(issuedResidentKey ? { MSTD_RESIDENT_KEY: issuedResidentKey } : {}),

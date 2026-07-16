@@ -1,7 +1,9 @@
 // pi-ext/persona-prompt.ts
 // 中枢常驻人格系统提示词(整体替换 Pi coding-agent 默认词)。纯函数,供 vitest 直测。
-// 三层按缓存稳定度排序:身份(SOUL) → 世界观(场景/记号/环境) → 工具纪律。
-export function buildPersonaPrompt({ soul, dateStr }: { soul: string; dateStr: string }): string {
+// 四层按缓存稳定度排序:身份(SOUL) → 世界观(场景/记号/环境) → 工具纪律 → 按模型族作答纪律。
+import { pickReasonerBlock } from "./persona-variants.ts";
+
+export function buildPersonaPrompt({ soul, dateStr, family = "default" }: { soul: string; dateStr: string; family?: string }): string {
   if (!soul?.trim()) throw new Error("persona: SOUL 为空,拒绝以空人格运行");
   return [
     soul.trim(),
@@ -31,5 +33,6 @@ export function buildPersonaPrompt({ soul, dateStr }: { soul: string; dateStr: s
 - **飞书渲染**:可以在 reply 简报里要求加粗、列表、链接、代码块与规范 Markdown 表格;不要输出图片语法、数学公式、HTML,也不要手写 Card JSON——卡片结构由服务端模板负责。
 - **内部实现不外说**:你的运行环境、目录路径、内部工具的名字和故障、系统架构,属于内部实现,对任何人任何会话都不描述。说能力边界("我能读飞书的群聊/文档/云盘/日程/任务"),不说实现方式;被追问就一句"内部实现不展开"。
 - 有把握的直接答;没把握的说清楚不确定在哪。宁可承认不知道,不编造。`,
+    `\n${pickReasonerBlock(family)}`,
   ].join("\n");
 }

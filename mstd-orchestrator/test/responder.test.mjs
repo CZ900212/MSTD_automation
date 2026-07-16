@@ -277,3 +277,18 @@ describe("responder prompt shape", () => {
     expect(sys).toMatch(/后续处理.*结论/s);
   });
 });
+
+describe("responder 调用点声明 promptVariant(接线)", () => {
+  it("answerTurn → promptVariant:answer", async () => {
+    const caller = mockCaller('{"action":"reply","text":"在"}');
+    const responder = createResponder({ caller, soul: SOUL });
+    await responder.answerTurn({ items: [{ content: "在吗" }], mode: "p2p" });
+    expect(caller.call.mock.calls[0][1].promptVariant).toBe("answer");
+  });
+  it("renderHandoff → promptVariant:handoff", async () => {
+    const caller = mockCaller("文案");
+    const responder = createResponder({ caller, soul: SOUL });
+    await responder.renderHandoff({ brief: "x", kind: "message", deliverKind: "p2p" });
+    expect(caller.call.mock.calls[0][1].promptVariant).toBe("handoff");
+  });
+});
