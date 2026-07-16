@@ -334,6 +334,7 @@ if (config.enableAgent && config.botOpenId) {
     store: agentStore,
     snapshotFn: ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey }),
     activeBrainTurns,
+    activeTurnInitiators,
     replyEgress,
     responder,
     deliverTerminal: replyPipeline.deliverTerminal,

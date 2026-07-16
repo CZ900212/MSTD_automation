@@ -91,4 +91,16 @@ describe("active turn initiator registry", () => {
       turnId: "turn-b", residentEpoch: 8,
     })).toBe("ou_b");
   });
+
+  it("revokes an initiator only through the exact live task/run identity", () => {
+    const registry = createActiveTurnRegistry();
+    const turnId = "turn-a";
+    const brainLease = registry.brainTurns.activate({ sessionKey: "chat", taskId: "task-a", runId: "run-a", turnId, purpose: "business" });
+    registry.brainTurns.bindResident("chat", brainLease, 7, { taskId: "task-a", runId: "run-a" });
+    registry.initiators.activate({ sessionKey: "chat", taskId: "task-a", runId: "run-a", initiatorOpenId: "ou_a", turnId, residentEpoch: 7 });
+    expect(registry.initiators.revokeAuthorized({ sessionKey: "chat", taskId: "task-a", runId: "wrong" })).toBe(false);
+    expect(registry.initiators.resolve("chat", { taskId: "task-a", runId: "run-a", turnId, residentEpoch: 7 })).toBe("ou_a");
+    expect(registry.initiators.revokeAuthorized({ sessionKey: "chat", taskId: "task-a", runId: "run-a" })).toBe(true);
+    expect(registry.initiators.resolve("chat", { taskId: "task-a", runId: "run-a", turnId, residentEpoch: 7 })).toBeNull();
+  });
 });

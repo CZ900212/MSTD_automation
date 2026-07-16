@@ -61,8 +61,7 @@ export function createTurnHandler({
   }
 
   function appendItems(sessionId, items, { observed = false } = {}) {
-    for (const it of items) {
-      store.append(sessionId, {
+    return items.map((it) => store.append(sessionId, {
         role: "user",
         senderOpenId: it.senderOpenId ?? null,
         senderName: it.senderName ?? null,
@@ -70,8 +69,7 @@ export function createTurnHandler({
         observed,
         platformMessageId: it.platformMessageId ?? null,
         ts: it.ts,
-      });
-    }
+      }));
   }
 
   function renderContext(items) {
@@ -178,9 +176,8 @@ export function createTurnHandler({
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
     const recentConversation = recentConversationBeforeTurn(session.id);
     // Append first so source message ids exist for dispatch batch identity.
-    appendItems(session.id, items, { observed: mode === "ambient" });
-    const sourceRows = store.promptRecent(session.id, { limit: items.length, roles: ["user"] });
-    const sourceMessageIds = sourceRows.slice(-items.length).map((r) => r.id);
+    const sourceRows = appendItems(session.id, items, { observed: mode === "ambient" });
+    const sourceMessageIds = sourceRows.map((row) => row.id);
 
     const answer = await responder.answerTurn({
       sessionKey,

@@ -116,6 +116,44 @@ describe("reasoning coordinator", () => {
     expect(runStore.getRun(out.runId)).toMatchObject({ task_id: task.id, closure_mode: "required" });
   });
 
+  it("revokes the active run initiator before steering a second sender", async () => {
+    const first = sessions.append(session.id, { role: "user", senderOpenId: "ou_a", content: "建日程", ts: 1 });
+    const origin = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [first.id], responderAction: "no_reply" });
+    const task = taskStore.createTask({ sessionId: session.id, title: "建日程" });
+    let run = runStore.createRun({ taskId: task.id, originDispatchId: origin.id, originKind: "dispatcher", originId: origin.id, closureMode: "required", brief: "建日程" });
+    run = runStore.startRun(run.id, { turnId: "turn-open", residentKey: `task:${task.id}` });
+    const second = sessions.append(session.id, { role: "user", senderOpenId: "ou_b", content: "再加参会人", ts: 2 });
+    const attached = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [second.id], responderAction: "no_reply" });
+    brain.isBusy = vi.fn(() => true);
+    const revokeAuthorized = vi.fn(() => true);
+    const c = makeCoordinator({ activeTurnInitiators: { revokeAuthorized } });
+    await c.applyDecision({
+      session, sessionKey: session.session_key, dispatchId: attached.id, sourceMessageIds: [second.id],
+      decision: { action: "attach_existing", task_id: task.id, brief: "B 的补充", closure: "required" },
+    });
+    expect(revokeAuthorized).toHaveBeenCalledWith({ sessionKey: session.session_key, taskId: task.id, runId: run.id });
+    expect(revokeAuthorized.mock.invocationCallOrder[0]).toBeLessThan(brain.steer.mock.invocationCallOrder[0]);
+  });
+
+  it("keeps the active run authorization when an attached dispatch has the same sender", async () => {
+    const first = sessions.append(session.id, { role: "user", senderOpenId: "ou_a", content: "建日程", ts: 1 });
+    const origin = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [first.id], responderAction: "no_reply" });
+    const task = taskStore.createTask({ sessionId: session.id, title: "建日程" });
+    let run = runStore.createRun({ taskId: task.id, originDispatchId: origin.id, originKind: "dispatcher", originId: origin.id, closureMode: "required", brief: "建日程" });
+    run = runStore.startRun(run.id, { turnId: "turn-open", residentKey: `task:${task.id}` });
+    const second = sessions.append(session.id, { role: "user", senderOpenId: "ou_a", content: "时间改一下", ts: 2 });
+    const attached = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [second.id], responderAction: "no_reply" });
+    brain.isBusy = vi.fn(() => true);
+    const revokeAuthorized = vi.fn();
+    const c = makeCoordinator({ activeTurnInitiators: { revokeAuthorized } });
+    await c.applyDecision({
+      session, sessionKey: session.session_key, dispatchId: attached.id, sourceMessageIds: [second.id],
+      decision: { action: "attach_existing", task_id: task.id, brief: "A 的补充", closure: "required" },
+    });
+    expect(revokeAuthorized).not.toHaveBeenCalled();
+    expect(brain.steer).toHaveBeenCalled();
+  });
+
   it("idle existing task starts a new run without creating another task", async () => {
     const task = taskStore.createTask({ sessionId: session.id, title: "改会议" });
     brain.isBusy = vi.fn(() => false);
@@ -139,6 +177,66 @@ describe("reasoning coordinator", () => {
     await vi.waitFor(() => expect(runStore.getRun(out.runId).status).toBe("completed"));
     expect(taskStore.getTask(task.id).status).toBe("active");
     expect(db.prepare("SELECT COUNT(*) AS n FROM reasoning_tasks WHERE session_id = ?").get(session.id).n).toBe(before);
+  });
+
+  it("spawn_new passes the single source sender as write initiator to brain.turn", async () => {
+    const c = makeCoordinator();
+    const m = sessions.append(session.id, { role: "user", senderOpenId: "ou_sender1", content: "建个日程", ts: 1 });
+    const dispatch = taskStore.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [m.id],
+      responderAction: "no_reply",
+    });
+    await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: { action: "spawn_new", title: "建日程", brief: "建日程", closure: "required", reason_code: "needs_tools" },
+      sourceMessageIds: [m.id],
+      dispatchId: dispatch.id,
+    });
+    await vi.waitFor(() => expect(brain.turn).toHaveBeenCalledTimes(1));
+    expect(brain.turn.mock.calls[0][0]).toMatchObject({ initiatorOpenId: "ou_sender1" });
+  });
+
+  it("idle attach_existing resolves write initiator from the run's origin dispatch", async () => {
+    // 真机事故路径：确认消息 attach 到空闲任务 → 新 run → propose_actions 因缺 initiator 被 403。
+    const task = taskStore.createTask({ sessionId: session.id, title: "建日程" });
+    const m = sessions.append(session.id, { role: "user", senderOpenId: "ou_sender1", content: "确认，就按这个建吧", ts: 2 });
+    const dispatch = taskStore.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [m.id],
+      responderAction: "no_reply",
+    });
+    const c = makeCoordinator({ deliverTerminal: vi.fn(async () => ({ messageId: "om_confirm" })) });
+    await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: { action: "attach_existing", task_id: task.id, brief: "确认建日程", closure: "required", reason_code: "user_confirm" },
+      sourceMessageIds: [m.id],
+      dispatchId: dispatch.id,
+    });
+    await vi.waitFor(() => expect(brain.turn).toHaveBeenCalledTimes(1));
+    expect(brain.turn.mock.calls[0][0]).toMatchObject({ initiatorOpenId: "ou_sender1" });
+  });
+
+  it("multi-sender source batch fails closed to null initiator", async () => {
+    const c = makeCoordinator();
+    const m1 = sessions.append(session.id, { role: "user", senderOpenId: "ou_sender1", content: "建日程", ts: 1 });
+    const m2 = sessions.append(session.id, { role: "user", senderOpenId: "ou_sender2", content: "对，建吧", ts: 2 });
+    const dispatch = taskStore.createDispatch({
+      sessionId: session.id,
+      sourceMessageIds: [m1.id, m2.id],
+      responderAction: "no_reply",
+    });
+    await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: { action: "spawn_new", title: "建日程", brief: "建日程", closure: "required", reason_code: "needs_tools" },
+      sourceMessageIds: [m1.id, m2.id],
+      dispatchId: dispatch.id,
+    });
+    await vi.waitFor(() => expect(brain.turn).toHaveBeenCalledTimes(1));
+    expect(brain.turn.mock.calls[0][0].initiatorOpenId).toBeNull();
   });
 
   it("two unrelated tasks can run concurrently in one session", async () => {

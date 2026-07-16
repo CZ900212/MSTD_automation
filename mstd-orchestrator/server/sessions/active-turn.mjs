@@ -625,6 +625,22 @@ export function createActiveTurnRegistry({
       return initiators.resolve(sessionKey, { ...opts, turnId, residentEpoch });
     },
 
+    // 服务端身份收敛边界：同一 run 一旦混入第二个发送者，coordinator 必须在 steer
+    // 之前同步撤销写授权。这里按完整 execution identity 精确撤销，不接受模型提供的 lease。
+    revokeAuthorized({ sessionKey, taskId = null, runId = null, executionKey = null } = {}) {
+      if (!sessionKey || (!taskId && !runId && !executionKey)) return false;
+      const rec = resolveRec(sessionKey, null, { taskId, runId, executionKey });
+      const b = brainLive(rec);
+      const i = initiatorLive(rec);
+      if (!b || b.state !== "active" || !i) return false;
+      if (taskId != null && rec.taskId !== taskId) return false;
+      if (runId != null && rec.runId !== runId) return false;
+      if (executionKey != null && rec.executionKey !== executionKey) return false;
+      rec.initiator = null;
+      prune(rec);
+      return true;
+    },
+
     clear(sessionKey, lease, { taskId = null, runId = null, executionKey = null } = {}) {
       const identitySpecified = taskId != null || runId != null || executionKey != null;
       const rec = identitySpecified

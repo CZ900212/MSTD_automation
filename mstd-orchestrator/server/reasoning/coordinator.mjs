@@ -1,5 +1,6 @@
 // Post-response coordinator: claim pending_review dispatches, call dispatcher, spawn/attach tasks.
 import { createDispatcher } from "../models/dispatcher.mjs";
+import { isValidOpenId } from "../safety/action-dsl.mjs";
 
 const REQUIRED_CLOSURE_FALLBACK = "这次处理没能生成可安全发送的正式答复，请稍后重试。";
 const REQUIRED_FAILURE_BRIEF = "这次处理未能完成，请告知用户稍后重试。";
@@ -14,6 +15,7 @@ const REQUIRED_FAILURE_BRIEF = "这次处理未能完成，请告知用户稍后
  *   store?: { promptRecent?: Function },
  *   snapshotFn?: Function|null,
  *   activeBrainTurns?: object|null,
+ *   activeTurnInitiators?: object|null,
  *   replyEgress?: object|null,
  *   responder?: { renderHandoff: Function }|null,
  *   deliverTerminal?: Function|null,
@@ -34,6 +36,7 @@ export function createReasoningCoordinator({
   store = null,
   snapshotFn = null,
   activeBrainTurns = null,
+  activeTurnInitiators = null,
   replyEgress = null,
   responder = null,
   deliverTerminal = null,
@@ -290,6 +293,26 @@ export function createReasoningCoordinator({
     };
   }
 
+  // 写权限发起人：run 生效 dispatch 的 source 消息若来自唯一真实用户，则授其本回合写权限
+  // （propose_actions 靠它绑定确认卡收件人）。多人批次/缺失/校验失败一律 null——
+  // fail-closed，与 gateway wire 的单一发送者规则同语义。
+  function resolveRunWriteInitiator(runId) {
+    if (!runId) return null;
+    try {
+      const linked = runStore.listDispatches(runId);
+      const items = linked.flatMap((link) => taskStore.dispatchSourceItems(link.dispatch_id));
+      if (!items.length) return null;
+      const senders = new Set();
+      for (const item of items) {
+        if (!isValidOpenId(item.senderOpenId)) return null;
+        senders.add(item.senderOpenId);
+      }
+      return senders.size === 1 ? [...senders][0] : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function runJob({
     session,
     sessionKey,
@@ -327,6 +350,7 @@ export function createReasoningCoordinator({
         runId: run.id,
         dispatchId: effectiveDispatchId,
         turnId,
+        initiatorOpenId: resolveRunWriteInitiator(run.id),
         brief: effectiveBrief,
         contextEnvelopes: effectiveEnvelopes,
         contextSource: effectiveEnvelopes[0]?.source ?? "user",
@@ -595,6 +619,9 @@ export function createReasoningCoordinator({
         const updatedRun = runStore.upgradeClosure(openRun.id, decision.closure ?? "silent_ok");
         emit({ type: "task_attached", sessionKey, taskId: task.id, runId: updatedRun.id, dispatchId });
         if (updatedRun.status === "running" && brain.isBusy({ sessionKey, taskId: task.id })) {
+          if (!resolveRunWriteInitiator(updatedRun.id)) {
+            activeTurnInitiators?.revokeAuthorized?.({ sessionKey, taskId: task.id, runId: updatedRun.id });
+          }
           brain.steer(sessionKey, decision.brief, { taskId: task.id, runId: updatedRun.id });
           return { action: "attach_existing", taskId: task.id, runId: updatedRun.id, steered: true };
         }

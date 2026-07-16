@@ -255,4 +255,38 @@ describe("turn-handler active architecture", () => {
     }));
     expect(responder.answerTurn.mock.calls[0][0].recentConversation).not.toContain("对，改成周五");
   });
+
+  it("binds a delayed message to the id returned by append instead of an older high-ts row", async () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const taskStore = createReasoningTaskStore(db);
+    const sessionKey = "feishu:group:oc_delay";
+    const session = store.getOrCreate(sessionKey, { kind: "group", chatId: "oc_delay" });
+    const old = store.append(session.id, { role: "user", senderOpenId: "ou_old", content: "later timestamp", ts: 200 });
+    const handler = createTurnHandler({
+      architectureMode: "active",
+      triage: { triage: vi.fn() },
+      brain: { turn: vi.fn(), isBusy: () => false, steer: vi.fn(), recycle: vi.fn() },
+      responder: { answerTurn: vi.fn(async () => ({ action: "no_reply" })) },
+      taskStore,
+      coordinator: { schedule: vi.fn() },
+      store,
+      budget: { allow: () => ({ ok: true }), record: vi.fn() },
+      replyPipeline: {
+        deliverText: vi.fn(), deliverTerminal: vi.fn(), handleReply: vi.fn(),
+        renderAutomationReply: vi.fn(), deliverTrusted: vi.fn(),
+      },
+    });
+    const out = await handler.handleTurn({
+      kind: "message", session, sessionKey, mode: "ambient",
+      items: [{ content: "delayed", senderOpenId: "ou_delayed", ts: 100 }],
+    });
+    const dispatch = taskStore.getDispatch(out.dispatchId);
+    const [sourceId] = JSON.parse(dispatch.source_message_ids_json);
+    const source = db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(sourceId);
+    expect(source.id).not.toBe(old.id);
+    expect(source.sender_open_id).toBe("ou_delayed");
+    expect(source.content).toBe("delayed");
+  });
 });
