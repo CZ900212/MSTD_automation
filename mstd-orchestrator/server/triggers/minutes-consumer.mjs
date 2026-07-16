@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { recordTriggerEvent, bindTriggerJob } from "./ingest.mjs";
+import { normalizeMinuteToken } from "../safety/minute-token.mjs";
 
 export const MINUTES_EVENT_KEY = "minutes.minute.generated_v1";
 
@@ -31,7 +32,9 @@ export function startMinutesConsumer({
       log(`[trigger] 无法解析事件行: ${s.slice(0, 200)}`);
       return;
     }
-    const minuteToken = evt.minute_token;
+    let minuteToken;
+    try { minuteToken = normalizeMinuteToken(evt.minute_token); }
+    catch { return; }
     const eventId = evt.event_id;
     if (!minuteToken || !eventId) return;
     const { fresh } = recordTriggerEvent(db, {
@@ -48,6 +51,7 @@ export function startMinutesConsumer({
         // owner_id（事件若带）透传为确认人；缺席时由 onActionsReady 侧反查/兜底
         params: { minute_token: minuteToken, ...(evt.owner_id ? { host_open_id: evt.owner_id } : {}) },
         title: `[自动] ${evt.title ?? minuteToken}`,
+        readPrincipal: { source: "minutes_event", privateDataAuthorized: true },
       });
       bindTriggerJob(db, eventId, job.id);
       log(`[trigger] 妙记 ${minuteToken} → job ${job.id}`);

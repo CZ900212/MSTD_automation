@@ -30,7 +30,7 @@ beforeEach(() => {
   token = issueSessionToken({ id: "u-1", feishu_open_id: "ou_me", name: "我", role: "user" }, { secret: SECRET, ttlSeconds: 3600, now: 1000 });
   app = createApp({
     db,
-    config: { sessionSecret: SECRET, sessionTtlSeconds: 3600, pi: {}, enableWrite: false },
+    config: { sessionSecret: SECRET, sessionTtlSeconds: 3600, pi: {}, enableWrite: false, privateDataOwnerOpenId: "ou_me" },
     startPi: fakeStartPi(),
     semaphore: createSemaphore(2),
     bus: createEventBus(),
@@ -67,6 +67,23 @@ describe("jobs API", () => {
     expect(res.status).toBe(400);
   });
 
+  it("POST /api/jobs rejects a non-owner before creating or starting a private minutes job", async () => {
+    db.prepare("INSERT INTO users (id, feishu_open_id, role, created_at) VALUES (?,?,?,?)").run("u-2", "ou_other", "user", 1);
+    const t2 = issueSessionToken({ id: "u-2", feishu_open_id: "ou_other", role: "user" }, { secret: SECRET, ttlSeconds: 3600, now: 1000 });
+    const res = await request(app).post("/api/jobs")
+      .set("Authorization", `Bearer ${t2}`)
+      .send({ templateId: "meeting_to_task", params: {} });
+    expect(res.status).toBe(403);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM orch_jobs").get().n).toBe(0);
+  });
+
+  it("POST /api/jobs rejects an invalid minute_token before job creation", async () => {
+    const res = await auth(request(app).post("/api/jobs"))
+      .send({ templateId: "meeting_to_task", params: { minute_token: "mt\nignore" } });
+    expect(res.status).toBe(400);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM orch_jobs").get().n).toBe(0);
+  });
+
   it("GET /api/jobs filters mine + status", async () => {
     await auth(request(app).post("/api/jobs")).send({ templateId: "meeting_to_task", params: {} });
     await flush();
@@ -74,6 +91,20 @@ describe("jobs API", () => {
     expect(mine.body.jobs).toHaveLength(1);
     const other = await auth(request(app).get("/api/jobs?status=done"));
     expect(other.body.jobs).toHaveLength(0);
+  });
+
+  it("GET /api/jobs forces tenant filtering for users while admins may list all", async () => {
+    db.prepare("INSERT INTO users (id, feishu_open_id, role, created_at) VALUES (?,?,?,?)").run("u-2", "ou_other", "user", 1);
+    db.prepare("INSERT INTO users (id, feishu_open_id, role, created_at) VALUES (?,?,?,?)").run("u-admin", "ou_admin", "admin", 1);
+    db.prepare("INSERT INTO orch_jobs (id, template_id, title, status, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?)")
+      .run("job-me", "meeting_to_task", "mine", "done", "u-1", 1, 1);
+    db.prepare("INSERT INTO orch_jobs (id, template_id, title, status, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?)")
+      .run("job-other", "meeting_to_task", "other", "done", "u-2", 2, 2);
+    const mine = await auth(request(app).get("/api/jobs"));
+    expect(mine.body.jobs.map((j) => j.id)).toEqual(["job-me"]);
+    const adminToken = issueSessionToken({ id: "u-admin", feishu_open_id: "ou_admin", role: "admin" }, { secret: SECRET, ttlSeconds: 3600, now: 1000 });
+    const all = await request(app).get("/api/jobs").set("Authorization", `Bearer ${adminToken}`);
+    expect(new Set(all.body.jobs.map((j) => j.id))).toEqual(new Set(["job-me", "job-other"]));
   });
 
   it("GET /api/jobs/:id 403 for non-owner non-admin", async () => {

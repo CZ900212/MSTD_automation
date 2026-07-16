@@ -42,5 +42,6 @@ describe("backfillMinutes", () => {
     const out = await backfillMinutes({ db, launcher, runLark, log: () => {} });
     expect(out.created).toBe(1);
     expect(submitted[0].params.minute_token).toBe("m2");
+    expect(submitted[0].readPrincipal).toEqual({ source: "minutes_backfill", privateDataAuthorized: true });
   });
 });

@@ -22,7 +22,7 @@ export function createJobLauncher({
 }) {
   const queue = [];
 
-  async function launch(jobId) {
+  async function launch({ jobId, readPrincipal = null }) {
     const job = getJobRow(db, jobId);
     try {
       await runReadonlyPhase({
@@ -32,6 +32,7 @@ export function createJobLauncher({
         buffer,
         registry,
         job,
+        readPrincipal,
         extensions,
         capabilityProfile,
         piOptions: { ...(config.pi ?? {}), cwd: piCwd },
@@ -51,7 +52,7 @@ export function createJobLauncher({
     }
   }
 
-  function submit({ templateId, params = {}, createdBy = null, title = null }) {
+  function submit({ templateId, params = {}, createdBy = null, title = null, readPrincipal = null }) {
     if (!TEMPLATES[templateId]) throw new Error(`未知模板: ${templateId}`);
     const canRun = semaphore.tryAcquire();
     const status = canRun ? "running_readonly" : "queued";
@@ -62,8 +63,9 @@ export function createJobLauncher({
       status,
       createdBy,
     }, now());
-    if (canRun) launch(job.id).catch(() => { /* 内部已落 failed */ });
-    else queue.push(job.id);
+    const queuedJob = { jobId: job.id, readPrincipal };
+    if (canRun) launch(queuedJob).catch(() => { /* 内部已落 failed */ });
+    else queue.push(queuedJob);
     return job;
   }
 

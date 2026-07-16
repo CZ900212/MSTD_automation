@@ -4,7 +4,7 @@ import { buildLarkReadArgsScoped, resolveLarkScope, READ_OP_NAMES } from "../ser
 const GROUP = { kind: "group", chatId: "oc_aaa111" };
 const P2P = { kind: "p2p", chatId: "oc_bbb222", openId: "ou_zhang" };
 const P2P_OWNER = { kind: "p2p", chatId: "oc_ccc333", openId: "ou_owner", ownerOpenId: "ou_owner" };
-const JOB = { kind: "job" };
+const JOB = { kind: "job", privateReadAuthorized: true };
 const CRON = { kind: "cron" };
 
 describe("resolveLarkScope（env → 调用域）", () => {
@@ -28,6 +28,11 @@ describe("resolveLarkScope（env → 调用域）", () => {
 
   it("job：无 sessionKey 但有 MSTD_JOB_WORKDIR", () => {
     expect(resolveLarkScope({ MSTD_JOB_WORKDIR: "/tmp/out/j1" })).toMatchObject({ kind: "job" });
+    expect(resolveLarkScope({
+      MSTD_JOB_WORKDIR: "/tmp/out/j1",
+      MSTD_JOB_REQUESTER_OPEN_ID: "ou_owner",
+      MSTD_JOB_PRIVATE_READ_AUTHORIZED: "1",
+    })).toMatchObject({ kind: "job", requesterOpenId: "ou_owner", privateReadAuthorized: true });
   });
 
   it("cron/debug 会话原样传 kind", () => {
@@ -100,6 +105,11 @@ describe("席位私有类：owner 私聊 + 妙记 job 例外", () => {
     expect(buildLarkReadArgsScoped("search_minutes", {}, JOB)[0]).toBe("minutes");
     expect(buildLarkReadArgsScoped("get_transcript", { minute_token: "mt" }, JOB)[0]).toBe("minutes");
     expect(() => buildLarkReadArgsScoped("mail_list", {}, JOB)).toThrow(/席位私有/);
+  });
+
+  it("未由服务端显式授权的 job 域不能读取席位私有妙记", () => {
+    expect(() => buildLarkReadArgsScoped("search_minutes", {}, { kind: "job" })).toThrow(/席位私有/);
+    expect(() => buildLarkReadArgsScoped("get_transcript", { minute_token: "mt" }, { kind: "job" })).toThrow(/席位私有/);
   });
 
   it("未配置 owner 时（ownerOpenId 缺省）任何私聊都拒绝——fail-closed", () => {

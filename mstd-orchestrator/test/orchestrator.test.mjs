@@ -84,6 +84,20 @@ describe("runReadonlyPhase", () => {
     expect(script.options.extensions).toBeUndefined();
   });
 
+  it("injects only the daemon-issued readonly principal into the job Pi", async () => {
+    const job = makeJob();
+    const script = { finalText: goodIntent };
+    await runReadonlyPhase({
+      db, startPi: fakeStartPi(script), bus, buffer, registry, job,
+      readPrincipal: { requesterOpenId: "ou_owner", privateDataAuthorized: true },
+      now: () => 2000,
+    });
+    expect(script.options.env).toMatchObject({
+      MSTD_JOB_REQUESTER_OPEN_ID: "ou_owner",
+      MSTD_JOB_PRIVATE_READ_AUTHORIZED: "1",
+    });
+  });
+
   it("unparseable/invalid intent -> needs_attention with raw_output", async () => {
     const job = makeJob();
     const out = await runReadonlyPhase({

@@ -1,5 +1,6 @@
 import { recordTriggerEvent, bindTriggerJob } from "./ingest.mjs";
 import { MINUTES_EVENT_KEY } from "./minutes-consumer.mjs";
+import { normalizeMinuteToken } from "../safety/minute-token.mjs";
 
 /**
  * 启动时回扫最近妙记；与实时事件共享 dedupe_key `minutes:<token>`。
@@ -31,8 +32,9 @@ export async function backfillMinutes({
   }
   let created = 0;
   for (const it of items.slice(0, limit)) {
-    const token = it.minute_token ?? it.token;
-    if (!token) continue;
+    let token;
+    try { token = normalizeMinuteToken(it.minute_token ?? it.token); }
+    catch { continue; }
     const eventId = `backfill:${token}`;
     const { fresh } = recordTriggerEvent(db, {
       eventKey: MINUTES_EVENT_KEY,
@@ -46,6 +48,7 @@ export async function backfillMinutes({
       templateId: "meeting_to_task",
       params: { minute_token: token },
       title: `[回扫] ${it.title ?? token}`,
+      readPrincipal: { source: "minutes_backfill", privateDataAuthorized: true },
     });
     bindTriggerJob(db, eventId, job.id);
     created += 1;

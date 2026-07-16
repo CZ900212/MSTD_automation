@@ -13,7 +13,7 @@ function emit(bus, buffer, jobId, phase, sse) {
   bus.publish(jobId, seq == null ? sse : { ...sse, seq });
 }
 
-export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job, extensions = [], capabilityProfile = null, piOptions = {}, notificationMode = "none", now = () => Date.now(), onActionsReady = null }) {
+export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job, readPrincipal = null, extensions = [], capabilityProfile = null, piOptions = {}, notificationMode = "none", now = () => Date.now(), onActionsReady = null }) {
   updateJobStatus(db, job.id, "running_readonly", now());
   emit(bus, buffer, job.id, "readonly", { event: "job_status", data: { status: "running_readonly" } });
 
@@ -37,7 +37,11 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
     model: piOptions.model ?? "gpt-5.6-sol",
     thinking: piOptions.thinking ?? "medium",
     cwd: workdir,
-    env: { MSTD_JOB_WORKDIR: workdir },
+    env: {
+      MSTD_JOB_WORKDIR: workdir,
+      MSTD_JOB_REQUESTER_OPEN_ID: readPrincipal?.requesterOpenId ?? "",
+      MSTD_JOB_PRIVATE_READ_AUTHORIZED: readPrincipal?.privateDataAuthorized === true ? "1" : "0",
+    },
     ...(capabilityProfile ? { capabilityProfile } : { extensions }),
   });
   registry.register(job.id, { client, abort: () => { try { client.child?.kill(); } catch { /* 已退出 */ } } });

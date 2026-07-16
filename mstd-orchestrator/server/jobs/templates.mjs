@@ -1,3 +1,5 @@
+import { normalizeMinuteToken } from "../safety/minute-token.mjs";
+
 export const TEMPLATES = {
   meeting_to_task: { id: "meeting_to_task", title: "会议纪要 → 建任务" },
 };
@@ -11,8 +13,9 @@ const INTENT_CONTRACT = [
 
 export function buildPrompt(templateId, params = {}) {
   if (templateId !== "meeting_to_task") throw new Error(`unknown/未知模板: ${templateId}`);
-  const scope = params.minute_token
-    ? `只处理妙记 minute_token=${String(params.minute_token)}。`
+  const minuteToken = normalizeMinuteToken(params.minute_token, { optional: true });
+  const scope = minuteToken
+    ? `只处理妙记 minute_token=${minuteToken}。`
     : "搜索我拥有的最近妙记，选择最相关的一条处理。";
   return [
     "你是会议纪要处理助手。第一阶段【只读】：",

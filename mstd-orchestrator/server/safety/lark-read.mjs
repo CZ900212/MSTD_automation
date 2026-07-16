@@ -5,6 +5,7 @@
 // 迭代三：会话域门禁（buildLarkReadArgsScoped）——聊天内容只许本会话，席位私有只许
 // owner 私聊，后台任务只留妙记链窄集；无会话身份 fail-closed 全拒。
 import { parseSessionKey } from "../sessions/session-key.mjs";
+import { normalizeMinuteToken } from "./minute-token.mjs";
 
 const need = (p, key) => {
   const v = p?.[key];
@@ -38,7 +39,7 @@ const READ_OPS = {
   // ---- 妙记（原有） ----
   search_minutes: () => ["minutes", "+search", "--owner-ids", "me", "--as", "user"],
   get_transcript: (p) => [
-    "minutes", "+detail", "--minute-tokens", need(p, "minute_token"),
+    "minutes", "+detail", "--minute-tokens", normalizeMinuteToken(p?.minute_token),
     "--transcript", "--as", "user", "--output-dir", "./out",
   ],
   search_user: (p) => ["contact", "+search-user", "--query", need(p, "query"), "--as", "user"],
@@ -198,7 +199,14 @@ export function resolveLarkScope(env = {}) {
     }
     return { kind: parsed.kind, ownerOpenId }; // cron / debug
   }
-  if (String(env.MSTD_JOB_WORKDIR ?? "").trim()) return { kind: "job", ownerOpenId };
+  if (String(env.MSTD_JOB_WORKDIR ?? "").trim()) {
+    return {
+      kind: "job",
+      ownerOpenId,
+      requesterOpenId: String(env.MSTD_JOB_REQUESTER_OPEN_ID ?? "").trim() || null,
+      privateReadAuthorized: String(env.MSTD_JOB_PRIVATE_READ_AUTHORIZED ?? "") === "1",
+    };
+  }
   return { kind: "unknown", ownerOpenId };
 }
 
@@ -221,7 +229,9 @@ export function buildLarkReadArgsScoped(op, params = {}, scope = { kind: "unknow
   }
 
   if (SEAT_PRIVATE_OPS.has(op)) {
-    if (kind === "job" && JOB_OPS.has(op)) return buildLarkReadArgs(op, params);
+    if (kind === "job" && JOB_OPS.has(op) && scope.privateReadAuthorized === true) {
+      return buildLarkReadArgs(op, params);
+    }
     const isOwnerP2p = kind === "p2p" && scope.openId && scope.ownerOpenId && scope.openId === scope.ownerOpenId;
     if (!isOwnerP2p) throw new Error(`${op} 属席位私有数据，仅限 owner 私聊使用`);
     return buildLarkReadArgs(op, params);

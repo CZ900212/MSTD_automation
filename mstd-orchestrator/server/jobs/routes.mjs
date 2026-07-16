@@ -3,6 +3,7 @@ import { getJobRow, getJob, listJobs, updateJobStatus } from "../store/jobs.mjs"
 import { TEMPLATES } from "./templates.mjs";
 import { createJobLauncher } from "./launcher.mjs";
 import { streamJobEvents } from "../http/sse.mjs";
+import { normalizeMinuteToken } from "../safety/minute-token.mjs";
 
 function canAccess(user, job) {
   return user.role === "admin" || job.created_by === user.id;
@@ -19,13 +20,36 @@ export function mountJobRoutes(app, ctx) {
   app.post("/api/jobs", requireUser, (req, res) => {
     const { templateId, params = {} } = req.body ?? {};
     if (!TEMPLATES[templateId]) return res.status(400).json({ error: `未知模板: ${templateId}` });
-    const job = launcher.submit({ templateId, params, createdBy: req.user.id });
+    let normalizedParams = params;
+    let readPrincipal = null;
+    if (templateId === "meeting_to_task") {
+      if (!ctx.config?.privateDataOwnerOpenId || req.user.feishu_open_id !== ctx.config.privateDataOwnerOpenId) {
+        return res.status(403).json({ error: "该模板涉及席位私有妙记，仅数据 owner 可启动" });
+      }
+      let minuteToken;
+      try {
+        minuteToken = normalizeMinuteToken(params?.minute_token, { optional: true });
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+      normalizedParams = { ...params };
+      if (minuteToken) normalizedParams.minute_token = minuteToken;
+      else delete normalizedParams.minute_token;
+      readPrincipal = {
+        source: "authenticated_user",
+        requesterOpenId: req.user.feishu_open_id,
+        privateDataAuthorized: true,
+      };
+    }
+    const job = launcher.submit({ templateId, params: normalizedParams, createdBy: req.user.id, readPrincipal });
     res.status(201).json({ jobId: job.id, status: job.status });
   });
 
   app.get("/api/jobs", requireUser, (req, res) => {
     const status = req.query.status ? String(req.query.status) : null;
-    const mine = req.query.mine === "1" ? req.user.id : null;
+    const mine = req.user.role === "admin"
+      ? (req.query.mine === "1" ? req.user.id : null)
+      : req.user.id;
     res.json({ jobs: listJobs(db, { status, mine }) });
   });
 

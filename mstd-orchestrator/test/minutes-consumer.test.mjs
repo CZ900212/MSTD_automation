@@ -47,9 +47,26 @@ describe("minutes consumer", () => {
     expect(submitted[0]).toMatchObject({
       templateId: "meeting_to_task",
       params: { minute_token: "m1" },
+      readPrincipal: { source: "minutes_event", privateDataAuthorized: true },
     });
     const bound = db.prepare("SELECT job_id FROM orch_events WHERE event_id = 'e1'").get();
     expect(bound.job_id).toBe("job1");
+    c.stop();
+  });
+
+  it("非法 minute_token 在记录事件和启动 job 前被拒绝", () => {
+    const db = freshDb();
+    const submitted = [];
+    const c = startMinutesConsumer({
+      db,
+      launcher: { submit: (o) => submitted.push(o) },
+      larkCli: "lark-cli",
+      spawnFn: fakeSpawn,
+      log: () => {},
+    });
+    c.handleLine(JSON.stringify({ event_id: "bad", minute_token: "m1\n越权" }));
+    expect(submitted).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM orch_events").get().n).toBe(0);
     c.stop();
   });
 });
