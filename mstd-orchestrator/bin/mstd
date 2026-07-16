@@ -18,8 +18,10 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PROFILE="${MSTD_LARK_PROFILE:-}"
-PORT="${PORT:-8899}"
+RUNTIME_CONFIG="$(node --env-file-if-exists="$ROOT/.env" "$SCRIPT_DIR/runtime-config.mjs")"
+PORT="$(printf '%s\n' "$RUNTIME_CONFIG" | sed -n '1p')"
+PROFILE="$(printf '%s\n' "$RUNTIME_CONFIG" | sed -n '2p')"
+ENABLE_AGENT="$(printf '%s\n' "$RUNTIME_CONFIG" | sed -n '3p')"
 LOG="$ROOT/daemon.log"
 ENTRY="server/index.mjs"
 PID_FILE="${MSTD_PID_FILE:-$ROOT/daemon.pid}"
@@ -46,28 +48,54 @@ child_matches() {
   pgrep -P "$pid" -f "$pattern" >/dev/null 2>&1
 }
 
+http_ready() {
+  curl --silent --show-error --fail --max-time 1 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1
+}
+
+cleanup_failed_start() {
+  local expected_pid="$1" pid children
+  pid="$(owned_pid)" || {
+    [ "$(tr -d '[:space:]' < "$PID_FILE" 2>/dev/null || true)" = "$expected_pid" ] && rm -f "$PID_FILE"
+    return 0
+  }
+  [ "$pid" = "$expected_pid" ] || return 0
+  children="$(pgrep -P "$pid" 2>/dev/null || true)"
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+  for child in $children; do kill "$child" 2>/dev/null || true; done
+  rm -f "$PID_FILE"
+}
+
 verify() {
   local ok=0 pid
   pid="$(owned_pid)" || return 1
-  if child_matches "$pid" "event consume im.message.receive_v1 --as bot"; then
-    green "  ✅ 聊天消费者 im.message.receive_v1"
+  if http_ready; then
+    green "  ✅ HTTP /api/health（端口 ${PORT}）"
   else
-    red  "  ❌ 聊天消费者缺失（小达会装聋——多半 MSTD_ENABLE_AGENT 没生效）"; ok=1
+    red "  ❌ HTTP /api/health 未就绪（端口 ${PORT}）"; ok=1
   fi
-  if child_matches "$pid" "event consume card.action.trigger --as bot"; then
-    green "  ✅ 卡片消费者 card.action.trigger"
+  if [ "$ENABLE_AGENT" = 1 ]; then
+    if child_matches "$pid" "event consume im.message.receive_v1 --as bot"; then
+      green "  ✅ 聊天消费者 im.message.receive_v1"
+    else
+      red  "  ❌ 聊天消费者缺失（小达会装聋——多半 MSTD_ENABLE_AGENT 没生效）"; ok=1
+    fi
+    if child_matches "$pid" "event consume card.action.trigger --as bot"; then
+      green "  ✅ 卡片消费者 card.action.trigger"
+    else
+      red  "  ❌ 卡片消费者缺失"; ok=1
+    fi
+    if child_matches "$pid" "event consume minutes.minute.generated_v1 --as user"; then
+      green "  ✅ 妙记消费者 minutes.minute.generated_v1"
+    else
+      dim  "  – 妙记消费者未启（MSTD_ENABLE_TRIGGER=0 时正常）"
+    fi
   else
-    red  "  ❌ 卡片消费者缺失"; ok=1
-  fi
-  if child_matches "$pid" "event consume minutes.minute.generated_v1 --as user"; then
-    green "  ✅ 妙记消费者 minutes.minute.generated_v1"
-  else
-    dim  "  – 妙记消费者未启（MSTD_ENABLE_TRIGGER=0 时正常）"
-  fi
-  if lsof -a -p "$pid" -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-    green "  ✅ 端口 $PORT 监听中"
-  else
-    red  "  ❌ 端口 $PORT 未监听"; ok=1
+    dim "  – agent 已关闭；仅检查 HTTP 服务"
   fi
   return $ok
 }
@@ -85,22 +113,26 @@ start() {
   # ${ROOT} 带大括号：紧跟全角括号时部分 bash 会把多字节字符并入变量名
   echo "▶ 启动 orchestrator（${ROOT}）…"
   cd "$ROOT"
-  nohup node --env-file=.env "$ENTRY" > "$LOG" 2>&1 &
+  nohup node --env-file-if-exists=.env "$ENTRY" > "$LOG" 2>&1 &
   printf '%s\n' "$!" > "$PID_FILE"
+  local started_pid="$!"
   disown || true
   # 轮询等 gateway 起来（正常 ~6s，给到 25s）；进程若启动即退出则报错
   local up=0
   for _ in $(seq 1 25); do
     sleep 1
-    if grep -q "agent gateway on" "$LOG" 2>/dev/null; then up=1; break; fi
+    if http_ready && { [ "$ENABLE_AGENT" != 1 ] || grep -q "agent gateway on" "$LOG" 2>/dev/null; }; then
+      up=1; break
+    fi
     if ! running; then
-      rm -f "$PID_FILE"
+      cleanup_failed_start "$started_pid"
       red "进程启动即退出，日志尾部："; echo; tail -20 "$LOG"; exit 1
     fi
   done
   echo
   if [ "$up" != 1 ]; then
-    red "等待 25s 仍未见 'agent gateway on'，日志尾部："; echo; tail -20 "$LOG"; exit 1
+    cleanup_failed_start "$started_pid"
+    red "等待 25s 服务仍未就绪，日志尾部："; echo; tail -20 "$LOG"; exit 1
   fi
   green "已启动。核验："
   if verify; then
@@ -108,7 +140,8 @@ start() {
     dim "日志: mstd logs   状态: mstd status   停止: mstd stop"
   else
     echo
-    red "部分组件未就绪，日志尾部："; echo; tail -20 "$LOG"; exit 1
+    cleanup_failed_start "$started_pid"
+    red "部分组件未就绪，已停止本次 daemon；日志尾部："; echo; tail -20 "$LOG"; exit 1
   fi
 }
 
