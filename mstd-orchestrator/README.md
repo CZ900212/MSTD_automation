@@ -103,6 +103,7 @@ npm run dev                              # 一键启动（--env-file 自动加�
 ## 测试
 
 ```bash
+npm run check                       # 正式交付门禁：严格 TypeScript 检查后执行全量 Vitest
 npx vitest run                      # 全量单测（不出网;必须在 mstd-orchestrator 目录跑,仓库根会扫出 ui/bid-browse 假失败）
 npm run policy:eval                 # 可重复本地 synthetic 安全/可用性评测；只代表 fixture，真机评测仍 pending
 bash scripts/e2e-serial.sh          # 发布仪式:五套真机 E2E 串行 + JSON 统计门禁(passed>0 且无 failed/pending/todo,skip 假绿现形)

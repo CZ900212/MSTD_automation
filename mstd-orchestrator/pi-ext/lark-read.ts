@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { buildLarkReadArgsScoped, resolveLarkScope } from "../server/safety/lark-read.mjs";
 import { readJobArtifactUtf8 } from "../server/execute/job-workdir.mjs";
@@ -32,6 +32,13 @@ function runLark(args: string[], signal?: AbortSignal): Promise<{ stdout: string
 }
 
 const clip = (s: string) => (s.length > CLIP ? s.slice(0, CLIP) + "\n...(截断)" : s);
+
+interface LarkReadDetails {
+  path?: string;
+  exitCode?: number | null;
+  argv?: string[];
+  error?: string;
+}
 
 // 批次 C：向 daemon 上报本次读到的源文本（逐字引用守卫的比对基准 + 席位私有 taint）。
 // 尽力而为：daemon 侧 fail 不阻断读取；但 resident（有 token）会在返回结果前等它落地，
@@ -93,7 +100,7 @@ export default function (pi: ExtensionAPI) {
       date_from: Type.Optional(Type.Number({ description: "YYYYMMDD" })),
       date_to: Type.Optional(Type.Number()),
     }),
-    async execute(_id, params, signal) {
+    async execute(_id, params, signal): Promise<AgentToolResult<LarkReadDetails>> {
       try {
         if (params.op === "read_file") {
           const workdir = String(process.env.MSTD_JOB_WORKDIR ?? "").trim();
