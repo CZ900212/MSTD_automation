@@ -32,7 +32,11 @@ export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore
     // 该聊天最近的 admit 判定流水（"为什么没回"一眼看穿）
     const verdicts = session.chat_id
       ? db.prepare("SELECT event_id, verdict, ts FROM inbox_events WHERE chat_id = ? ORDER BY ts DESC LIMIT 100").all(session.chat_id)
-        .map((r) => ({ ...r, verdict: r.verdict ? JSON.parse(r.verdict) : null }))
+        .map((r) => {
+          if (!r.verdict) return { ...r, verdict: null };
+          // 单行损坏保留原串,不砸整个端点
+          try { return { ...r, verdict: JSON.parse(r.verdict) }; } catch { return r; }
+        })
       : [];
     res.json({ session, messages, verdicts });
   }));
@@ -101,7 +105,8 @@ export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore
     const runId = req.query.runId ? String(req.query.runId) : null;
     const dispatchId = req.query.dispatchId ? String(req.query.dispatchId) : null;
     const decision = req.query.decision ? String(req.query.decision) : null;
-    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    // 钳到 [1,500]：负数会穿透成 SQLite `LIMIT -N`（等于无上限全量返回）
+    const limit = Math.min(Math.max(Math.floor(Number(req.query.limit)) || 200, 1), 500);
     if (typeof modelLog?.list === "function") {
       return res.json({ entries: modelLog.list({ kind, taskId, runId, dispatchId, decision, limit }) });
     }

@@ -34,7 +34,10 @@ export function streamJobEvents({
       "SELECT seq, type, payload_json FROM job_events WHERE job_id = ? AND seq > ? ORDER BY seq"
     ).all(jobId, last);
     for (const r of rows) {
-      res.write(sseFormat({ event: r.type, data: JSON.parse(r.payload_json ?? "{}"), seq: r.seq }));
+      // 坏行不砸整个流：headers 已发出,此处抛错会让响应悬死;单行损坏降级为空 data 继续补发
+      let data = {};
+      try { data = JSON.parse(r.payload_json ?? "{}"); } catch { /* 保持 {} */ }
+      res.write(sseFormat({ event: r.type, data, seq: r.seq }));
       last = r.seq;
     }
     replaying = false;

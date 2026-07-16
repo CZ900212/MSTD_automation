@@ -71,6 +71,22 @@ describe("streamJobEvents", () => {
       buffer = createEventBuffer(db);
     });
 
+    it("重放遇单行损坏 payload_json:降级空 data 继续,不悬死整个流", () => {
+      seedJobEvent(db, "job1", 1, "tool_start", { toolName: "lark_read" });
+      db.prepare(
+        "INSERT INTO job_events (id, job_id, phase, seq, type, payload_json, ts) VALUES (?,?,?,?,?,?,?)"
+      ).run("e-job1-2", "job1", "readonly", 2, "message_delta", "{broken", 1);
+      seedJobEvent(db, "job1", 3, "message_done", { ok: true });
+      const res = fakeRes();
+      expect(() => streamJobEvents({
+        db, bus, buffer, jobId: "job1", res, sinceSeq: 0, heartbeatMs: 60000,
+        setInterval: () => 1, clearInterval: () => {},
+      })).not.toThrow();
+      const body = res.writes.join("");
+      expect(body).toContain("id: 2\nevent: message_delta\ndata: {}"); // 坏行降级空 data
+      expect(body).toContain("id: 3\nevent: message_done");            // 后续好行照常补发
+    });
+
     it("sinceSeq 重放：先补历史关键事件（带 id 行），再接实时", () => {
       seedJobEvent(db, "job1", 1, "tool_start", { toolName: "lark_read" });
       seedJobEvent(db, "job1", 2, "message_done", {});

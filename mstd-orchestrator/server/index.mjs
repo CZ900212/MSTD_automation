@@ -605,7 +605,11 @@ if (config.enableAgent && config.botOpenId) {
 
   // E7：妙记等事件源的 job 抽取完成 → 卡片确认（不再产生 awaiting_approval）
   agentOnActionsReady = async ({ job, actions }) => {
-    const params = JSON.parse(job.params_json ?? "{}");
+    // params_json 单行损坏降级为空参数（initiator 走 owner 反查/alertOpenId 兜底），不炸整个回调链
+    let params = {};
+    try { params = JSON.parse(job.params_json ?? "{}"); } catch (e) {
+      console.error(`[agent] job ${job.id} params_json 损坏,按空参数继续: ${e?.message ?? e}`);
+    }
     // 迭代二 T2.2：host_open_id → 妙记 owner 反查 → alertOpenId 三级兜底
     const initiator = await resolveMinutesInitiator({
       params,
