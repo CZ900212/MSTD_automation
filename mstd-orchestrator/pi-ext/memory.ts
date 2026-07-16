@@ -39,6 +39,7 @@ export default function (pi: ExtensionAPI) {
         if (!resp.ok || !data.ok) return { content: [{ type: "text", text: `memory 失败: ${data.error ?? resp.status}` }], details: data };
         return { content: [{ type: "text", text: params.action === "read" ? (data.content || "（空）") : "已写入" }], details: data };
       } catch (e) {
+        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
         return { content: [{ type: "text", text: `memory 异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

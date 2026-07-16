@@ -171,6 +171,26 @@ describe("loadServerConfig", () => {
     },
   );
 
+  it("数字旋钮统一 intEnv fail-fast:垃圾值启动即报错,不再静默变 NaN", () => {
+    // 修复前:Number("abc")=NaN 且 NaN ?? 600 仍是 NaN,流进 debounce 定时器/预算判断
+    for (const key of [
+      "MSTD_DEBOUNCE_ADDRESSED_MS", "MSTD_DEBOUNCE_AMBIENT_MS", "MSTD_DEBOUNCE_MAX_MS",
+      "MSTD_DAILY_TOKEN_BUDGET", "MSTD_SESSION_TOKEN_BUDGET", "PORT",
+    ]) {
+      expect(() => loadServerConfig({ MSTD_SESSION_SECRET: "s", [key]: "abc" }), key)
+        .toThrow(new RegExp(key));
+      expect(() => loadServerConfig({ MSTD_SESSION_SECRET: "s", [key]: "-1" }), key)
+        .toThrow(new RegExp(key));
+    }
+    // 合法值照常解析;缺省走默认
+    const c = loadServerConfig({ MSTD_SESSION_SECRET: "s", MSTD_DEBOUNCE_ADDRESSED_MS: "250" });
+    expect(c.debounceAddressedMs).toBe(250);
+    expect(c.debounceAmbientMs).toBe(1500);
+    expect(c.dailyTokenBudget).toBe(2_000_000);
+    // PORT=0 = OS 随机端口,合法(fail-fast 负例测试依赖)
+    expect(loadServerConfig({ MSTD_SESSION_SECRET: "s", PORT: "0" }).port).toBe(0);
+  });
+
   it("defaults max reasoners per session to 3 and rejects unsafe values", () => {
     expect(loadServerConfig({ MSTD_SESSION_SECRET: "s" }).maxReasonersPerSession).toBe(3);
     expect(loadServerConfig({

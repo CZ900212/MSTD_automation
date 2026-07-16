@@ -25,16 +25,29 @@ export function createSyntheticTransport({
       const timestamp = String(Date.now());
       const nonce = newNonce();
       const signature = signSimulatorRequest({ secret, timestamp, nonce, body: canon });
-      const res = await fetchFn(`${baseUrl.replace(/\/$/, "")}/api/simulator/v1/inject`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "X-MSTD-Sim-Timestamp": timestamp,
-          "X-MSTD-Sim-Nonce": nonce,
-          "X-MSTD-Sim-Signature": signature,
-        },
-        body: JSON.stringify(canon),
-      });
+      let res;
+      try {
+        res = await fetchFn(`${baseUrl.replace(/\/$/, "")}/api/simulator/v1/inject`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "X-MSTD-Sim-Timestamp": timestamp,
+            "X-MSTD-Sim-Nonce": nonce,
+            "X-MSTD-Sim-Signature": signature,
+          },
+          body: JSON.stringify(canon),
+          // 与全库外呼约定一致的止损上限：被测 daemon 挂死时 E2E 失败退出而非整轮悬死
+          signal: AbortSignal.timeout(60_000),
+        });
+      } catch (e) {
+        return {
+          ok: false,
+          error: e?.name === "TimeoutError" ? "inject_timeout" : `inject_failed: ${e?.message ?? e}`,
+          source: "simulator",
+          platformMessageId: null,
+          sentAt: Date.now(),
+        };
+      }
       let payload = null;
       try { payload = await res.json(); } catch { /* ignore */ }
       if (!res.ok) {

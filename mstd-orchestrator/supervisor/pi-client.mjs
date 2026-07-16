@@ -77,6 +77,9 @@ export function startPi({ provider, model, extensions = [], capabilityProfile = 
   const send = (obj) => child.stdin.write(JSON.stringify(obj) + "\n");
   const on = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
 
+  // 不变量（调用方契约）：runJob/prompt 超时只 reject、不 kill 子进程——进程仍可被 steer 或复用；
+  // 调用方 catch 后必须 close() 收尸（brain turn-fallback / orchestrator / background-executor 均如此），
+  // 否则每次超时泄漏一个完整 headless pi 子进程。
   function runJob(message, { id = "job", images, onEvent = () => {}, timeoutMs = 240000 } = {}) {
     return new Promise((resolve, reject) => {
       const proc = makeStreamProcessor({ onEvent, onDone: ({ finalText }) => { cleanup(); resolve({ finalText }); } });

@@ -128,8 +128,9 @@ export async function evaluateDispatcherCases({
       if (row.actual.action !== fx.expected.action) row.errors.push("action_mismatch");
       if (fx.expected.closure && row.actual.closure !== fx.expected.closure) row.errors.push("closure_mismatch");
       if (fx.expected.task_id && row.actual.task_id !== fx.expected.task_id) row.errors.push("task_mismatch");
-    } catch {
+    } catch (error) {
       row.errors.push("live_case_failed");
+      row.error_detail = String(error?.message ?? error); // 保留真实异常详情,不吞成固定字符串
     }
     row.ok = row.errors.length === 0;
     results.push(row);

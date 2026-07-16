@@ -49,6 +49,7 @@ export default function (pi: ExtensionAPI) {
         }
         return { content: [{ type: "text", text }], details: data };
       } catch (e) {
+        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
         return { content: [{ type: "text", text: `heartbeat 异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

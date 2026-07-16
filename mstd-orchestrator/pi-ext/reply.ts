@@ -77,6 +77,7 @@ export default function (pi: ExtensionAPI) {
           },
         };
       } catch (e) {
+        if (signal?.aborted) throw e; // 回合被取消时如实以 abort 传播,不伪造成"已完成的错误结果"(与 draft.ts 同则)
         return { content: [{ type: "text", text: `reply 异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

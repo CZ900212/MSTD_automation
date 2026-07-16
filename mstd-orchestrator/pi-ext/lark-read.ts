@@ -110,6 +110,7 @@ export default function (pi: ExtensionAPI) {
         if (r.code === 0) await reportSource(params.op, clipped);
         return { content: [{ type: "text", text: clipped }], details: { exitCode: r.code, argv: args } };
       } catch (e) {
+        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
         return { content: [{ type: "text", text: `拒绝/失败: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

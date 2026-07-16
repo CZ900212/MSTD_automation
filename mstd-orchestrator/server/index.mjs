@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { openDb, migrate } from "./db/index.mjs";
 import { buildCapabilityProfile } from "./pi/resident-extensions.mjs";
 import { assertCapabilityReadiness } from "./pi/capability-readiness.mjs";
-import { loadServerConfig } from "./config.mjs";
+import { loadServerConfig, intEnv } from "./config.mjs";
 import { createApp } from "./app.mjs";
 import { createSemaphore } from "./jobs/semaphore.mjs";
 import { createEventBus } from "./jobs/event-bus.mjs";
@@ -220,7 +220,7 @@ if (config.enableAgent && config.botOpenId) {
   const verbatimGuard = createVerbatimGuard();
   // 统一回合注册表：receipt/brain/initiator 三域同一条 per-session 记录、receipt+brain 共享
   // 一把回合 lease，任一域清空即整条回收——消灭"跨模块漏清一份留陈旧状态"这类错误。
-  const turnLeaseTtlMs = Number(process.env.MSTD_TURN_TIMEOUT_MS ?? 240_000) + 30_000;
+  const turnLeaseTtlMs = intEnv(process.env, "MSTD_TURN_TIMEOUT_MS", 240_000) + 30_000;
   const activeTurnRegistry = createActiveTurnRegistry({
     brainTtlMs: turnLeaseTtlMs,
     initiatorTtlMs: turnLeaseTtlMs,
@@ -265,7 +265,7 @@ if (config.enableAgent && config.botOpenId) {
   const memoryTool = createMemoryTool({ files: memoryFiles });
   const snapshotFn = ({ sessionKey }) => buildMemorySnapshot({ files: memoryFiles, sessionKey });
   // 分诊上下文:2048-token 预算窗口(末条不截断),自然参与判定的依据
-  const triage = createTriage({ caller, store: agentStore, windowTokens: Number(process.env.MSTD_TRIAGE_WINDOW_TOKENS ?? 2048) });
+  const triage = createTriage({ caller, store: agentStore, windowTokens: intEnv(process.env, "MSTD_TRIAGE_WINDOW_TOKENS", 2048) });
   // Always-available responder (Task 2): sole public voice for first reply + handoff rendering.
   // Wired for shadow/active modes; legacy path continues to use triage + renderReply adapter.
   const responder = createResponder({ caller, onEvent: observeAgentEvent });
@@ -286,9 +286,9 @@ if (config.enableAgent && config.botOpenId) {
     store: agentStore,
     semaphore,
     // 闲置 Pi 占并发位直到回收；默认 10min，E2E/低并发环境可调小避免饿死后续会话
-    idleMs: Number(process.env.MSTD_PI_IDLE_MS ?? 600_000),
+    idleMs: intEnv(process.env, "MSTD_PI_IDLE_MS", 600_000),
     // 回合超时后沿 reason 链降级重跑；provider 挂起型故障的止损上限
-    turnTimeoutMs: Number(process.env.MSTD_TURN_TIMEOUT_MS ?? 240_000),
+    turnTimeoutMs: intEnv(process.env, "MSTD_TURN_TIMEOUT_MS", 240_000),
     capabilityProfile: buildCapabilityProfile(ROOT, "resident"),
     piCwd: agentWorkspace,                       // C1:bash/文件工具迁出源码树
     piEnv: {
@@ -432,7 +432,7 @@ if (config.enableAgent && config.botOpenId) {
       config,
       agentWorkspace,
       capabilityProfile: buildCapabilityProfile(ROOT, "background"),
-      timeoutMs: Number(process.env.MSTD_BACKGROUND_TIMEOUT_MS ?? 240_000),
+      timeoutMs: intEnv(process.env, "MSTD_BACKGROUND_TIMEOUT_MS", 240_000),
     }),
     onEvent: observeAgentEvent,
     onComplete: (x) => reinjector.onJobComplete(x),
@@ -540,7 +540,7 @@ if (config.enableAgent && config.botOpenId) {
   // ---- Phase E：主动层（单 ticker 多周期）----
   const memoryDir = process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory");
   // E2E 提速旋钮（默认即生产值）：tick 间隔 / 心跳频率与活跃时段
-  const ticker = createTicker({ intervalMs: Number(process.env.MSTD_TICKER_INTERVAL_MS ?? 60_000) });
+  const ticker = createTicker({ intervalMs: intEnv(process.env, "MSTD_TICKER_INTERVAL_MS", 60_000) });
   const cronStore = createCronStore(db);
   const cronRunner = createCronRunner({ brain, agentStore, cronStore, grants: deliverGrants, snapshotFn });
   ticker.register("cron", 1, () => cronRunner.runDue());
@@ -553,7 +553,7 @@ if (config.enableAgent && config.botOpenId) {
     },
     legacyPath: join(memoryDir, "HEARTBEAT.md"),
   });
-  ticker.register("heartbeat", Number(process.env.MSTD_HEARTBEAT_EVERY_TICKS ?? 5), () => heartbeat.tick()); // 默认 5 分钟一扫
+  ticker.register("heartbeat", intEnv(process.env, "MSTD_HEARTBEAT_EVERY_TICKS", 5), () => heartbeat.tick()); // 默认 5 分钟一扫
   internal.heartbeat = heartbeatStore;
   const dreaming = createDreaming({
     db,

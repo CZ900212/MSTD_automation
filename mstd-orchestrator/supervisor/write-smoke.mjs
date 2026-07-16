@@ -25,9 +25,15 @@ function runLark(argv) {
     const finalArgs = profile ? ["--profile", profile, ...argv] : argv;
     const child = spawn(LARK_CLI, finalArgs, { stdio: ["ignore", "pipe", "pipe"] });
     const out = []; const err = [];
+    // spawn 失败（如缺二进制）与挂死进程都要收口，不许把 smoke 挂成永远 pending（Promise 只落定一次，重复 resolve 无害）
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* 忽略 */ }
+      resolve({ exitCode: -1, stdout: Buffer.concat(out).toString(), stderr: "lark-cli 超时（60s）" });
+    }, 60_000);
+    child.on("error", (e) => { clearTimeout(timer); resolve({ exitCode: -1, stdout: "", stderr: `spawn 失败: ${e?.message ?? e}` }); });
     child.stdout.on("data", (d) => out.push(d));
     child.stderr.on("data", (d) => err.push(d));
-    child.on("close", (code) => resolve({ exitCode: code, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() }));
+    child.on("close", (code) => { clearTimeout(timer); resolve({ exitCode: code, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() }); });
   });
 }
 

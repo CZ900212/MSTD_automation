@@ -35,6 +35,7 @@ export default function (pi: ExtensionAPI) {
         const lines = (data.hits ?? []).map((h: any) => `[${new Date(h.ts).toISOString()}] ${h.sessionKey}: ${h.content}`);
         return { content: [{ type: "text", text: lines.length ? lines.join("\n") : "（无命中）" }], details: data };
       } catch (e) {
+        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
         return { content: [{ type: "text", text: `检索异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

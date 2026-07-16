@@ -48,6 +48,7 @@ export default function (pi: ExtensionAPI) {
         if (!resp.ok || !data.ok) return { content: [{ type: "text", text: `注册失败: ${data.error ?? resp.status}` }], details: data };
         return { content: [{ type: "text", text: `后台 job 已注册: ${data.job_id}，完成后结果会回注本会话。` }], details: data };
       } catch (e) {
+        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
         return { content: [{ type: "text", text: `注册异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

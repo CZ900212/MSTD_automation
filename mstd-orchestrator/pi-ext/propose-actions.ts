@@ -71,6 +71,7 @@ export default function (pi: ExtensionAPI) {
         }
         return { content: [{ type: "text", text: `确认卡已发出（job ${data.job_id}），等用户确认后执行；结果会回注会话，本回合不必等待。` }], details: data };
       } catch (e) {
+        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
         return { content: [{ type: "text", text: `提交异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },
