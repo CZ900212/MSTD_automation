@@ -24,6 +24,7 @@ const SYSTEM = `你是独立的第三方评审员，在助手已经对用户给�
 - 用户是在修正或补充某个已有任务时，选择 attach_existing；不要因为助手已经口头确认就选择 no_reasoning。用户提出与候选任务无关的新事项时选择 spawn_new。
 - 用户修正或更新已有任务，且首条回复确认将执行该变更时，attach_existing 的 closure=required。
 - 身份、寒暄、基础算术，以及只复述近期对话中用户已经明确给出的信息时可 no_reasoning；需要新增事实、推断或专业判断的回答不属于这一例外。
+- 首条回复是 [no_reply] 只表示助手当场选择了沉默，不代表问题已解决:若原始用户消息其实在求答、求助，或需要判断/查证/工具/最新数据，应按需 spawn_new 或 attach_existing 补上，不要因为看到 [no_reply] 就默认 no_reasoning;纯闲聊、社交邀约、与助手无关的沉默才维持 no_reasoning。
 - closure=required：首条回复作出后续承诺，或任务/写操作/更新结果对用户有意义时，必须最终给出完成、失败或取消结果；仅有进度回复不能满足 required。
 - closure=silent_ok：仅当后续推理属于补充复核，并且没有发现修正、新结果或其他用户相关信息时，允许无需再次回复；不得用 silent_ok 消除首条回复已作出的承诺。
 - 只输出 JSON，不要 Markdown 围栏或其他文字。`;

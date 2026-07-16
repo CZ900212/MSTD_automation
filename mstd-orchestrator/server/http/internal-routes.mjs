@@ -121,6 +121,7 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
       modelLog?.record({ type: "internal_auth_reject", sessionKey, detail: "propose_actions 无 authoritative session version" });
       return res.status(403).json({ ok: false, error: "当前调用未绑定有效会话版本" });
     }
+    const intentKinds = Array.isArray(intents) ? intents.map((it) => it?.kind).join(",") : "?";
     try {
       const r = await proposeActions({
         sessionKey,
@@ -132,8 +133,13 @@ export function mountInternalRoutes(app, { tokens = null, activeTurnInitiators =
         title,
         intents,
       });
+      // 接受/拒绝都落 model_log——写链路失败必须可归因，不能只活在 Pi 的会话记忆里。
+      modelLog?.record(r.ok
+        ? { type: "propose_actions_accepted", sessionKey, taskId, runId, detail: `job=${r.jobId}${r.deduped ? " deduped" : ""} kinds=${intentKinds}` }
+        : { type: "propose_actions_rejected", sessionKey, taskId, runId, detail: `kinds=${intentKinds} error=${String(r.error).slice(0, 300)}` });
       res.json(r.ok ? { ok: true, job_id: r.jobId, message_id: r.messageId } : r);
     } catch (e) {
+      modelLog?.record({ type: "propose_actions_error", sessionKey, taskId, runId, detail: `kinds=${intentKinds} error=${String(e?.message ?? e).slice(0, 300)}` });
       res.status(500).json({ ok: false, error: String(e?.message ?? e) });
     }
   });

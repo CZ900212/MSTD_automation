@@ -3,6 +3,7 @@ import { formatHistoryLine, whoLabel } from "../sessions/history-format.mjs";
 import { NUDGE_MAINTENANCE_BRIEF } from "../memory/compact.mjs";
 import { createActiveTurnRegistry } from "../sessions/active-turn.mjs";
 import { createReplyPipeline } from "./reply-pipeline.mjs";
+import { DEFAULT_RESPONDER_HISTORY_TOKENS, tokenWindow } from "../models/token-window.mjs";
 
 // 群窗口时间戳:北京时间 HH:MM
 const HHMM = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
@@ -41,6 +42,7 @@ export function createTurnHandler({
   dispatcher = null,
   taskStore = null,
   coordinator = null,
+  responderHistoryTokens = DEFAULT_RESPONDER_HISTORY_TOKENS,
   onEvent = () => {},         // 回合事件（SSE/调试台接缝）
   log = console.error,
 } = {}) {
@@ -77,9 +79,14 @@ export function createTurnHandler({
   }
 
   function recentConversationBeforeTurn(sessionId) {
-    return store.promptRecent(sessionId, { limit: 20, roles: ["user", "assistant"] })
-      .map(formatHistoryLine)
-      .join("\n");
+    // SQL limit is only a defensive retrieval ceiling. The semantic boundary is
+    // the strict token window, selected newest-first and rendered chronologically.
+    const rows = store.promptRecent(sessionId, { limit: 10_000, roles: ["user", "assistant"] });
+    const window = tokenWindow(rows, {
+      budget: responderHistoryTokens,
+      format: formatHistoryLine,
+    });
+    return { ...window, text: window.lines.join("\n"), rowCount: rows.length };
   }
 
   function beginBusinessTurn(sessionKey, emitEvent = onEvent) {
@@ -174,7 +181,15 @@ export function createTurnHandler({
     }
 
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
-    const recentConversation = recentConversationBeforeTurn(session.id);
+    const recentWindow = recentConversationBeforeTurn(session.id);
+    const recentConversation = recentWindow.text;
+    if (recentWindow.truncated) emitEvent({
+      type: "responder_history_truncated",
+      sessionKey,
+      tokenBudget: responderHistoryTokens,
+      selectedTokens: recentWindow.tokens,
+      sourceRows: recentWindow.rowCount,
+    });
     // Append first so source message ids exist for dispatch batch identity.
     const sourceRows = appendItems(session.id, items, { observed: mode === "ambient" });
     const sourceMessageIds = sourceRows.map((row) => row.id);
@@ -195,7 +210,13 @@ export function createTurnHandler({
         responderAction: "no_reply",
         mode,
       });
-      emitEvent({ type: "responder_sent", sessionKey, action: "no_reply", dispatchId: dispatch.id });
+      emitEvent({
+        type: "responder_sent",
+        sessionKey,
+        action: "no_reply",
+        reason_code: answer.meta?.reasonCode ?? null,
+        dispatchId: dispatch.id,
+      });
       coordinator.schedule({
         dispatchId: dispatch.id,
         session,
@@ -231,6 +252,7 @@ export function createTurnHandler({
       type: "responder_sent",
       sessionKey,
       action: "reply",
+      reason_code: answer.meta?.reasonCode ?? null,
       dispatchId: dispatch.id,
       messageId,
     });
@@ -253,7 +275,7 @@ export function createTurnHandler({
     if (!responder) return;
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
     const recentRows = store.promptRecent(session.id, { limit: 200, roles: ["user", "assistant"] });
-    const recentConversation = recentConversationBeforeTurn(session.id);
+    const recentConversation = recentConversationBeforeTurn(session.id).text;
     const activeTaskCandidates = taskStore?.activeSummaries?.(session.id) ?? [];
     void (async () => {
       const answer = await responder.answerTurn({

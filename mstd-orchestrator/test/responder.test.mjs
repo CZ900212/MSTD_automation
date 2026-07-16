@@ -23,6 +23,22 @@ describe("parseResponderOutput", () => {
     expect(parseResponderOutput('{"action":"no_reply"}')).toEqual({ action: "no_reply" });
   });
 
+  it("requires a bounded participation reason in ambient mode", () => {
+    expect(parseResponderOutput(
+      '{"action":"reply","text":"我来看看","reason_code":"open_request"}',
+      { mode: "ambient" },
+    )).toEqual({ action: "reply", text: "我来看看", reason_code: "open_request" });
+    expect(parseResponderOutput(
+      '{"action":"no_reply","reason_code":"human_conversation"}',
+      { mode: "ambient" },
+    )).toEqual({ action: "no_reply", reason_code: "human_conversation" });
+    expect(() => parseResponderOutput('{"action":"reply","text":"插一句"}', { mode: "ambient" })).toThrow(/reason_code/);
+    expect(() => parseResponderOutput(
+      '{"action":"reply","text":"插一句","reason_code":"social_chatter"}',
+      { mode: "ambient" },
+    )).toThrow(/reason_code/);
+  });
+
   it.each([
     ['{"action":"escalate","brief":"x"}', "escalate"],
     ['{"action":"steer","note":"x"}', "steer"],
@@ -103,6 +119,21 @@ describe("createResponder.answerTurn", () => {
       items: [{ content: "在吗" }],
       mode: "p2p",
     })).resolves.toMatchObject({ action: "reply", text: expect.any(String) });
+  });
+
+  it("keeps ambient reason_code internal while exposing it in meta", async () => {
+    const responder = createResponder({
+      caller: mockCaller('{"action":"no_reply","reason_code":"human_conversation"}'),
+      soul: SOUL,
+    });
+    const out = await responder.answerTurn({
+      sessionKey: "feishu:group:oc_x",
+      items: [{ content: "是吧我就说吧" }],
+      mode: "ambient",
+      recentConversation: "[同事]: 今天吃什么\n[同事]: 小张\n[同事]: 反正不能吃就对了",
+    });
+    expect(out).toMatchObject({ action: "no_reply", meta: { reasonCode: "human_conversation" } });
+    expect(out).not.toHaveProperty("reason_code");
   });
 
   it("invalid JSON on addressed mode falls back to safe non-empty reply", async () => {
@@ -275,6 +306,20 @@ describe("responder prompt shape", () => {
     expect(sys).toMatch(/不得.*首条回复.*倾向.*结论.*优劣/s);
     expect(sys).toMatch(/近期对话.*不代表.*可靠答案/s);
     expect(sys).toMatch(/后续处理.*结论/s);
+  });
+
+  it("requires addressee-first ambient participation and defaults uncertainty to silence", () => {
+    const sys = responderPrompts.answerSystem(SOUL);
+    expect(sys).toMatch(/先判断.*在对谁说/s);
+    expect(sys).toMatch(/其他人的名字.*后续.*人与人的对话/s);
+    expect(sys).toMatch(/开放求助|群体问题/);
+    expect(sys).toMatch(/重要错误/);
+    expect(sys).toMatch(/社交邀约/);
+    expect(sys).toMatch(/闲聊/);
+    expect(sys).toMatch(/无法确定受话对象.*no_reply/);
+    expect(sys).toMatch(/暂时答不全/);
+    expect(sys).toMatch(/前提仍(?:然|是).*面向你|前提仍(?:然|是).*开放求助/s);
+    expect(sys).not.toMatch(/例如|比如|譬如|接住|稳稳/);
   });
 });
 

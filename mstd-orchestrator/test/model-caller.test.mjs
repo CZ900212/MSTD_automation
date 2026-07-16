@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createModelCaller, PipelineError, CHAINS } from "../server/models/caller.mjs";
+import { countModelInputTokens } from "../server/models/token-window.mjs";
 
 const ENV = { DEEPSEEK_KEY: "dk", CZ_GPT_KEY: "gk" };
 
@@ -161,6 +162,41 @@ describe("model caller", () => {
     expect(captured.body.thinking).toEqual({ type: "disabled" });
     expect(captured.url).toContain("api.deepseek.com");           // respond 首选 v4-pro non-thinking
     expect(captured.headers.Authorization).toBe("Bearer dk");
+  });
+
+  it("caps model input, preserves system/latest content, and emits truncation telemetry", async () => {
+    let captured;
+    const events = [];
+    const fetchFn = vi.fn(async (_url, opts) => {
+      captured = JSON.parse(opts.body);
+      return okResponse("ok", "m");
+    });
+    const caller = createModelCaller({
+      fetchFn,
+      env: ENV,
+      retries: 1,
+      maxTokens: 16,
+      maxInputTokens: 96,
+      onEvent: (event) => events.push(event),
+    });
+    await caller.call("responder", {
+      system: "核心系统规则",
+      messages: [
+        { role: "user", content: "旧历史".repeat(80) },
+        { role: "user", content: `最新请求:${"新".repeat(50)}` },
+      ],
+    });
+
+    const [systemMessage, ...messages] = captured.messages;
+    expect(systemMessage.content).toBe("核心系统规则");
+    expect(messages.at(-1).content).toContain("最新请求");
+    expect(countModelInputTokens({ system: systemMessage.content, messages })).toBeLessThanOrEqual(80);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "model_input_truncated",
+      chain: "responder",
+      maxInputTokens: 96,
+      reservedOutputTokens: 16,
+    }));
   });
 
   it("respond 的 DeepSeek 连败后降级 GPT-5.6 Sol medium", async () => {

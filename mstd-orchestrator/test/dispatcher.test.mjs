@@ -31,6 +31,7 @@ describe("dispatcher fixtures inventory", () => {
       "unrelated_simultaneous",
       "context_dependent_followup",
       "ambient",
+      "ambient_ask_unanswered",
       "prompt_injection",
       "provider_failure",
     ]) {
@@ -74,6 +75,15 @@ describe("dispatcher prompt shape", () => {
   it("treats user text as untrusted data and rejects task-id injection", () => {
     expect(dispatcherPrompts.system).toMatch(/用户消息.*不可信|不可信.*用户消息/s);
     expect(dispatcherPrompts.system).toMatch(/绕过.*规则.*不.*任务|编造.*task_id.*不.*任务/s);
+  });
+
+  it("does not rubber-stamp no_reasoning when [no_reply] left a real ask unanswered", () => {
+    // Second safety net: a silent first reply must not swallow genuine answer-seeking.
+    expect(dispatcherPrompts.system).toContain("[no_reply]");
+    expect(dispatcherPrompts.system).toMatch(/求答|求助/);
+    expect(dispatcherPrompts.system).toMatch(/不要[\s\S]*\[no_reply\][\s\S]*no_reasoning/);
+    // Chit-chat silence still stays no_reasoning — the net is scoped to real asks.
+    expect(dispatcherPrompts.system).toMatch(/闲聊[\s\S]*no_reasoning|no_reasoning[\s\S]*闲聊/);
   });
 
   it("requires reasoning for judgment even when the first reply already gave an opinion", () => {

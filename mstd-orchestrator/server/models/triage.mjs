@@ -1,6 +1,9 @@
 // 前台分诊：V4 Flash 四选一（quick_reply / no_reply / escalate / steer）。
 // 提示词只是软约束；quick_reply 的边界由代码兜底（不信提示词）。
 import { formatHistoryLine } from "../sessions/history-format.mjs";
+import { estimateTokens } from "./token-window.mjs";
+
+export { estimateTokens } from "./token-window.mjs";
 
 const QUICK_REPLY_MAX = 200;
 // 代码兜底强制升级时的先应答文案(快机永远先接话,用户不干等慢机;模型自主 escalate 时由模型自己写 ack)
@@ -86,13 +89,6 @@ function renderItems(items) {
   return items
     .map((m) => `[${m.senderName ?? m.senderOpenId ?? "未知"}]: ${m.content}`)
     .join("\n");
-}
-
-// 自然参与上下文窗口(用户定案 2026-07-12):token 估算,CJK≈1 token/字、ASCII≈1 token/4 字符
-export function estimateTokens(text) {
-  let t = 0;
-  for (const ch of String(text)) t += ch.charCodeAt(0) > 0x2e7f ? 1 : 0.25;
-  return Math.ceil(t);
 }
 
 // 按预算从最新往回收消息;触界的那条**整条放入不截断**(窗口可略超预算),然后停

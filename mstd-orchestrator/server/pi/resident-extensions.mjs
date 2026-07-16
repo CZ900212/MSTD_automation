@@ -14,6 +14,7 @@ const PROFILE_SPECS = Object.freeze({
     ["background-job.ts", ["spawn_background_job"]],
     ["heartbeat.ts", ["heartbeat_update"]],
     ["lark-read.ts", ["lark_read"]],
+    ["time.ts", ["time"]],
   ]),
   // Meeting extraction is a fresh, read-only worker. It may read Lark and render
   // the structured draft, but cannot reply, write memory, propose actions, or spawn.

@@ -18,6 +18,14 @@ const asDetail = (evt) => {
       evt.mode ? `mode=${String(evt.mode).slice(0, 20)}` : null,
     ].filter(Boolean).join(" ")
     : null;
+  const inputBudget = evt.type === "model_input_truncated"
+    ? [
+      evt.originalTokens != null ? `original_tokens=${evt.originalTokens}` : null,
+      evt.inputTokens != null ? `input_tokens=${evt.inputTokens}` : null,
+      evt.maxInputTokens != null ? `max_input_tokens=${evt.maxInputTokens}` : null,
+      evt.reservedOutputTokens != null ? `reserved_output_tokens=${evt.reservedOutputTokens}` : null,
+    ].filter(Boolean).join(" ")
+    : null;
   const lifecycle = [
     evt.turnId ? `turn_id=${String(evt.turnId).slice(0, 200)}` : null,
     evt.purpose ? `purpose=${String(evt.purpose).slice(0, 40)}` : null,
@@ -30,7 +38,7 @@ const asDetail = (evt) => {
     evt.messageId ? `message_id=${String(evt.messageId).slice(0, 100)}` : null,
     evt.replyCounts ? `reply_counts=${JSON.stringify(evt.replyCounts).slice(0, 160)}` : null,
   ].filter(Boolean);
-  const parts = [evt.what, evt.phase, evt.detail, triage, dispatcher, ...lifecycle, err].filter(Boolean);
+  const parts = [evt.what, evt.phase, evt.detail, triage, dispatcher, inputBudget, ...lifecycle, err].filter(Boolean);
   return parts.length ? parts.join(" ").slice(0, DETAIL_MAX) : null;
 };
 

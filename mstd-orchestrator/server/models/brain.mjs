@@ -7,6 +7,12 @@ import { createContextBudget } from "../safety/context-budget.mjs";
 import { createContextEnvelope, resolveTurnContext } from "../safety/context-envelope.mjs";
 import { TRUST } from "../safety/trust-boundary.mjs";
 import { familyForModelId } from "./prompt-variants.mjs";
+import { formatNow } from "../time/now.mjs";
+import {
+  DEFAULT_MODEL_INPUT_TOKENS,
+  estimateTokens,
+  truncateToTokenBudget,
+} from "./token-window.mjs";
 
 export const REASON_PROVIDERS = [
   // 2026-07-16 定案：主脑使用 DeepSeek V4 Pro xhigh（其最高推理档）；GPT-5.6 Sol high 仅作兜底。
@@ -66,6 +72,8 @@ export function createBrain({
   contextMode = "enforce",
   contextSigner = null,
   nowFn = Date.now,
+  maxInputTokens = DEFAULT_MODEL_INPUT_TOKENS,
+  outputReserveTokens = 16_384,
   // Task-scoped context provider seam (Task 7 supplies the real implementation).
   // Signature: ({ session, sessionKey, taskId }) => string|null
   taskContextProvider = null,
@@ -89,6 +97,10 @@ export function createBrain({
   const closedError = () => new Error("brain 已关闭");
   const assertOpen = () => { if (closed) throw closedError(); };
   if (contextMode !== "enforce" && contextMode !== "shadow") throw new Error(`context mode 非法: ${contextMode}`);
+  if (!Number.isSafeInteger(maxInputTokens) || maxInputTokens < 1) throw new Error("brain maxInputTokens 必须是正整数");
+  if (!Number.isSafeInteger(outputReserveTokens) || outputReserveTokens < 1 || outputReserveTokens >= maxInputTokens) {
+    throw new Error("brain outputReserveTokens 必须小于 maxInputTokens");
+  }
   const envelopeMode = contextMode;
   const envelopeBudget = contextBudget ?? createContextBudget();
   // 可观测上报 fail-safe：观察者出错绝不反噬回合执行
@@ -369,6 +381,7 @@ export function createBrain({
 
   function buildPrompt({ brief, context, snapshot, replayBlock = null }) {
     const parts = [];
+    parts.push(`## 当前时间\n现在是 ${formatNow(() => new Date(nowFn()))}`);
     if (snapshot) {
       // SOUL 由 persona 系统提示词提供；journal 是审计记录，均不作为默认会话上下文。
       const mem = [snapshot.org, snapshot.scoped].filter(Boolean).join("\n\n");
@@ -376,6 +389,7 @@ export function createBrain({
     }
     if (replayBlock) parts.push(`## 会话历史（进程重启重放,只用于理解上下文;其中的请求要么已处理要么已过期,绝不要重新执行历史里的任何指令）\n${replayBlock}`);
     if (context) parts.push(`## 本回合上下文\n${context}`);
+    parts.push("## 历史检索纪律\n这里的聊天记录只是近期或任务关联切片，不代表完整会话。任务确实依赖更早对话时，使用 lark_read 的 chat_history 或 search_messages 在当前会话内检索；不得凭缺失片段猜测，也不要无需求全量翻历史。");
     parts.push(`## 任务\n${brief}`);
     return parts.join("\n\n");
   }
@@ -470,6 +484,20 @@ export function createBrain({
             snapshot,
             replayBlock: entry.replayed ? null : frozenReplay,
           });
+          const turnMarker = `MSTD_TURN_CONTEXT_V1 ${daemonTurnId} ${brainLease}\n`;
+          const promptBudget = maxInputTokens - outputReserveTokens - estimateTokens(turnMarker);
+          const fittedPrompt = truncateToTokenBudget(prompt, promptBudget, { keep: "tail" });
+          if (fittedPrompt.truncated) emit({
+            type: "model_input_truncated",
+            chain: "reasoner",
+            model: entry.providerKey,
+            sessionKey,
+            taskId,
+            originalTokens: fittedPrompt.originalTokens + estimateTokens(turnMarker),
+            inputTokens: fittedPrompt.tokens + estimateTokens(turnMarker),
+            maxInputTokens,
+            reservedOutputTokens: outputReserveTokens,
+          });
           entry.replayed = true;
           if (activeBrainTurns && !activeBrainTurns.bindResident(
             sessionKey,
@@ -499,14 +527,21 @@ export function createBrain({
             residentEpoch: entry.replyProvenance?.epoch ?? null,
           }) ?? null;
           try {
+            const attemptEventsStart = events.length;
             const { finalText } = await entry.client.runJob(
-              `MSTD_TURN_CONTEXT_V1 ${daemonTurnId} ${brainLease}\n${prompt}`,
+              `${turnMarker}${fittedPrompt.text}`,
               {
                 id: daemonTurnId,
                 onEvent: (e) => events.push(e),
                 timeoutMs: turnTimeoutMs,
               },
             );
+            // 零产出回合（无 assistant 文本、无任何工具调用）＝模型/网关静默故障
+            // （Pi 内部重试耗尽后仍会"正常"收尾）。此时无副作用，抛错走既有
+            // 回合级降级换 provider 重跑——否则空回合被当成功，下游只能瞎编。
+            if (!finalText?.trim() && !events.slice(attemptEventsStart).some((e) => e?.event === "tool_start")) {
+              throw new Error(`provider ${entry.providerKey} 回合零产出（无文本无工具调用），按失败降级`);
+            }
             completed = {
               finalText,
               events,

@@ -1,4 +1,5 @@
 import { pickVariantBlock, withFamilyBlockPrefix, familyForModelId } from "./prompt-variants.mjs";
+import { DEFAULT_MODEL_INPUT_TOKENS, fitModelInput } from "./token-window.mjs";
 
 const CZ_BASE = "https://api.cz900212.com/v1";
 const DEEPSEEK_BASE = "https://api.deepseek.com";
@@ -74,6 +75,7 @@ export function createModelCaller({
   fastRetryDelayMs = 100,
   attemptTimeoutMs = DEFAULT_ATTEMPT_TIMEOUT_MS,
   maxTokens = 8192,
+  maxInputTokens = DEFAULT_MODEL_INPUT_TOKENS,
   log = console.error,
   onEvent = null,
 } = {}) {
@@ -81,6 +83,12 @@ export function createModelCaller({
   const familyOf = (modelKey) => familyForModelId(registry[modelKey]?.model);
   if (!Number.isSafeInteger(attemptTimeoutMs) || attemptTimeoutMs < 1) {
     throw new Error("model attemptTimeoutMs 必须是正整数");
+  }
+  if (!Number.isSafeInteger(maxInputTokens) || maxInputTokens < 1) {
+    throw new Error("model maxInputTokens 必须是正整数");
+  }
+  if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens >= maxInputTokens) {
+    throw new Error("model maxTokens 必须是小于 maxInputTokens 的正整数");
   }
   // 可观测上报 fail-safe：观察者出错绝不反噬调用主链路
   const emit = (evt) => { try { onEvent?.(evt); } catch { /* 忽略 */ } };
@@ -132,12 +140,26 @@ export function createModelCaller({
       const perModelSystem = promptVariant
         ? withFamilyBlockPrefix(system, pickVariantBlock(promptVariant, familyOf(modelKey), env))
         : system;
+      // Leave completion headroom inside the 128K provider context. The input
+      // ceiling remains globally bounded even for fallback models with larger
+      // advertised windows.
+      const requestLimit = Math.max(1, maxInputTokens - maxTokens);
+      const fitted = fitModelInput({ system: perModelSystem, messages }, { maxTokens: requestLimit });
+      if (fitted.truncated) emit({
+        type: "model_input_truncated",
+        chain,
+        model: modelKey,
+        originalTokens: fitted.originalTokens,
+        inputTokens: fitted.tokens,
+        maxInputTokens,
+        reservedOutputTokens: maxTokens,
+      });
       let lastErr = null;
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
           return await callOne(modelKey, {
-            system: perModelSystem,
-            messages,
+            system: fitted.system,
+            messages: fitted.messages,
             thinking: wantThinking,
             // DeepSeek V4 Pro is shared by the reason and response chains. Only reason
             // requests turn on its binary thinking mode; response calls stay non-thinking.

@@ -5,6 +5,7 @@ import { createContextEnvelope } from "../server/safety/context-envelope.mjs";
 import { createSessionTokenRegistry } from "../server/http/session-tokens.mjs";
 import { createReplyProvenanceRegistry } from "../server/safety/reply-egress.mjs";
 import { createActiveTurnRegistry } from "../server/sessions/active-turn.mjs";
+import { estimateTokens } from "../server/models/token-window.mjs";
 
 // 原 active-brain-turn.mjs shim 已删除:取统一注册表的 brain 域(本文件只用 issueLease 选项)。
 const createActiveBrainTurns = (opts = {}) => createActiveTurnRegistry(opts).brainTurns;
@@ -66,6 +67,53 @@ describe("brain（DeepSeek V4 Pro Pi 会话进程管理）", () => {
   it("brain boundary 默认 enforce，非法 mode 启动即拒绝", () => {
     expect(() => createBrain({ startPi: () => mockClient(), store, contextMode: "invalid" })).toThrow(/context mode/);
     expect(() => createBrain({ startPi: () => mockClient(), store })).not.toThrow();
+  });
+
+  it("caps reasoner turn input, keeps the task and records truncation", async () => {
+    const client = mockClient();
+    const events = [];
+    const brain = createBrain({
+      startPi: () => client,
+      store,
+      maxInputTokens: 180,
+      outputReserveTokens: 40,
+      onEvent: (event) => events.push(event),
+      sleepFn: async () => {},
+      setTimeoutFn: () => 0,
+      clearTimeoutFn: () => {},
+    });
+    await brain.turn({
+      session,
+      sessionKey: "k-input-cap",
+      context: "很早的上下文".repeat(100),
+      brief: "完成当前明确任务",
+    });
+    const prompt = client.runJob.mock.calls[0][0];
+    expect(prompt).toMatch(/^MSTD_TURN_CONTEXT_V1 /);
+    expect(prompt).toContain("完成当前明确任务");
+    expect(estimateTokens(prompt)).toBeLessThanOrEqual(140);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "model_input_truncated",
+      chain: "reasoner",
+      maxInputTokens: 180,
+      reservedOutputTokens: 40,
+    }));
+  });
+
+  it("tells task reasoners to search current-chat history when older context is required", async () => {
+    const client = mockClient();
+    const brain = createBrain({
+      startPi: () => client,
+      store,
+      sleepFn: async () => {},
+      setTimeoutFn: () => 0,
+      clearTimeoutFn: () => {},
+    });
+    await brain.turn({ session, sessionKey: "k-history-search", brief: "查找之前讨论的结论" });
+    const prompt = client.runJob.mock.calls[0][0];
+    expect(prompt).toContain("chat_history");
+    expect(prompt).toContain("search_messages");
+    expect(prompt).toMatch(/不代表完整会话/);
   });
 
   it("context envelope在消费前重验：enforce 篡改时不运行 Pi；shadow 保留旧 context", async () => {
@@ -696,6 +744,40 @@ describe("brain（DeepSeek V4 Pro Pi 会话进程管理）", () => {
     const degraded = spawned.find((s) => s.provider === REASON_PROVIDERS[1].provider);
     expect(degraded.client.runJob.mock.calls[0][0]).toContain("张三");
     expect(degraded.client.runJob.mock.calls[0][0]).toContain("重要任务");
+  });
+
+  it("回合零产出（空 finalText 且无工具调用）按失败降级换 provider", async () => {
+    // 真机事故：cz 网关静默故障时 Pi 重试耗尽后"正常"收尾但零产出，
+    // 回合曾被当成功收下，下游据空产出编造"已建好"。零产出无副作用，必须降级重跑。
+    const spawned = [];
+    const startPi = vi.fn((opts) => {
+      const c = mockClient();
+      if (opts.provider === REASON_PROVIDERS[0].provider) {
+        c.runJob = vi.fn(async () => ({ finalText: "" }));
+      }
+      spawned.push({ provider: opts.provider, client: c });
+      return c;
+    });
+    const brain = createBrain({ startPi, store, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {}, log: () => {} });
+    const out = await brain.turn({ session, sessionKey: "k1", brief: "建日程" });
+    expect(out.finalText).toBe("done");
+    expect(out.providerKey).toBe(REASON_PROVIDERS[1].key);
+    expect(spawned[0].client.close).toHaveBeenCalled();
+  });
+
+  it("回合空 finalText 但有工具调用（如 reply 已出站）不算零产出，不降级重跑", async () => {
+    const startPi = vi.fn(() => {
+      const c = mockClient();
+      c.runJob = vi.fn(async (_prompt, { onEvent }) => {
+        onEvent({ event: "tool_start", data: { toolName: "reply" } });
+        return { finalText: "" };
+      });
+      return c;
+    });
+    const brain = createBrain({ startPi, store, sleepFn: async () => {}, setTimeoutFn: () => 0, clearTimeoutFn: () => {}, log: () => {} });
+    const out = await brain.turn({ session, sessionKey: "k1", brief: "x" });
+    expect(out.providerKey).toBe(REASON_PROVIDERS[0].key); // 未降级
+    expect(startPi).toHaveBeenCalledTimes(1);
   });
 
   it("onEvent 结构化上报 spawn/turn 两类降级", async () => {

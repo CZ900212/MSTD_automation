@@ -11,10 +11,15 @@ export function makeStreamProcessor({ onEvent, onDone }) {
   let finished = false;
 
   function handle(evt) {
-    // 累积最后一条 assistant 文本（供最终产出）
+    // 累积最后一条 assistant 文本（供最终产出）。
+    // message_end 对 user 消息同样触发（pi-client.mjs 的提取器同样按 role 过滤）——
+    // 不查 role 会在模型零产出（如网关故障）时把用户 prompt 回显成 finalText，
+    // 下游被当成"回合成功"渲染，真机曾以此谎报"日程已建好"。
     if (evt.type === "message_end") {
-      const txt = textOfMessage(evt.message);
-      if (txt) lastAssistant = txt;
+      if (evt.message?.role === "assistant") {
+        const txt = textOfMessage(evt.message);
+        if (txt) lastAssistant = txt;
+      }
     } else if (evt.type === "agent_end" && !evt.willRetry && Array.isArray(evt.messages)) {
       const last = [...evt.messages].reverse().find((m) => m && m.role === "assistant");
       const txt = textOfMessage(last);

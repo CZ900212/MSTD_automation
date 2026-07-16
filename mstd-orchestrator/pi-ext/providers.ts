@@ -61,7 +61,7 @@ export default function (pi: ExtensionAPI) {
         reasoning: true,
         input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
+        contextWindow: 128000,
         maxTokens: 16384,
         // 主脑推理强度始终锁定 high，避免调用方意外改变计算档位。
         thinkingLevelMap: { off: "high", minimal: "high", low: "high", medium: "high", high: "high", xhigh: "high" },
@@ -73,7 +73,7 @@ export default function (pi: ExtensionAPI) {
         reasoning: true,
         input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
+        contextWindow: 128000,
         maxTokens: 16384,
         // 主脑推理强度【始终锁定 medium】：全档位钉死映射到 medium，
         // 无论 Pi 以何档位启动，发到网关的 reasoning_effort 永远是 medium。
@@ -86,7 +86,7 @@ export default function (pi: ExtensionAPI) {
         reasoning: true,
         input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
+        contextWindow: 128000,
         maxTokens: 16384,
         thinkingLevelMap: { off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh" },
         compat: { supportsReasoningEffort: true, maxTokensField: "max_completion_tokens" },
@@ -97,7 +97,7 @@ export default function (pi: ExtensionAPI) {
         reasoning: false,
         input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
+        contextWindow: 128000,
         maxTokens: 16384,
         compat: { maxTokensField: "max_completion_tokens" },
       },

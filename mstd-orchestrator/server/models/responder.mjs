@@ -1,8 +1,11 @@
 // Always-available public voice: first-reply + reasoner handoff rendering.
 // The responder never requests escalation and never selects a reasoner.
+import { formatNow } from "../time/now.mjs";
 
 const SAFE_ADDRESSED_FALLBACK = "收到，我先处理一下。";
 const REPLY_MAX = 4000;
+const AMBIENT_REPLY_REASONS = new Set(["direct_address", "open_request", "important_correction"]);
+const AMBIENT_SILENCE_REASONS = new Set(["human_conversation", "social_chatter", "unclear_addressee", "reaction_or_emoji"]);
 
 const SCENE = {
   group: "本条发到群聊:默认三句话以内说完,直接给结论;超过三句必须是信息密度撑得起的。",
@@ -16,19 +19,25 @@ const PROGRESS_SCENE = {
 
 const ANSWER_SYSTEM = (soul) => `${soul ? `${soul}\n\n` : ""}你是这位助手本人，直接对用户说话。
 对每批消息输出严格 JSON，二选一:
-1. {"action":"reply","text":"..."} —— 给用户的正式回复（完整答案或诚实的临时答复均可）。
-2. {"action":"no_reply"} —— 无需开口（旁听闲聊、与你无关、纯表情）。
+1. {"action":"reply","text":"...","reason_code":"..."} —— 给用户的正式回复（完整答案或诚实的临时答复均可）。
+2. {"action":"no_reply","reason_code":"..."} —— 无需开口（旁听闲聊、与你无关、纯表情）。
 
 规则:
 - 点名/私聊场景通常应 reply，不要装聋。
-- 旁听(mode=ambient)保持更高沉默倾向:只有明确价值时才开口。
+- 旁听(mode=ambient)必须先判断“这句话是在对谁说”，再判断自己是否有价值。不要把“你能接话”误当成“对方在和你说话”。
+- 称呼了其他人的名字后，后续省略主语的承接、反问、打趣、感叹和短句，默认仍属于人与人的对话，直到出现明确转向；这种情况 no_reply。
+- 没有明确受话人的短句、代词承接、语气词、普通寒暄、社交邀约和日常闲聊默认 no_reply；无法确定受话对象时也 no_reply。
+- ambient 只在三类情况开口：明确叫你或向你提问(reason_code=direct_address)；没有指向其他人的开放求助/群体问题(reason_code=open_request)；不纠正会造成明显损失的重要错误(reason_code=important_correction)。
+- ambient 沉默原因只能是：人与人对话(human_conversation)、普通闲聊(social_chatter)、受话人不明(unclear_addressee)、纯反应或表情(reaction_or_emoji)。
+- 需要先核实、暂时答不全本身不是 ambient 沉默理由；但前提仍是消息确实面向你或属于开放求助。
 - 口吻必须是上面人格设定里的这个人，不要客服腔。
 - 身份、寒暄或对话中已有信息，可以直接完整回答。
 - 涉及新事实、需要查证、需要工具或最新数据时，不得凭模型参数记忆直接作答；必须用自己的话自然说明要先核实，由后续处理带回事实结果。
 - 用户要求判断、建议、选择、比较或评价时，也不得在首条回复里直接给倾向、结论、优劣或支撑这些结论的新事实；必须自然说明要先分析核实，由后续处理带回结论。近期对话里出现过问题，不代表其中已经有可靠答案。
 - 用户可见文案中绝不谈论内部系统、路由、模型分层或实现细节。
+- 非 ambient 场景的 reason_code 用简短 snake_case 描述依据。
 - 只输出一个 JSON 对象，不要 Markdown 围栏，不要额外文字。
-- 除 action/text 外不要添加任何字段。`;
+- 除 action/text/reason_code 外不要添加任何字段。`;
 
 const HANDOFF_SYSTEM = ({ soul, kind, deliverKind }) => `${soul ? `${soul}\n\n` : ""}你是团队的对外表达出口(执笔人)。${
   kind === "card_copy"
@@ -58,7 +67,7 @@ function renderItems(items) {
 }
 
 /** Strict parser for responder foreground output. Rejects routing fields and mixed fences. */
-export function parseResponderOutput(text) {
+export function parseResponderOutput(text, { mode = null } = {}) {
   if (typeof text !== "string" || !text.trim()) throw new Error("empty responder output");
   const trimmed = text.trim();
   // Reject fenced/mixed output — foreground contract is a single bare JSON object.
@@ -67,16 +76,20 @@ export function parseResponderOutput(text) {
   }
   const j = JSON.parse(trimmed);
   if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("bad responder schema");
-  const allowed = new Set(["action", "text"]);
+  const allowed = new Set(["action", "text", "reason_code"]);
   if (Object.keys(j).some((key) => !allowed.has(key))) throw new Error("unexpected responder field");
   if (!["reply", "no_reply"].includes(j.action)) throw new Error("unsupported responder action");
+  const reasonCode = typeof j.reason_code === "string" ? j.reason_code.trim() : "";
+  if (mode === "ambient" && !reasonCode) throw new Error("ambient reason_code required");
   if (j.action === "no_reply") {
-    if (Object.keys(j).length !== 1) throw new Error("no_reply must only have action");
-    return { action: "no_reply" };
+    if (Object.keys(j).some((key) => !["action", "reason_code"].includes(key))) throw new Error("no_reply fields invalid");
+    if (mode === "ambient" && !AMBIENT_SILENCE_REASONS.has(reasonCode)) throw new Error("bad ambient silence reason_code");
+    return { action: "no_reply", ...(reasonCode ? { reason_code: reasonCode } : {}) };
   }
   if (typeof j.text !== "string" || !j.text.trim()) throw new Error("reply requires non-empty text");
   if (j.text.length > REPLY_MAX) throw new Error("reply text too long");
-  return { action: "reply", text: j.text.trim() };
+  if (mode === "ambient" && !AMBIENT_REPLY_REASONS.has(reasonCode)) throw new Error("bad ambient reply reason_code");
+  return { action: "reply", text: j.text.trim(), ...(reasonCode ? { reason_code: reasonCode } : {}) };
 }
 
 /** Strict parser for stage-aware progress handoff output. */
@@ -113,7 +126,7 @@ function isAddressedOrPrivate(mode) {
  * Create the always-available responder.
  * @param {{ caller: { call: Function }, soul?: string }} opts
  */
-export function createResponder({ caller, soul = "", onEvent = null } = {}) {
+export function createResponder({ caller, soul = "", onEvent = null, now = () => new Date() } = {}) {
   if (!caller || typeof caller.call !== "function") {
     throw new Error("createResponder: caller.call 必填");
   }
@@ -128,6 +141,7 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
   } = {}) {
     const soulText = soulOverride ?? snapshot?.soul ?? soul;
     const prompt = [
+      `## 当前时间\n现在是 ${formatNow(now)}`,
       `## 场景`,
       `mode=${mode}`,
       recentConversation ? `## 近期对话\n${recentConversation}` : "",
@@ -144,11 +158,11 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
         messages: [{ role: "user", content: prompt }],
         promptVariant: "answer",
       });
-      verdict = parseResponderOutput(out.text);
+      verdict = parseResponderOutput(out.text, { mode });
     } catch {
       verdict = isAddressedOrPrivate(mode)
-        ? { action: "reply", text: SAFE_ADDRESSED_FALLBACK }
-        : { action: "no_reply" };
+        ? { action: "reply", text: SAFE_ADDRESSED_FALLBACK, reason_code: "parse_fallback" }
+        : { action: "no_reply", reason_code: "unclear_addressee" };
       try {
         onEvent?.({
           type: "responder_fallback",
@@ -162,18 +176,21 @@ export function createResponder({ caller, soul = "", onEvent = null } = {}) {
 
     // Addressed/private must not stay silent after a successful parse of no_reply either.
     if (isAddressedOrPrivate(mode) && verdict.action === "no_reply") {
-      verdict = { action: "reply", text: SAFE_ADDRESSED_FALLBACK };
+      verdict = { action: "reply", text: SAFE_ADDRESSED_FALLBACK, reason_code: "addressed_fallback" };
     }
     if (verdict.action === "reply" && !verdict.text.trim()) {
-      verdict = { action: "reply", text: SAFE_ADDRESSED_FALLBACK };
+      verdict = { action: "reply", text: SAFE_ADDRESSED_FALLBACK, reason_code: "empty_reply_fallback" };
     }
 
+    const { reason_code: reasonCode = null, ...publicVerdict } = verdict;
+
     return {
-      ...verdict,
+      ...publicVerdict,
       meta: {
         provider: out?.model ?? null,
         usage: out?.usage ?? null,
         sessionKey,
+        reasonCode,
       },
     };
   }

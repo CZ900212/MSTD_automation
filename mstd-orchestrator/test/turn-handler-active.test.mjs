@@ -256,6 +256,54 @@ describe("turn-handler active architecture", () => {
     expect(responder.answerTurn.mock.calls[0][0].recentConversation).not.toContain("对，改成周五");
   });
 
+  it("fills responder history by token budget beyond the former 20-row cap", async () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const taskStore = createReasoningTaskStore(db);
+    const sessionKey = "feishu:group:oc_history_budget";
+    const session = store.getOrCreate(sessionKey, { kind: "group", chatId: "oc_history_budget" });
+    for (let i = 1; i <= 30; i++) {
+      store.append(session.id, { role: "user", senderName: `成员${i}`, content: `历史消息${i}`, ts: i });
+    }
+    const events = [];
+    const responder = { answerTurn: vi.fn(async () => ({ action: "no_reply", meta: { reasonCode: "human_conversation" } })) };
+    const handler = createTurnHandler({
+      architectureMode: "active",
+      triage: { triage: vi.fn() },
+      brain: { turn: vi.fn(), isBusy: () => false, steer: vi.fn(), recycle: vi.fn() },
+      responder,
+      taskStore,
+      coordinator: { schedule: vi.fn() },
+      store,
+      budget: { allow: () => ({ ok: true }), record: vi.fn() },
+      onEvent: (event) => events.push(event),
+      replyPipeline: {
+        deliverText: vi.fn(), deliverTerminal: vi.fn(), handleReply: vi.fn(),
+        renderAutomationReply: vi.fn(), deliverTrusted: vi.fn(),
+      },
+    });
+
+    await handler.handleTurn({
+      kind: "message",
+      session,
+      sessionKey,
+      mode: "ambient",
+      items: [{ content: "当前消息", senderName: "成员30", ts: 31 }],
+    });
+
+    const recent = responder.answerTurn.mock.calls[0][0].recentConversation;
+    expect(recent).toContain("历史消息1");
+    expect(recent).toContain("历史消息30");
+    expect(recent).not.toContain("当前消息");
+    expect(recent.split("\n")).toHaveLength(30);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "responder_sent",
+      action: "no_reply",
+      reason_code: "human_conversation",
+    }));
+  });
+
   it("binds a delayed message to the id returned by append instead of an older high-ts row", async () => {
     const db = openDb();
     migrate(db);

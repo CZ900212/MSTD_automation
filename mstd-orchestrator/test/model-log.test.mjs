@@ -180,6 +180,22 @@ describe("model_log（模型链路可观测落库）", () => {
     expect(kinds).toEqual(expect.arrayContaining(["dispatcher_decision", "task_created", "reasoner_started", "handoff_sent"]));
   });
 
+  it("persists model input truncation budgets for diagnosis", () => {
+    mlog.record({
+      type: "model_input_truncated",
+      chain: "responder",
+      model: "v4-pro",
+      originalTokens: 140000,
+      inputTokens: 119808,
+      maxInputTokens: 128000,
+      reservedOutputTokens: 8192,
+    });
+    const row = mlog.list({ kind: "model_input_truncated" })[0];
+    expect(row.detail).toContain("original_tokens=140000");
+    expect(row.detail).toContain("input_tokens=119808");
+    expect(row.detail).toContain("reserved_output_tokens=8192");
+  });
+
   it("combines task/run/dispatch/decision filters for one correlated timeline", () => {
     mlog.record({ type: "reasoner_started", taskId: "t1", runId: "r1", dispatchId: "d1", action: "spawn_new" });
     mlog.record({ type: "handoff_sent", taskId: "t1", runId: "r2", dispatchId: "d1", action: "spawn_new" });

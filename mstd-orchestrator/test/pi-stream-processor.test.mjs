@@ -47,4 +47,18 @@ describe("makeStreamProcessor over the frozen fixture", () => {
     proc.pushStderr("boom");
     expect(events).toEqual([{ event: "error", data: { level: "stderr", text: "boom" } }]);
   });
+
+  it("ignores non-assistant message_end — a zero-output turn must NOT echo the user prompt as finalText", () => {
+    // 真机事故：网关故障时模型零产出，user 消息的 message_end 被当成 assistant 文本，
+    // prompt（含 turn lease 行）回显成 finalText，下游把失败回合渲染成"已完成"。
+    let done = null;
+    const proc = makeStreamProcessor({ onEvent: () => {}, onDone: (d) => { done = d; } });
+    proc.pushLine(JSON.stringify({
+      type: "message_end",
+      message: { role: "user", content: [{ type: "text", text: "MSTD_TURN_CONTEXT_V1 t l\n建日程" }] },
+    }));
+    proc.pushLine(JSON.stringify({ type: "agent_end", willRetry: false, messages: [] }));
+    expect(done).not.toBeNull();
+    expect(done.finalText).toBe("");
+  });
 });

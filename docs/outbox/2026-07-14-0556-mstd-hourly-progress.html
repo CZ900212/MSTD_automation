@@ -1,0 +1,25 @@
+<!-- 本正文仅含脱敏工程进度，不含密钥、token、原始聊天或个人数据。 -->
+<h2>MSTD 小时进度</h2>
+<p><strong>时间：</strong>2026-07-14 05:56 CST</p>
+<h3>本小时真实进度</h3>
+<ul>
+  <li>P0“慢机应答终态缺失”已进入对抗性收口：前台业务回合已有 daemon turn ID、lease、resident epoch 绑定；ACK、card_copy、progress 明确为非终态；正式回复、出站安全兜底、daemon 固定兜底才可终态化；memory maintenance 已拆为静默独立回合。</li>
+  <li>最新已确认的验证基线（早于最后一轮审计驱动改动）：生命周期专项 145/145；orchestrator 全量 1010 passed / 6 gated skipped；UI 51/51；synthetic policy 12/12。最后两处审计驱动测试改动尚未重跑，因此不把该基线冒充为当前最终绿灯。</li>
+  <li>串行测试群 E2E 已尝试但未通过：persona 场景的轮询器把首条 ACK 当成最终回答，修正运行参数后仍只抓到 ACK。这同时证明 E2E 门禁必须按终态回执等待，不能以第一条 bot 消息判成功。</li>
+  <li>独立审核尚未完成：本轮 6 个互相独立的审计线程均因模型网关 HTTP 503 提前终止，未取得可接受的独立代码复审或测试审卷结论，故 P0 未宣称完成。</li>
+</ul>
+<h3>当前阻塞与未关闭缺陷</h3>
+<ul>
+  <li>active-brain outcome 在 daemon fallback 之前冻结，无法反映真实最终来源。</li>
+  <li>物理发送成功后的终态回执提交顺序晚于 transcript 写入，数据库写失败可能诱发重复兜底。</li>
+  <li>daemon fallback 发送失败后不能清掉非终态回执；同时还需校验真实 message receipt、防并发双 final，并补足 multipart/拒绝路径测试。</li>
+  <li>工作树仍包含多批继承改动；未整树暂存、未提交、未覆盖来源不明改动。</li>
+</ul>
+<h3>下一小时计划</h3>
+<ol>
+  <li>把“关闭 admission 并排空”与“冻结最终 outcome”拆成两阶段。</li>
+  <li>把终态回执移到已确认物理发送成功之后、非关键 transcript 写入之前；失败时保留可恢复的非终态状态。</li>
+  <li>补并发 final、缺失 message receipt、DB append 失败、daemon fallback 失败、真实 registry stale/closing/closed 矩阵测试。</li>
+  <li>重跑专项、全量、UI、policy、mock/local Pi；网关恢复后重新发起互不共享上下文的代码审核和测试审卷，再串行重跑测试群 E2E。</li>
+</ol>
+<p><strong>结论：</strong>P0 仍在修复中；现阶段没有可宣称完成或可提交的批次。</p>

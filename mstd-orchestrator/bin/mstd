@@ -6,6 +6,7 @@
 #   mstd restart    stop + start
 #   mstd status     看运行状态与消费者健康
 #   mstd logs       实时跟随 daemon.log
+#   mstd tui        打开只读监控 TUI（mstd tui --probe 只做自检，不进 UI）
 set -euo pipefail
 
 # —— 定位 orchestrator 根目录（跟随 symlink，任意位置调用都对）——
@@ -178,12 +179,19 @@ status() {
   fi
 }
 
+# 只读监控 TUI。直连只读 DB，daemon 不在也能开（会显示 down）。透传额外参数（如 --probe）。
+tui() {
+  cd "$ROOT"
+  exec node --env-file-if-exists=.env tui/index.mjs "$@"
+}
+
 case "${1:-start}" in
   start|"") start ;;
   stop)     stop ;;
   restart)  stop; echo; start ;;
   status)   status ;;
   logs)     exec tail -f "$LOG" ;;
-  -h|--help|help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) red "未知命令: $1"; echo "用法: mstd [start|stop|restart|status|logs]"; exit 1 ;;
+  tui)      shift; tui "$@" ;;
+  -h|--help|help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) red "未知命令: $1"; echo "用法: mstd [start|stop|restart|status|logs|tui]"; exit 1 ;;
 esac

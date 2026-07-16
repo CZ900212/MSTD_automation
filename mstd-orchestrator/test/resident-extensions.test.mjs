@@ -16,13 +16,14 @@ describe("buildResidentExtensions(production source of truth)", () => {
       "/r/pi-ext/background-job.ts",
       "/r/pi-ext/heartbeat.ts",
       "/r/pi-ext/lark-read.ts",
+      "/r/pi-ext/time.ts",
     ]);
   });
 
   it("binds each production role to its exact extension tool allowlist", () => {
     expect(buildCapabilityProfile("/r", "resident")).toMatchObject({
       role: "resident",
-      tools: ["reply", "memory", "session_search", "propose_actions", "spawn_background_job", "heartbeat_update", "lark_read"],
+      tools: ["reply", "memory", "session_search", "propose_actions", "spawn_background_job", "heartbeat_update", "lark_read", "time"],
     });
     expect(buildCapabilityProfile("/r", "readonly_job")).toMatchObject({
       role: "readonly_job",

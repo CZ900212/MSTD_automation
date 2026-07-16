@@ -358,6 +358,20 @@ export function createReasoningCoordinator({
         purpose: "business",
         snapshot: typeof snapshotFn === "function" ? snapshotFn({ sessionKey }) : null,
       });
+      // 推理机的工具调用必须可归因：Pi 无会话落盘（--no-session），这里是工具轨迹唯一持久点。
+      for (const e of result?.events ?? []) {
+        if (e?.event === "tool_start") {
+          emit({
+            type: "reasoner_tool", sessionKey, taskId: task.id, runId: run.id,
+            detail: `${e.data?.toolName ?? "?"} args=${JSON.stringify(e.data?.args ?? {}).slice(0, 300)}`,
+          });
+        } else if (e?.event === "tool_result" && e.data?.isError) {
+          emit({
+            type: "reasoner_tool_error", sessionKey, taskId: task.id, runId: run.id,
+            detail: `${e.data?.toolName ?? "?"} error=${JSON.stringify(e.data?.result ?? null).slice(0, 300)}`,
+          });
+        }
+      }
       for (const input of pendingInputs) runStore.markInputDelivered(input.id);
       if (inputId && !pendingInputs.some((input) => input.id === inputId)) runStore.markInputDelivered(inputId);
       const lifecycle = result?.turnLifecycle ?? null;

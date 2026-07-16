@@ -1,0 +1,11 @@
+<!-- 发信受 Claude Code auto mode 权限分类器阻断；待允许外发后通过 bid-browse /operator/send 投递。 -->
+<h2>MSTD 小时进度</h2>
+<p><strong>时间：</strong>2026-07-13 22:52 CST</p>
+<ul>
+  <li>已修复 context envelope 余下边界：继承 signature getter 不再执行；shadow 模式在验证前不读取不可信属性；shadow 仅观察规范化/截断，不改变旧业务上下文。</li>
+  <li>补上 policy-eval 假绿：敌意样例即使声称 safe fallback，只要未 hard reject 或任一 case 不匹配，门禁都会失败。</li>
+  <li>验证：专项 93/93；安全专项 58/58；orchestrator 全量 922 passed、6 gated skipped；UI 51/51。</li>
+  <li>当前限制：未知归属的现有 orchestrator/飞书 consumer 进程仍在运行，遵守 PID 所有权红线，尚未杀进程或跑串行 E2E。</li>
+  <li>下一小时：完成独立复审仲裁，随后转入慢机 ACK-only 应答终态修复。</li>
+</ul>
+<p>本邮件不含密钥、token 或原始聊天内容。</p>

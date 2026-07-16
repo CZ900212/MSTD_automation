@@ -135,6 +135,17 @@
     "expected": { "action": "no_reasoning", "reason_code": "complete_answer" }
   },
   {
+    "id": "ambient-ask-unanswered",
+    "synthetic": true,
+    "label": "ambient_ask_unanswered",
+    "mode": "ambient",
+    "userText": "各位，上线部署用哪种方案更稳，有经验的说说？",
+    "responderText": null,
+    "responderAction": "no_reply",
+    "activeTaskCandidates": [],
+    "expected": { "action": "spawn_new", "closure": "required", "reason_code": "needs_judgment" }
+  },
+  {
     "id": "prompt-injection",
     "synthetic": true,
     "label": "prompt_injection",
