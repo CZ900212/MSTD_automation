@@ -28,6 +28,16 @@ export function createSessionExpiry({
     return active;
   }
 
+  function hasOpenReasoningRun(sessionId) {
+    return db.prepare(
+      `SELECT 1
+       FROM reasoning_runs r
+       JOIN reasoning_tasks t ON t.id = r.task_id
+       WHERE t.session_id = ? AND r.status IN ('queued', 'running', 'closing')
+       LIMIT 1`
+    ).get(sessionId) != null;
+  }
+
   async function sweep(nowTs = Date.now()) {
     const cutoff = Math.max(nowTs - idleMs, lastResetTs(nowTs));
     const stale = db.prepare(
@@ -37,7 +47,8 @@ export function createSessionExpiry({
     for (const s of stale) {
       const didArchive = await actors.enqueue(s.session_key, async () => {
         const current = db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(s.id);
-        if (!current || current.status !== "active" || current.updated_at >= cutoff || checkActiveJob(current.session_key)) {
+        if (!current || current.status !== "active" || current.updated_at >= cutoff
+          || checkActiveJob(current.session_key) || hasOpenReasoningRun(current.id)) {
           return 0;
         }
         // 有内容的会话才值得 flush（空会话直接归档）
@@ -52,7 +63,7 @@ export function createSessionExpiry({
             log(`[expiry] flush 回合失败 ${current.session_key}（仍归档）: ${e?.message ?? e}`);
           }
         }
-        if (checkActiveJob(current.session_key)) return 0;
+        if (checkActiveJob(current.session_key) || hasOpenReasoningRun(current.id)) return 0;
         const result = db.prepare(
           "UPDATE agent_sessions SET status = 'archived' WHERE id = ? AND status = 'active' AND updated_at < ?"
         ).run(current.id, cutoff);

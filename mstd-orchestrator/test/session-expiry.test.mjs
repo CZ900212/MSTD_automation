@@ -251,4 +251,28 @@ describe("会话过期重置（flush 先行 + 豁免）", () => {
     expect(r.archived).toBe(0);
     expect(db.prepare("SELECT status FROM agent_sessions WHERE session_key='feishu:p2p:ou_busy'").get().status).toBe("active");
   });
+
+  it("有开放 reasoning run 时暂缓 flush 与归档", async () => {
+    const s = mkSession("feishu:p2p:ou_reasoning", NOW - 25 * 3600_000);
+    store.append(s.id, { role: "user", content: "正在推理", ts: NOW - 25 * 3600_000 });
+    db.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(NOW - 25 * 3600_000, s.id);
+    db.prepare(
+      `INSERT INTO reasoning_tasks
+       (id, session_id, title, summary, status, closure_mode, created_at, updated_at)
+       VALUES ('task-open', ?, '开放任务', '', 'active', 'required', ?, ?)`
+    ).run(s.id, NOW - 25 * 3600_000, NOW - 25 * 3600_000);
+    db.prepare(
+      `INSERT INTO reasoning_runs
+       (id, task_id, origin_kind, origin_id, brief, status, closure_mode, closure_state,
+        terminal_idempotency_key, created_at, updated_at)
+       VALUES ('run-open', 'task-open', 'manual', 'test', '', 'running', 'required', 'open',
+        'terminal-open', ?, ?)`
+    ).run(NOW - 25 * 3600_000, NOW - 25 * 3600_000);
+
+    const result = await expiry.sweep(NOW);
+
+    expect(result.archived).toBe(0);
+    expect(brain.turn).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT status FROM agent_sessions WHERE id = ?").get(s.id).status).toBe("active");
+  });
 });

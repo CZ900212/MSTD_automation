@@ -77,10 +77,53 @@ export function createSessionStore(db) {
   const touchSession = db.prepare(
     "UPDATE agent_sessions SET updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END WHERE id = ?"
   );
+  const reactivateArchived = db.transaction((sessionId, meta, now) => {
+    const terminalReason = "session archived epoch reactivated";
+    const claimed = db.prepare(
+      `UPDATE agent_sessions
+       SET status = 'active', version = version + 1, updated_at = ?,
+           chat_id = COALESCE(chat_id, ?), title = COALESCE(title, ?),
+           memory_nudge_watermark = (
+             SELECT COUNT(*) FROM agent_messages
+             WHERE session_id = ? AND role = 'user' AND observed = 0
+           )
+       WHERE id = ? AND status = 'archived'`
+    ).run(now, meta.chatId ?? null, meta.title ?? null, sessionId, sessionId);
+    if (claimed.changes !== 1) return false;
+    db.prepare(
+      `UPDATE reasoning_runs
+       SET status = 'interrupted', closure_state = 'cancelled', failure_summary = ?,
+           updated_at = ?, completed_at = ?
+       WHERE task_id IN (SELECT id FROM reasoning_tasks WHERE session_id = ?)
+         AND status IN ('queued', 'running', 'closing')`
+    ).run(terminalReason, now, now, sessionId);
+    db.prepare(
+      `UPDATE reasoning_run_inputs
+       SET status = 'controlled'
+       WHERE task_id IN (SELECT id FROM reasoning_tasks WHERE session_id = ?)
+         AND status = 'pending'`
+    ).run(sessionId);
+    db.prepare(
+      `UPDATE reasoning_tasks
+       SET status = 'cancelled', updated_at = ?, completed_at = ?
+       WHERE session_id = ? AND status = 'active'`
+    ).run(now, now, sessionId);
+    db.prepare(
+      `UPDATE reasoning_dispatches
+       SET status = 'failed', verdict_json = COALESCE(verdict_json, ?), updated_at = ?
+       WHERE session_id = ? AND status IN ('pending_send', 'pending_review', 'running')`
+    ).run(JSON.stringify({ reason: terminalReason }), now, sessionId);
+    db.prepare("UPDATE agent_messages SET active = 0 WHERE session_id = ? AND active = 1").run(sessionId);
+    return true;
+  });
 
   function getOrCreate(sessionKey, meta = {}, now = Date.now()) {
     const found = getBySessionKey.get(sessionKey);
     if (found) {
+      if (found.status === "archived") {
+        reactivateArchived(found.id, meta, now);
+        return getBySessionKey.get(sessionKey);
+      }
       // 跨目标投递先建的 p2p 会话 chat_id 为空；入站带真值时回填——lark_read 会话域门禁依赖它
       if (!found.chat_id && meta.chatId) {
         db.prepare("UPDATE agent_sessions SET chat_id = ? WHERE id = ?").run(meta.chatId, found.id);
@@ -151,6 +194,7 @@ export function createSessionStore(db) {
 
 
   function promptRecent(sessionId, { limit = 50, roles = null } = {}) {
+    if (db.prepare("SELECT 1 FROM agent_sessions WHERE id = ? AND status = 'active'").get(sessionId) == null) return [];
     if (Array.isArray(roles) && roles.length === 0) return [];
     const n = Number.isInteger(limit) && limit > 0 ? limit : 50;
     const roleClause = roles?.length ? ` AND role IN (${roles.map(() => "?").join(",")})` : "";
@@ -165,6 +209,9 @@ export function createSessionStore(db) {
 
   // 重放集:全部压缩摘要(时序)+ 近况原文——多轮压缩后早期历史仍在,不许只取最新一份摘要
   function replaySet(sessionId, { limit = 50 } = {}) {
+    if (db.prepare("SELECT 1 FROM agent_sessions WHERE id = ? AND status = 'active'").get(sessionId) == null) {
+      return { summary: null, messages: [] };
+    }
     const sums = db.prepare(
       `SELECT content FROM agent_messages
        WHERE session_id = ? AND active = 1 AND role = 'system'

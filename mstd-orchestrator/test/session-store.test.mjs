@@ -37,6 +37,60 @@ describe("session store", () => {
     store.touch(session.id, 3000);
     expect(db.prepare("SELECT updated_at FROM agent_sessions WHERE id = ?").get(session.id).updated_at).toBe(3000);
   });
+
+  it("archived 会话首次复用开启新 epoch，并收口旧消息与推理状态", () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const sessionKey = "feishu:p2p:ou_epoch";
+    const session = store.getOrCreate(sessionKey, { kind: "p2p" }, 100);
+    store.append(session.id, { role: "user", senderOpenId: "ou_epoch", content: "旧消息", ts: 101 });
+    db.prepare(
+      `INSERT INTO reasoning_tasks
+       (id, session_id, title, summary, status, closure_mode, created_at, updated_at)
+       VALUES ('task-old', ?, '旧任务', '', 'active', 'required', 102, 102)`
+    ).run(session.id);
+    db.prepare(
+      `INSERT INTO reasoning_dispatches
+       (id, session_id, source_message_ids_json, source_batch_key, responder_action,
+        mode, status, created_at, updated_at)
+       VALUES ('dispatch-old', ?, '[]', 'batch-old', 'no_reply', 'addressed', 'running', 103, 103)`
+    ).run(session.id);
+    db.prepare(
+      `INSERT INTO reasoning_runs
+       (id, task_id, origin_dispatch_id, origin_kind, origin_id, brief, status,
+        closure_mode, closure_state, terminal_idempotency_key, created_at, updated_at)
+       VALUES ('run-old', 'task-old', 'dispatch-old', 'dispatch', 'dispatch-old', '', 'running',
+        'required', 'open', 'terminal-old', 104, 104)`
+    ).run();
+    db.prepare(
+      `INSERT INTO reasoning_run_inputs
+       (id, run_id, task_id, origin_kind, origin_id, dispatch_id, session_version,
+        status, brief, created_at)
+       VALUES ('input-old', 'run-old', 'task-old', 'reinject', 'reinject-old', 'dispatch-old', 0,
+        'pending', '旧输入', 105)`
+    ).run();
+    db.prepare("UPDATE agent_sessions SET status = 'archived' WHERE id = ?").run(session.id);
+
+    expect(store.promptRecent(session.id)).toEqual([]);
+    expect(store.replaySet(session.id)).toEqual({ summary: null, messages: [] });
+
+    const reactivated = store.getOrCreate(sessionKey, { chatId: "oc_epoch" }, 200);
+    expect(reactivated.id).toBe(session.id);
+    expect(reactivated.status).toBe("active");
+    expect(reactivated.version).toBe(1);
+    expect(reactivated.updated_at).toBe(200);
+    expect(reactivated.chat_id).toBe("oc_epoch");
+    expect(store.promptRecent(session.id)).toEqual([]);
+    expect(db.prepare("SELECT status FROM reasoning_tasks WHERE id = 'task-old'").get().status).toBe("cancelled");
+    expect(db.prepare("SELECT status FROM reasoning_runs WHERE id = 'run-old'").get().status).toBe("interrupted");
+    expect(db.prepare("SELECT status FROM reasoning_run_inputs WHERE id = 'input-old'").get().status).toBe("controlled");
+    expect(db.prepare("SELECT status FROM reasoning_dispatches WHERE id = 'dispatch-old'").get().status).toBe("failed");
+
+    store.append(session.id, { role: "user", senderOpenId: "ou_epoch", content: "新消息", ts: 201 });
+    expect(store.replaySet(session.id).messages.map((message) => message.content)).toEqual(["新消息"]);
+    expect(store.getOrCreate(sessionKey).version).toBe(1);
+  });
 });
 
 // Task 7 C3.5：持久 nudge watermark——从 transcript 模数判断改为累计计数 + 事务 claim
