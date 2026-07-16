@@ -45,10 +45,10 @@ export function buildPiArgs({ provider, model, extensions = [], capabilityProfil
   return args;
 }
 
-export function startPi({ provider, model, extensions = [], capabilityProfile = null, thinking, cwd, env, debug = false } = {}) {
+export function startPi({ provider, model, extensions = [], capabilityProfile = null, thinking, cwd, env, debug = false, spawnFn = spawn } = {}) {
   const args = buildPiArgs({ provider, model, extensions, capabilityProfile, thinking });
 
-  const child = spawn(PI_BIN, args, {
+  const child = spawnFn(PI_BIN, args, {
     cwd: cwd || process.cwd(),
     env: buildPiEnv(process.env, { PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1", ...(env || {}) }),
     stdio: ["pipe", "pipe", "pipe"],

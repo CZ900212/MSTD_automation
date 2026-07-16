@@ -69,4 +69,18 @@ describe("memory files（五层/上限/漂移/journal）", () => {
     expect(() => files.writeLayer("group", "../evil", "x")).toThrow();
     expect(() => files.readLayer("user", "a/b")).toThrow();
   });
+
+  it("writeUserJournal 漂移检测:旧 hash 被拒 + 生成 .bak(与 writeLayer 的独立实现同契约)", () => {
+    const { snapshotHash } = files.writeUserJournal("ou_drift", "第一版", {});
+    const p = join(root, "memory", "user-journal", "ou_drift.md");
+    writeFileSync(p, "外部直接改盘", "utf8");                       // 绕过 API 制造漂移
+    expect(() => files.writeUserJournal("ou_drift", "第二版", { expectedHash: snapshotHash }))
+      .toThrow(DriftError);
+    expect(readFileSync(p, "utf8")).toBe("外部直接改盘");            // 拒写不覆盖现内容
+    const baks = readdirSync(join(root, "memory", "user-journal")).filter((f) => f.startsWith("ou_drift.md.bak."));
+    expect(baks.length).toBe(1);                                     // 漂移现场已备份
+    // 不带 expectedHash 的写入不做漂移检查,照常成功(现契约)
+    files.writeUserJournal("ou_drift", "第二版", {});
+    expect(readFileSync(p, "utf8")).toBe("第二版");
+  });
 });

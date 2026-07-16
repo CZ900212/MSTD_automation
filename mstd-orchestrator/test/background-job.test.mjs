@@ -51,6 +51,24 @@ describe("后台 job 委托（orch_jobs 复用 + 版本快照 + 信号量）", (
     });
   });
 
+  it("未知 sensitivity 标签 fail-closed 降级 restricted;缺省标签走 internal 默认", async () => {
+    const done = [];
+    const bg = createBackgroundJobs({
+      db,
+      semaphore: createSemaphore(2),
+      runJob: vi.fn(async ({ kind }) => (kind === "unknown-label"
+        ? { text: "密", sensitivity: "secret" }   // 非枚举标签
+        : { text: "普通" })),                     // 缺省标签
+      onComplete: (x) => done.push(x),
+    });
+    bg.spawn({ sessionKey: "feishu:p2p:ou_a", sessionVersion: 0, kind: "unknown-label", params: {} });
+    bg.spawn({ sessionKey: "feishu:p2p:ou_a", sessionVersion: 0, kind: "no-label", params: {} });
+    await sleep(20);
+    const byKind = Object.fromEntries(done.map((d) => [d.kind, d.derived_result.sensitivity]));
+    expect(byKind["unknown-label"]).toBe("restricted"); // fail-closed:回注端会拒发
+    expect(byKind["no-label"]).toBe("internal");        // legacy 纯文本边界的既定默认
+  });
+
   it("completion carries a structured derived_result with parent provenance and sensitivity", async () => {
     const done = [];
     const bg = createBackgroundJobs({
