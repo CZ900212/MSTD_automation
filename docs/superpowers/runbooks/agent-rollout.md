@@ -76,7 +76,8 @@ node mstd-orchestrator/scripts/release-manifest.mjs \
 - 默认 `MSTD_AGENT_ARCHITECTURE_MODE=legacy`，active targets 为空。
 - 全局 shadow：设为 `shadow`；legacy 仍是唯一业务出站，新链只记录 telemetry，不能创建 dispatch/task/run/Pi。
 - 定向 canary：设为 `active`，并把已批准的 canonical session key 写入 `MSTD_AGENT_ACTIVE_TARGETS`。未命中会话保持 legacy；`MSTD_AGENT_SHADOW_TARGETS` 命中会话只跑 shadow。
-- active 模式下 targets 为空或含非法 session key 会启动失败。回滚时清空 active targets、切回 legacy 并重启；写闸独立保持关闭。
+- 全局 active：设为 `active` 并显式设置 `MSTD_AGENT_ACTIVE_ALL=1`；所有合法会话走 Responder–Dispatcher–Reasoner，active targets 可保留作为历史灰度记录但不再限制范围。
+- active 模式下既未打开 `ACTIVE_ALL`、targets 又为空，或 targets 含非法 session key时会启动失败。回滚时将 `ACTIVE_ALL=0`、清空 active targets、切回 legacy 并重启；写闸独立保持原配置。
 
 ## 3. 新群接入 SOP（观察期两周）
 

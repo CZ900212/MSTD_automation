@@ -54,11 +54,15 @@ function architectureTargets(env, key) {
 export function resolveAgentArchitecture({
   requestedMode = "legacy",
   sessionKey,
+  activeAll = false,
   activeTargets = new Set(),
   shadowTargets = new Set(),
 } = {}) {
   if (!AGENT_ARCHITECTURE_MODES.has(requestedMode)) throw new Error("requested architecture mode 非法");
   if (!canonicalDeliverableKey(sessionKey)) return { requestedMode, effectiveMode: "legacy", match: "invalid_target" };
+  if (requestedMode === "active" && activeAll) {
+    return { requestedMode, effectiveMode: "active", match: "active_all" };
+  }
   if (requestedMode === "active" && activeTargets.has(sessionKey)) {
     return { requestedMode, effectiveMode: "active", match: "active_target" };
   }
@@ -69,10 +73,11 @@ export function resolveAgentArchitecture({
 
 export function loadServerConfig(env = process.env) {
   const architectureMode = agentArchitectureMode(env);
+  const agentActiveAll = String(env.MSTD_AGENT_ACTIVE_ALL ?? "") === "1";
   const agentActiveTargets = architectureTargets(env, "MSTD_AGENT_ACTIVE_TARGETS");
   const agentShadowTargets = architectureTargets(env, "MSTD_AGENT_SHADOW_TARGETS");
-  if (architectureMode === "active" && !agentActiveTargets.size) {
-    throw new Error("MSTD_AGENT_ACTIVE_TARGETS 在 active mode 下必须非空");
+  if (architectureMode === "active" && !agentActiveAll && !agentActiveTargets.size) {
+    throw new Error("active mode 必须设置 MSTD_AGENT_ACTIVE_ALL=1 或提供 MSTD_AGENT_ACTIVE_TARGETS");
   }
   return {
     port: intEnv(env, "PORT", 8787, { min: 0 }),   // PORT=0 = OS 随机端口（fail-fast 负例测试依赖）
@@ -87,6 +92,7 @@ export function loadServerConfig(env = process.env) {
     minutesBroadcastChat: String(env.MSTD_MINUTES_BROADCAST_CHAT ?? "").trim(),   // 妙记派发执行后播报的群 chat_id
     meetingTaskNotificationMode: meetingTaskNotificationMode(env),
     agentArchitectureMode: architectureMode,
+    agentActiveAll,
     agentActiveTargets,
     agentShadowTargets,
     dispatchContextLines: intEnv(env, "MSTD_DISPATCH_CONTEXT_LINES", 20),

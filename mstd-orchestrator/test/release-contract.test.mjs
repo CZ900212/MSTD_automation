@@ -46,6 +46,7 @@ describe("Phase 7 release contract", () => {
       arch: "arm64",
       env: {
         MSTD_AGENT_ARCHITECTURE_MODE: "active",
+        MSTD_AGENT_ACTIVE_ALL: "1",
         MSTD_AGENT_ACTIVE_TARGETS: "feishu:p2p:ou_private,feishu:chat:oc_private",
         MSTD_AGENT_SHADOW_TARGETS: "feishu:p2p:ou_shadow",
         MSTD_ENABLE_WRITE: "0",
@@ -70,6 +71,7 @@ describe("Phase 7 release contract", () => {
       migration_ceiling: "022_reasoning.sql",
       architecture: {
         requested_mode: "active",
+        active_all: true,
         active_target_count: 2,
         shadow_target_count: 1,
         write_enabled: false,

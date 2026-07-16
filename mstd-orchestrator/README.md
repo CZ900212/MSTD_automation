@@ -29,6 +29,7 @@
 | `shadow` | 计算 responder/dispatcher 结果，不改物理出站、不启 task reasoner |
 | `active` | Responder 优先前台 + 独立 dispatcher + task-scoped reasoner |
 
+`active` 下以 `MSTD_AGENT_ACTIVE_TARGETS` 做定向灰度；设置 `MSTD_AGENT_ACTIVE_ALL=1` 时，所有合法会话全局启用新架构。
 回滚：将 `MSTD_AGENT_ARCHITECTURE_MODE=legacy` 并重启。迁移 additive，不删 task/dispatch 历史。
 
 ### 模型链

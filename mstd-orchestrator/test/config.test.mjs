@@ -102,7 +102,7 @@ describe("loadServerConfig", () => {
     },
   );
 
-  it("requires a canonical non-empty active target allowlist", () => {
+  it("requires an explicit global switch or a canonical non-empty active target allowlist", () => {
     expect(() => loadServerConfig({
       MSTD_SESSION_SECRET: "s",
       MSTD_AGENT_ARCHITECTURE_MODE: "active",
@@ -117,6 +117,13 @@ describe("loadServerConfig", () => {
       MSTD_AGENT_ARCHITECTURE_MODE: "active",
       MSTD_AGENT_ACTIVE_TARGETS: "feishu:p2p:ou_admin",
     }).agentActiveTargets).toEqual(new Set(["feishu:p2p:ou_admin"]));
+    const global = loadServerConfig({
+      MSTD_SESSION_SECRET: "s",
+      MSTD_AGENT_ARCHITECTURE_MODE: "active",
+      MSTD_AGENT_ACTIVE_ALL: "1",
+    });
+    expect(global.agentActiveAll).toBe(true);
+    expect(global.agentActiveTargets).toEqual(new Set());
   });
 
   it("resolves legacy/shadow/active per canonical target in one process", () => {
@@ -133,6 +140,16 @@ describe("loadServerConfig", () => {
       .toMatchObject({ effectiveMode: "legacy", match: "default" });
     expect(resolveAgentArchitecture({ requestedMode: "shadow", sessionKey: "feishu:p2p:ou_any" }))
       .toMatchObject({ effectiveMode: "shadow", match: "global_shadow" });
+    expect(resolveAgentArchitecture({
+      requestedMode: "active",
+      activeAll: true,
+      sessionKey: "feishu:p2p:ou_any",
+    })).toMatchObject({ effectiveMode: "active", match: "active_all" });
+    expect(resolveAgentArchitecture({
+      requestedMode: "active",
+      activeAll: true,
+      sessionKey: "not-canonical",
+    })).toMatchObject({ effectiveMode: "legacy", match: "invalid_target" });
   });
 
   it("defaults dispatch context bounds to 20 lines and 8192 bytes", () => {

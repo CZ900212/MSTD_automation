@@ -102,6 +102,7 @@ export function wireGateway({
       const architecture = resolveAgentArchitecture({
         requestedMode: config.agentArchitectureMode,
         sessionKey,
+        activeAll: config.agentActiveAll,
         activeTargets: config.agentActiveTargets,
         shadowTargets: config.agentShadowTargets,
       });

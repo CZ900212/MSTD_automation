@@ -117,6 +117,7 @@ export function buildReleaseManifest({
     ui_artifact_sha256: directorySha256(uiDist),
     architecture: {
       requested_mode: String(env.MSTD_AGENT_ARCHITECTURE_MODE ?? "legacy"),
+      active_all: String(env.MSTD_AGENT_ACTIVE_ALL ?? "") === "1",
       active_target_count: active.count,
       active_targets_sha256: active.sha256,
       shadow_target_count: shadow.count,
