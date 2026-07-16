@@ -151,4 +151,15 @@ describe("后台 job 回注（版本判定 + 进度心跳）", () => {
     expect(outbound.editMessage).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
+
+  it("prep 段抛错收敛为 controlled/prep_failed,不产生 unhandled rejection", async () => {
+    const hostileStore = { getOrCreate: () => { throw new Error("db 抖动"); } };
+    // 贴近真实 actor 语义:回调抛错成为返回 promise 的拒绝(而非同步 throw)
+    const asyncActors = { enqueue: (_, cb) => Promise.resolve().then(cb) };
+    const r = createReinjector({ store: hostileStore, actors: asyncActors, brain, outbound, log: () => {} });
+    await expect(r.onJobComplete({
+      jobId: "jx", sessionKey: "feishu:p2p:ou_a", sessionVersion: 0, ok: true, result: "文本",
+    })).resolves.toMatchObject({ status: "controlled", reason: "prep_failed" });
+    expect(brain.turn).not.toHaveBeenCalled();
+  });
 });

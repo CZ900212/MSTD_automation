@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { openDb, migrate } from "../server/db/index.mjs";
-import { createJob, getJobRow, getJob, listJobs, updateJobStatus, saveJobDraft } from "../server/store/jobs.mjs";
+import { createJob, getJobRow, getJob, listJobs, updateJobStatus, saveJobDraft, hasActiveJobForSession } from "../server/store/jobs.mjs";
 
 let db;
 beforeEach(() => {
@@ -57,5 +57,14 @@ describe("jobs store", () => {
     expect(detail.actions).toEqual([]);
     expect(detail.decisions).toEqual([]);
     expect(getJob(db, "missing")).toBeNull();
+  });
+
+  it("hasActiveJobForSession 精确匹配顶层 sessionKey:前缀键不误报,坏 JSON 行不炸", () => {
+    createJob(db, { templateId: "agent_background", paramsJson: JSON.stringify({ sessionKey: "feishu:p2p:ou_xy" }), status: "running", createdBy: "u-1" }, 100);
+    createJob(db, { templateId: "agent_background", paramsJson: "{broken", status: "running", createdBy: "u-1" }, 101);
+    createJob(db, { templateId: "agent_background", paramsJson: JSON.stringify({ sessionKey: "feishu:p2p:ou_done" }), status: "done", createdBy: "u-1" }, 102);
+    expect(hasActiveJobForSession(db, "feishu:p2p:ou_xy")).toBe(true);
+    expect(hasActiveJobForSession(db, "feishu:p2p:ou_x")).toBe(false);   // 旧 LIKE '%key%' 会被前缀键误报
+    expect(hasActiveJobForSession(db, "feishu:p2p:ou_done")).toBe(false); // 非活跃状态不豁免
   });
 });

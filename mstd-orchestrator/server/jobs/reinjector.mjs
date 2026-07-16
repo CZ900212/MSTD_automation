@@ -113,6 +113,8 @@ export function createReinjector({
       }, { signer: contextSigner, ...(contextBudget ? { budget: contextBudget } : {}) }) : null;
       return { session, brief, contextEnvelope };
     });
+    // prep 段(getOrCreate/createContextEnvelope)的同步 throw 会让 enqueue 的 promise 拒绝;
+    // 两处调用方(index.mjs onComplete/onExecuted)都不 await——必须在这里收敛,不许漏成 unhandled rejection。
     return Promise.resolve(prepared).then(async ({ session, brief, contextEnvelope }) => {
       try {
         if (taskId && coordinator?.attachOrStart) {
@@ -142,6 +144,9 @@ export function createReinjector({
         log(`[reinject] 回注回合失败 job=${jobId}: ${e?.message ?? e}`);
         return { status: "controlled", reason: "reinject_failed", error: String(e?.message ?? e) };
       }
+    }, (e) => {
+      log(`[reinject] 回注准备失败 job=${jobId}: ${e?.message ?? e}`);
+      return { status: "controlled", reason: "prep_failed", error: String(e?.message ?? e) };
     });
   }
 

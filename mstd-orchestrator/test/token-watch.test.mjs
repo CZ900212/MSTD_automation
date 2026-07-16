@@ -40,6 +40,22 @@ describe("token-watch：refresh token 到期哨兵", () => {
     expect(alerts.length).toBe(2);
   });
 
+  it("告警发送失败不占当天名额:同一天后续巡检重试直到发出", async () => {
+    const alerts = [];
+    let fail = true;
+    const w = createTokenWatch({
+      runLark: async () => ({ exitCode: 0, stdout: statusJson("2026-07-19T06:21:42+08:00"), stderr: "" }),
+      alert: async (m) => { if (fail) throw new Error("DM 通道抖动"); alerts.push(m); },
+      now: fixedNow("2026-07-18T06:00:00+08:00"),
+      log: () => {},
+    });
+    expect((await w.checkOnce()).warned).toBe(false); // 发送失败,不记"今天已警"
+    fail = false;
+    expect((await w.checkOnce()).warned).toBe(true);  // 同一天下一轮重试成功
+    expect((await w.checkOnce()).warned).toBe(false); // 成功后当天去重恢复
+    expect(alerts.length).toBe(1);
+  });
+
   it("auth status 失败/坏 JSON/缺 refreshExpiresAt → ok:false 不炸", async () => {
     const mk = (stdout, exitCode = 0) => createTokenWatch({
       runLark: async () => ({ exitCode, stdout, stderr: "" }),
@@ -50,13 +66,16 @@ describe("token-watch：refresh token 到期哨兵", () => {
     expect((await mk(JSON.stringify({ identities: {} })).checkOnce()).ok).toBe(false);
   });
 
-  it("告警通道抛错不炸哨兵", async () => {
+  it("告警通道抛错不炸哨兵(如实报 warned:false 以便当天重试)", async () => {
     const w = createTokenWatch({
       runLark: async () => ({ exitCode: 0, stdout: statusJson("2026-07-12T12:00:00+08:00"), stderr: "" }),
       alert: async () => { throw new Error("信道挂了"); },
       now: fixedNow("2026-07-12T06:00:00+08:00"),
       log: () => {},
     });
-    expect((await w.checkOnce()).warned).toBe(true);
+    // 语义更新:发送失败不再谎报 warned:true(旧行为会吞掉当天后续重试名额)
+    const r = await w.checkOnce();
+    expect(r.ok).toBe(true);
+    expect(r.warned).toBe(false);
   });
 });

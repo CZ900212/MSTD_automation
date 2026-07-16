@@ -6,9 +6,13 @@ export const ACTIVE_JOB_STATUSES = ["running", "queued", "running_readonly", "aw
 
 export function hasActiveJobForSession(db, sessionKey) {
   const placeholders = ACTIVE_JOB_STATUSES.map(() => "?").join(",");
+  // 精确匹配顶层 sessionKey 字段（background.mjs / confirm-flow.mjs 两个生产方均为此形状）。
+  // 旧实现 LIKE '%key%' 是裸子串匹配：会话键互为前缀（ou_x vs ou_xy）或键出现在 brief 文本里
+  // 都会误判"有活跃 job"而错误豁免归档。json_valid 守卫防单行损坏 params 让整个 sweep 抛错。
   return !!db.prepare(
-    `SELECT 1 FROM orch_jobs WHERE status IN (${placeholders}) AND params_json LIKE ? LIMIT 1`
-  ).get(...ACTIVE_JOB_STATUSES, `%${sessionKey}%`);
+    `SELECT 1 FROM orch_jobs WHERE status IN (${placeholders})
+       AND json_valid(params_json) AND json_extract(params_json, '$.sessionKey') = ? LIMIT 1`
+  ).get(...ACTIVE_JOB_STATUSES, sessionKey);
 }
 
 export function createJob(db, { templateId, title = null, paramsJson = null, status, createdBy = null }, now = Date.now()) {

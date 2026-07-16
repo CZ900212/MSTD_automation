@@ -41,6 +41,17 @@ const goodIntent = JSON.stringify({
 });
 
 describe("runReadonlyPhase", () => {
+  it("params_json 损坏 → 直接 failed,不 spawn Pi、不卡 running_readonly", async () => {
+    const job = createJob(db, { templateId: "meeting_to_task", paramsJson: "{broken", status: "queued", createdBy: "u-1" }, 1000);
+    let spawned = false;
+    const out = await runReadonlyPhase({
+      db, startPi: () => { spawned = true; throw new Error("不应到达"); }, bus, buffer, registry, job, now: () => 2000,
+    });
+    expect(out.status).toBe("failed");
+    expect(getJobRow(db, job.id).status).toBe("failed");
+    expect(spawned).toBe(false); // 修复前:先 spawn 后 parse,炸掉还泄漏 Pi 进程
+  });
+
   it("good intent -> awaiting_approval + records actions + draft", async () => {
     const job = makeJob();
     const out = await runReadonlyPhase({

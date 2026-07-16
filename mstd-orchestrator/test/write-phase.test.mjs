@@ -42,6 +42,18 @@ describe("runWritePhase", () => {
     expect(out.mode).toBe("pi");
   });
 
+  it("spawnPi 赢下 race 后超时计时器被清掉,不白挂 event loop", async () => {
+    vi.useFakeTimers();
+    try {
+      const spawnPi = vi.fn(async () => ({ ok: true }));
+      const runLark = vi.fn(async () => ({ exitCode: 0, stdout: "{}", stderr: "" }));
+      await runWritePhase(db, "job1", { spawnPi, runLark, testTarget });
+      expect(vi.getTimerCount()).toBe(0); // 修复前:240s 计时器在成功路径上残留
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("写前对账：executing 残留先 reconcile，命中外部指纹则不重复执行", async () => {
     const action = actionsToExecute(db, "job1")[0];
     db.prepare("UPDATE job_actions SET status = 'executing' WHERE id = ?").run(action.id);

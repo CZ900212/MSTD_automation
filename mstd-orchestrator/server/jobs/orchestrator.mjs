@@ -17,6 +17,18 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
   updateJobStatus(db, job.id, "running_readonly", now());
   emit(bus, buffer, job.id, "readonly", { event: "job_status", data: { status: "running_readonly" } });
 
+  // params 解析放在 spawn 之前：损坏的 params_json 走 failed 终态,不得把 job 永久卡在
+  // running_readonly(阻塞 session 归档),更不得泄漏一个已 spawn 未 close 的 Pi 进程。
+  let params;
+  try {
+    params = JSON.parse(job.params_json ?? "{}");
+  } catch (err) {
+    updateJobStatus(db, job.id, "failed", now());
+    emit(bus, buffer, job.id, "readonly", { event: "error", data: { level: "params_invalid", text: String(err?.message ?? err) } });
+    buffer.flush();
+    return { status: "failed" };
+  }
+
   const workdir = jobWorkdir(join(piOptions.cwd ?? process.cwd(), "out"), job.id);
   mkdirSync(workdir, { recursive: true });
 
@@ -30,7 +42,7 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
   });
   registry.register(job.id, { client, abort: () => { try { client.child?.kill(); } catch { /* 已退出 */ } } });
 
-  const prompt = buildPrompt(job.template_id, JSON.parse(job.params_json ?? "{}"));
+  const prompt = buildPrompt(job.template_id, params);
   let finalText = "";
   try {
     const result = await client.runJob(prompt, {

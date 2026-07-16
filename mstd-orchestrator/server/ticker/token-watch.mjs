@@ -28,13 +28,21 @@ export function createTokenWatch({ runLark, alert = null, warnMs = 48 * 3600_000
 
     const day = Math.floor(now() / 86_400_000);
     if (lastWarnDay === day) return { ok: true, warned: false, leftMs };   // 今天已警过
-    lastWarnDay = day;
     const leftH = Math.max(0, Math.round(leftMs / 3600_000));
     const msg = `飞书 user 授权 refresh token 将于 ${u.refreshExpiresAt} 过期（剩约 ${leftH} 小时）。过期后感知层全部哑火——请尽快重新完成一次 device flow 授权。`;
+    // 只有告警真发出去才记"今天已警"：瞬时发送失败不得吞掉当天后续 6h 周期的重试
+    // （这是 refresh token 到期前唯一的预警通道，漏一天可能全线哑火）
     if (alert) {
-      try { await alert(msg); } catch (e) { log(`[token-watch] 告警发送失败: ${e?.message ?? e}`); }
+      try {
+        await alert(msg);
+        lastWarnDay = day;
+      } catch (e) {
+        log(`[token-watch] 告警发送失败(今天稍后重试): ${e?.message ?? e}`);
+        return { ok: true, warned: false, leftMs };
+      }
     } else {
       log(`[token-watch] ${msg}`);
+      lastWarnDay = day;
     }
     return { ok: true, warned: true, leftMs };
   }

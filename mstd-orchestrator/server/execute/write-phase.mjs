@@ -29,10 +29,11 @@ async function directExecute(db, jobId, { runLark, testTarget, heartbeat }) {
 
 export async function runWritePhase(db, jobId, { spawnPi, runLark, testTarget, heartbeat = null, timeoutMs = 240000 }) {
   await reconcileStale(db, jobId, runLark);
+  let raceTimer = null;
   try {
     await Promise.race([
       spawnPi(),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("write phase timeout")), timeoutMs)),
+      new Promise((_, rej) => { raceTimer = setTimeout(() => rej(new Error("write phase timeout")), timeoutMs); }),
     ]);
     const remaining = actionsToExecute(db, jobId);
     if (remaining.length > 0) {
@@ -43,5 +44,8 @@ export async function runWritePhase(db, jobId, { spawnPi, runLark, testTarget, h
   } catch {
     const results = await directExecute(db, jobId, { runLark, testTarget, heartbeat });
     return { mode: "fallback", results };
+  } finally {
+    // spawnPi 赢下 race 后计时器仍存活(最长 timeoutMs),会白挂 event loop——统一清掉(已触发时是 no-op)
+    clearTimeout(raceTimer);
   }
 }
