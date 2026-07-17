@@ -436,6 +436,10 @@ if (config.enableAgent && config.botOpenId) {
     onEvent: observeAgentEvent,
     onComplete: (x) => reinjector.onJobComplete(x),
   });
+  // 崩溃遗留的裸 'running' 后台 job：收口 + onJobComplete({ok:false}) 闭环给用户，
+  // 否则 owner 会话永久豁免归档、委托承诺静默失踪。
+  const bgRecovered = backgroundJobs.recoverOnBoot();
+  if (bgRecovered.recovered > 0) console.error(`[mstd] background job boot recovery: ${JSON.stringify(bgRecovered)}`);
   // C0.4：heartbeat 改 owner-bound 结构化队列——DB due picker 逐项受信直投,
   // 遗留 HEARTBEAT.md 启动即整文件隔离,不再作为活跃数据源。
   // Task 4B：同一 store 也是 confirmFlow 的 schedule_reminder 已确认写 adapter。

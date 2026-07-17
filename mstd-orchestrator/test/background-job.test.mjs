@@ -99,6 +99,44 @@ describe("后台 job 委托（orch_jobs 复用 + 版本快照 + 信号量）", (
     expect(running).toEqual([j1, j2]);
   });
 
+  it("共享信号量：他方（launcher 侧）release 也会泵出本队列——修交叉饥饿", async () => {
+    const sem = createSemaphore(1);
+    expect(sem.tryAcquire()).toBe(true);   // 模拟 launcher job 占满唯一槽位
+    const running = [];
+    const bg = createBackgroundJobs({
+      db, semaphore: sem,
+      runJob: vi.fn(async ({ jobId }) => { running.push(jobId); return "ok"; }),
+      onComplete: () => {},
+    });
+    const j = bg.spawn({ sessionKey: "s", sessionVersion: 0, kind: "x", params: {} });
+    await sleep(10);
+    expect(running).toEqual([]);           // 槽满排队
+    sem.release();                          // launcher 侧完成——修复前 bg 队列永久滞留 queued
+    await sleep(10);
+    expect(running).toEqual([j]);
+    expect(db.prepare("SELECT status FROM orch_jobs WHERE id = ?").get(j).status).toBe("done");
+  });
+
+  it("recoverOnBoot：崩溃遗留的裸 running 收口为 failed 并回调 onComplete(ok:false) 闭环", async () => {
+    // 手工制造崩溃残留：上一进程 spawn 后死在执行窗口内
+    db.prepare(
+      "INSERT INTO orch_jobs (id, template_id, title, status, params_json, created_at, updated_at) VALUES ('stale-run','agent_background','深度检索','running',?,1,1)"
+    ).run(JSON.stringify({ sessionKey: "feishu:p2p:ou_a", sessionVersion: 2, taskId: "task-z", kind: "research" }));
+    const done = [];
+    const events = [];
+    const bg = createBackgroundJobs({
+      db, semaphore: createSemaphore(1), runJob: vi.fn(),
+      onComplete: (x) => done.push(x), onEvent: (x) => events.push(x),
+    });
+    const out = bg.recoverOnBoot();
+    expect(out).toEqual({ recovered: 1 });
+    expect(db.prepare("SELECT status FROM orch_jobs WHERE id='stale-run'").get().status).toBe("failed");
+    expect(done[0]).toMatchObject({ jobId: "stale-run", sessionKey: "feishu:p2p:ou_a", taskId: "task-z", ok: false, errorKind: "crashed" });
+    expect(events[0]).toMatchObject({ type: "background_job_failed", jobId: "stale-run", errorKind: "crashed" });
+    const evt = db.prepare("SELECT * FROM job_events WHERE job_id='stale-run' AND type='background_failed'").get();
+    expect(JSON.parse(evt.payload_json).errorKind).toBe("crashed");
+  });
+
   it("runJob 抛错 → 状态 failed，回调 ok:false", async () => {
     const done = [];
     const events = [];

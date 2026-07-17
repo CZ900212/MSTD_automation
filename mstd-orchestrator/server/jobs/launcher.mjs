@@ -22,6 +22,9 @@ export function createJobLauncher({
 }) {
   const queue = [];
 
+  // 共享信号量的任何释放（含 background 队列的）都要唤醒本队列，防交叉饥饿
+  semaphore.onRelease?.(() => pump());
+
   async function launch({ jobId, readPrincipal = null }) {
     // getJobRow 必须在 try 内：同步 DB 异常不得跳过 finally 的槽位归还。
     try {

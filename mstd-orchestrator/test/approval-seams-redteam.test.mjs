@@ -4,8 +4,8 @@
 //     依赖校验 validateTaskNotificationDependency 又读取同一个可篡改的 job_actions 表——
 //     与既有"update_document 批准后篡改被拦"测试（execute-action.test.mjs:64）同一威胁模型下，
 //     notify 是唯一能带着篡改后 payload 真写的 kind。
-//  B. create_event 无 --idempotency-key（write-args.mjs:55）且 reconcileAction 明确不支持它
-//     （execute-action.mjs:185）——崩溃窗口 = 必重复的日程。
+//  B. create_event 无 --idempotency-key（CLI 不支持）——原"对账不支持 → 崩溃窗口必重复日程"
+//     缺口已收口：reconcileAction 走 +search-event 指纹（summary+start+end），执行失败也先回查。
 //  C. /internal/background 对 legacy binding（无 taskId/runId）整体跳过 active-run 校验
 //     （internal-routes.mjs:158），且 proposal-admission 限流只盖确认卡提案——零准入控制。
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -98,25 +98,37 @@ describe("T5-A notify_task_assignee：漂移检测豁免 seam", () => {
   });
 });
 
-describe("T5-B create_event：无幂等键 + 对账不支持 = 崩溃必重放", () => {
-  it("reconcileAction 显式不支持 create_event（unsupported:true）", async () => {
-    const db = seedDb();
-    const ev = buildAgentAction({
-      jobId: "job1", kind: "create_event", ordinal: 1,
-      payload: { summary: "项目周会", start_time: "2026-07-20T10:00:00+08:00", end_time: "2026-07-20T11:00:00+08:00", attendee_open_ids: ["ou_test1"] },
-    });
-    recordActions(db, "job1", [ev]);
-    const row = db.prepare("SELECT * FROM job_actions WHERE job_id='job1'").get();
-    const r = await reconcileAction(db, { action: row, runLark: vi.fn() });
-    expect(r).toMatchObject({ reconciled: false, unsupported: true });
+describe("T5-B create_event：+search-event 指纹对账（原'崩溃必重放'缺口已收口）", () => {
+  const evPayload = { summary: "项目周会", start_time: "2026-07-20T10:00:00+08:00", end_time: "2026-07-20T11:00:00+08:00", attendee_open_ids: ["ou_test1"] };
+  // 已落地事件的 +search-event 命中响应（CLI timestamp 秒形状）
+  const searchHit = () => ({
+    exitCode: 0,
+    stdout: JSON.stringify({ items: [{
+      summary: evPayload.summary,
+      start_time: { timestamp: String(Date.parse(evPayload.start_time) / 1000) },
+      end_time: { timestamp: String(Date.parse(evPayload.end_time) / 1000) },
+    }] }),
+    stderr: "",
   });
 
-  it("复现：executing 残留（崩溃窗口）→ 对账标 failed → 写相位重跑 → 同一日程创建两次", async () => {
+  it("reconcileAction 支持 create_event：指纹命中 → succeeded；未命中 → 可重试 failed 集合", async () => {
     const db = seedDb();
-    const ev = buildAgentAction({
-      jobId: "job1", kind: "create_event", ordinal: 1,
-      payload: { summary: "项目周会", start_time: "2026-07-20T10:00:00+08:00", end_time: "2026-07-20T11:00:00+08:00", attendee_open_ids: ["ou_test1"] },
-    });
+    const ev = buildAgentAction({ jobId: "job1", kind: "create_event", ordinal: 1, payload: evPayload });
+    recordActions(db, "job1", [ev]);
+    const row = db.prepare("SELECT * FROM job_actions WHERE job_id='job1'").get();
+    db.prepare("UPDATE job_actions SET status='executing' WHERE id=?").run(row.id);
+
+    const miss = await reconcileAction(db, { action: row, runLark: vi.fn(async () => ({ exitCode: 0, stdout: JSON.stringify({ items: [] }), stderr: "" })) });
+    expect(miss).toMatchObject({ reconciled: false });
+
+    const hit = await reconcileAction(db, { action: row, runLark: vi.fn(async () => searchHit()) });
+    expect(hit).toEqual({ reconciled: true });
+    expect(db.prepare("SELECT status FROM job_actions WHERE id=?").get(row.id).status).toBe("succeeded");
+  });
+
+  it("防线生效：executing 残留（崩溃窗口）→ 对账查到指纹 → succeeded → 写相位重跑不再重复建日程", async () => {
+    const db = seedDb();
+    const ev = buildAgentAction({ jobId: "job1", kind: "create_event", ordinal: 1, payload: evPayload });
     recordActions(db, "job1", [ev]);
     const row = db.prepare("SELECT * FROM job_actions WHERE job_id='job1'").get();
     // 审批记录（directExecute 经 loadApprovedHashes 取批准 hash；无此行则 fail-closed 不重放）
@@ -127,6 +139,7 @@ describe("T5-B create_event：无幂等键 + 对账不支持 = 崩溃必重放",
     // 第一次执行：外部已成功（事件已创建），随后进程"崩溃"——status 卡在 executing
     const realCreates = [];
     const runLark = vi.fn(async (argv) => {
+      if (argv[0] === "calendar" && argv[1] === "+search-event") return searchHit();
       if (!argv.includes("--dry-run") && argv[0] === "calendar") realCreates.push(argv);
       return { exitCode: 0, stdout: "{}", stderr: "" };
     });
@@ -136,14 +149,13 @@ describe("T5-B create_event：无幂等键 + 对账不支持 = 崩溃必重放",
     // 模拟崩溃窗口：成功落库未完成，重启后看到 executing 残留
     db.prepare("UPDATE job_actions SET status='executing' WHERE id=?").run(row.id);
 
-    // 重启对账：create_event 无指纹可查 → reconcile_not_found → failed（可重试集合）
+    // 重启对账：+search-event 命中 summary+start+end 指纹 → succeeded（修复前盲标 failed）
     await reconcileStale(db, "job1", runLark);
-    expect(db.prepare("SELECT status FROM job_actions WHERE id=?").get(row.id).status).toBe("failed");
+    expect(db.prepare("SELECT status FROM job_actions WHERE id=?").get(row.id).status).toBe("succeeded");
 
-    // 写相位重跑（spawnPi 失败走 fallback directExecute）→ 第二次真实创建
+    // 写相位重跑（spawnPi 失败走 fallback directExecute）→ 已 succeeded 短路，不再真实创建
     await runWritePhase(db, "job1", { spawnPi: async () => { throw new Error("pi down"); }, runLark, testTarget, timeoutMs: 1000 });
-    expect(realCreates).toHaveLength(2); // 同一 summary 被创建两次 = 重复日程
-    expect(realCreates[1]).toEqual(realCreates[0]);
+    expect(realCreates).toHaveLength(1); // 修复前这里是 2 = 同一日程重复创建
   });
 });
 

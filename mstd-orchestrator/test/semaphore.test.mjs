@@ -32,4 +32,18 @@ describe("createSemaphore", () => {
     s.release();
     expect(s.active).toBe(0);
   });
+  it("release 通知所有 onRelease 监听方（共享队列防交叉饥饿）；退订生效；监听器异常不阻断", () => {
+    const s = createSemaphore(1);
+    const calls = [];
+    s.onRelease(() => { throw new Error("pump 内部错误"); });
+    s.onRelease(() => calls.push("a"));
+    const off = s.onRelease(() => calls.push("b"));
+    s.tryAcquire();
+    s.release();
+    expect(calls).toEqual(["a", "b"]);
+    off();
+    s.tryAcquire();
+    s.release();
+    expect(calls).toEqual(["a", "b", "a"]);
+  });
 });

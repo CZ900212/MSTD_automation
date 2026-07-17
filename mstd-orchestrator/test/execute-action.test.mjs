@@ -384,7 +384,7 @@ describe("reconcileAction", () => {
     expect(runLark).toHaveBeenCalledWith(["task", "tasks", "get", "--task-guid", "task-guid-fixture", "--as", "user"]);
   });
 
-  it.each(["notify_task_assignee", "send_dm", "send_group_msg", "create_event"])(
+  it.each(["notify_task_assignee", "send_dm", "send_group_msg"])(
     "%s never queries the task list",
     async (kind) => {
       const runLark = vi.fn();
@@ -395,4 +395,81 @@ describe("reconcileAction", () => {
       expect(runLark).not.toHaveBeenCalled();
     }
   );
+
+  it("create_event 按 +search-event 的 summary+start+end 指纹对账（无 CLI 幂等键的唯一防重放）", async () => {
+    const payload = { summary: "评审会", start_time: "2026-07-22T02:00:00.000Z", end_time: "2026-07-22T03:00:00.000Z", attendee_open_ids: [] };
+    const action = buildAgentAction({ jobId: "job1", kind: "create_event", payload });
+    recordActions(db, "job1", [action]);
+    const stored = db.prepare("SELECT * FROM job_actions WHERE kind='create_event'").get();
+    db.prepare("UPDATE job_actions SET status='executing' WHERE id=?").run(stored.id);
+
+    const searchArgs = [];
+    const runLark = vi.fn(async (argv) => {
+      searchArgs.push(argv);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ items: [{ summary: "评审会", start_time: { timestamp: String(Date.parse(payload.start_time) / 1000) }, end_time: { timestamp: String(Date.parse(payload.end_time) / 1000) } }] }),
+        stderr: "",
+      };
+    });
+    const out = await reconcileAction(db, { action: stored, runLark });
+    expect(out).toEqual({ reconciled: true });
+    expect(searchArgs[0].slice(0, 3)).toEqual(["calendar", "+search-event", "--as"]);
+    expect(db.prepare("SELECT status FROM job_actions WHERE id=?").get(stored.id).status).toBe("succeeded");
+
+    // summary 相同但时间不同 → 不得误判为已落地
+    const other = { ...stored, canonical_payload_json: JSON.stringify({ ...payload, start_time: "2026-07-23T02:00:00.000Z" }) };
+    db.prepare("UPDATE job_actions SET status='executing' WHERE id=?").run(stored.id);
+    expect(await reconcileAction(db, { action: other, runLark })).toEqual({ reconciled: false });
+  });
+});
+
+describe("create_event 执行失败即回查（run-lark 超时后事件可能已落地）", () => {
+  it("真写 exitCode 非 0 但 +search-event 命中指纹 → succeeded，不弹重试", async () => {
+    const payload = { summary: "对齐会", start_time: "2026-07-24T02:00:00.000Z", end_time: "2026-07-24T03:00:00.000Z", attendee_open_ids: [] };
+    const action = buildAgentAction({ jobId: "job1", kind: "create_event", payload });
+    recordActions(db, "job1", [action]);
+    const stored = db.prepare("SELECT * FROM job_actions WHERE kind='create_event'").get();
+
+    const runLark = vi.fn(async (argv) => {
+      if (argv.includes("--dry-run")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      if (argv[1] === "+create") return { exitCode: -1, stdout: "", stderr: "timeout SIGTERM" }; // 60s 超时杀进程
+      if (argv[1] === "+search-event") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ items: [{ summary: "对齐会", start_time: { timestamp: String(Date.parse(payload.start_time) / 1000) }, end_time: { timestamp: String(Date.parse(payload.end_time) / 1000) } }] }),
+          stderr: "",
+        };
+      }
+      return { exitCode: 1, stdout: "", stderr: "unexpected" };
+    });
+    const out = await executeApprovedAction(db, {
+      actionId: stored.id,
+      approvedHash: { payloadHash: stored.payload_hash, provenanceHash: null },
+      runLark,
+      testTarget: { allowOpenIds: new Set(["ou_test1"]), allowTaskGuids: new Set() },
+    });
+    expect(out).toEqual({ ok: true, status: "succeeded" });
+    expect(db.prepare("SELECT status FROM job_actions WHERE id=?").get(stored.id).status).toBe("succeeded");
+  });
+
+  it("真写失败且回查未命中 → failed（未落地，可安全重试）", async () => {
+    const payload = { summary: "撞车会", start_time: "2026-07-25T02:00:00.000Z", end_time: "2026-07-25T03:00:00.000Z", attendee_open_ids: [] };
+    const action = buildAgentAction({ jobId: "job1", kind: "create_event", payload });
+    recordActions(db, "job1", [action]);
+    const stored = db.prepare("SELECT * FROM job_actions WHERE kind='create_event'").get();
+    const runLark = vi.fn(async (argv) => {
+      if (argv.includes("--dry-run")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      if (argv[1] === "+search-event") return { exitCode: 0, stdout: JSON.stringify({ items: [] }), stderr: "" };
+      return { exitCode: 1, stdout: "", stderr: "boom" };
+    });
+    const out = await executeApprovedAction(db, {
+      actionId: stored.id,
+      approvedHash: { payloadHash: stored.payload_hash, provenanceHash: null },
+      runLark,
+      testTarget: { allowOpenIds: new Set(["ou_test1"]), allowTaskGuids: new Set() },
+    });
+    expect(out.status).toBe("failed");
+    expect(db.prepare("SELECT status FROM job_actions WHERE id=?").get(stored.id).status).toBe("failed");
+  });
 });

@@ -101,6 +101,15 @@ export async function executeApprovedAction(db, { actionId, approvedHash, runLar
     markStatus(db, action.id, "succeeded", JSON.stringify({ stdout: res.stdout }));
     return { ok: true, status: "succeeded" };
   }
+  // create_event 无 CLI 幂等键（calendar +create 不支持 --idempotency-key，真机确认）：
+  // 超时 SIGTERM/网络断连时事件可能已在飞书侧落地，盲标 failed 会弹重试按钮重复建日程。
+  // 失败即回查指纹（summary+start+end），命中则视为成功。
+  if (action.kind === "create_event") {
+    try {
+      const r = await reconcileAction(db, { action, runLark });
+      if (r.reconciled) return { ok: true, status: "succeeded" };
+    } catch { /* 回查失败按未落地处理 */ }
+  }
   markStatus(db, action.id, "failed", JSON.stringify({ error: "exec_failed", exitCode: res.exitCode, stderr: res.stderr }));
   return { ok: false, reason: "exec_failed", status: "failed" };
 }
@@ -160,6 +169,35 @@ export function isTaskCompleteResponse(stdout, expectedGuid) {
   }
 }
 
+function eventTimeToEpochMs(v) {
+  // 兼容 CLI/API 两种时间形状：{timestamp:"秒"} 对象、epoch 字符串、ISO 字符串
+  if (v == null) return null;
+  if (typeof v === "object") v = v.timestamp ?? v.date ?? null;
+  if (v == null) return null;
+  const s = String(v);
+  if (/^\d+$/.test(s)) return s.length > 10 ? Number(s) : Number(s) * 1000;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? null : t;
+}
+
+// create_event 对账指纹：summary 精确相等 + start/end epoch 相等（CLI 无幂等键，这是唯一可用指纹）
+export function isEventCreatedResponse(stdout, payload) {
+  try {
+    const parsed = JSON.parse(stdout || "{}");
+    const items = Array.isArray(parsed.items) ? parsed.items
+      : Array.isArray(parsed.data?.items) ? parsed.data.items : [];
+    const wantStart = Date.parse(payload.start_time);
+    const wantEnd = Date.parse(payload.end_time);
+    if (Number.isNaN(wantStart) || Number.isNaN(wantEnd)) return false;
+    return items.some((it) => it
+      && String(it.summary ?? "") === payload.summary
+      && eventTimeToEpochMs(it.start_time) === wantStart
+      && eventTimeToEpochMs(it.end_time) === wantEnd);
+  } catch {
+    return false;
+  }
+}
+
 export async function reconcileAction(db, { action, runLark }) {
   // schedule_reminder 是本地 DB 写：指纹 = heartbeat_items.source_action_id，绝不打 lark
   if (action.kind === "schedule_reminder") {
@@ -178,6 +216,18 @@ export async function reconcileAction(db, { action, runLark }) {
     const res = await runLark(["task", "tasks", "get", "--task-guid", taskGuid, "--as", "user"]);
     if (res.exitCode === 0 && isTaskCompleteResponse(res.stdout, taskGuid)) {
       markStatus(db, action.id, "succeeded", JSON.stringify({ reconciled: true, task_guid: taskGuid }));
+      return { reconciled: true };
+    }
+    return { reconciled: false };
+  }
+  if (action.kind === "create_event") {
+    let payload;
+    try { payload = JSON.parse(action.canonical_payload_json); } catch { return { reconciled: false, unsupported: true }; }
+    if (typeof payload?.summary !== "string" || !payload.summary.trim()) return { reconciled: false, unsupported: true };
+    const res = await runLark(["calendar", "+search-event", "--as", "user",
+      "--query", payload.summary, "--start", payload.start_time, "--end", payload.end_time, "--json"]);
+    if (res.exitCode === 0 && isEventCreatedResponse(res.stdout, payload)) {
+      markStatus(db, action.id, "succeeded", JSON.stringify({ reconciled: true, fingerprint: "summary+start+end" }));
       return { reconciled: true };
     }
     return { reconciled: false };

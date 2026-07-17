@@ -52,7 +52,8 @@ function createEventArgs(payload) {
   for (const id of ids) {
     if (!isValidOpenId(id)) throw new Error(`create_event 拒绝非法 attendee: ${JSON.stringify(id)}`);
   }
-  // 注：calendar +create 无 --idempotency-key；防重放由 job_actions 状态机 + 启动对账兜底
+  // 注：calendar +create 无 --idempotency-key（CLI 真机确认）；防重放 = 执行失败即回查指纹
+  // + 启动对账（execute-action.mjs 的 create_event reconcile 分支，指纹 summary+start+end）
   const argv = ["calendar", "+create", "--as", "user", "--summary", String(payload.summary),
     "--start", String(payload.start_time), "--end", String(payload.end_time)];
   if (ids.length) argv.push("--attendee-ids", ids.join(","));

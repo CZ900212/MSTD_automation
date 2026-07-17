@@ -93,7 +93,11 @@ export function wireGateway({
     // batch key：同发送者合批；app 用 app_id，simulator 用 synthetic open id
     const batchIdentity = evt.senderOpenId ?? evt.senderAppId ?? "unknown";
     debouncer.push(`${sessionKey}|${batchIdentity}`, batched, (items, timing) => {
-      const mode = items.some((item) => item.admittedMode === "addressed") ? "addressed" : "ambient";
+      // observe_only 是会话级第三态（admit 按 chat policy 判定，同批必然同态），
+      // 必须原样透传：折叠成 ambient 会让 turn-handler 的"绝不出站"门失效。
+      const mode = items.some((item) => item.admittedMode === "observe_only")
+        ? "observe_only"
+        : items.some((item) => item.admittedMode === "addressed") ? "addressed" : "ambient";
       log(`[gateway] debounce session=${sessionKey} mode=${mode} items=${items.length} since_last_ms=${timing.sinceLastMs} batch_ms=${timing.batchMs}`);
       const senders = new Set(items.map((item) => item.senderOpenId ?? item.senderAppId).filter(Boolean));
       const initiatorOpenId = senders.size === 1 ? [...senders][0] : null;

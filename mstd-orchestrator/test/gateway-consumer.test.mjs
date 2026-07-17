@@ -41,6 +41,33 @@ describe("gateway consumer", () => {
     consumer.stop();
     vi.useRealTimers();
   });
+
+  it("spawn 失败只发 error 不发 exit（ENOENT/EMFILE 真机行为）也必须重启；error+exit 双触发只重启一次", () => {
+    vi.useFakeTimers();
+    const children = [];
+    const spawnFn = vi.fn(() => { const c = fakeChild(); children.push(c); return c; });
+    const consumer = createGatewayConsumer({
+      spawnFn, larkCliPath: "/fake/lark-cli",
+      events: ["im.message.receive_v1"],
+      onEvent: vi.fn(), restartDelayMs: 5000, log: vi.fn(),
+    });
+    consumer.start();
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+
+    // 场景 1：只发 error（spawn ENOENT），无 exit —— 修复前该消费者永久死亡
+    const err = new Error("spawn ENOENT"); err.code = "ENOENT";
+    children[0].emit("error", err);
+    vi.advanceTimersByTime(5000);
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+
+    // 场景 2：error 后又发 exit（运行期错误），一次性标志防重复 spawn
+    children[1].emit("error", new Error("boom"));
+    children[1].emit("exit", 1);
+    vi.advanceTimersByTime(5000);
+    expect(spawnFn).toHaveBeenCalledTimes(3);
+    consumer.stop();
+    vi.useRealTimers();
+  });
 });
 
 describe("wireGateway 管道装配", () => {

@@ -111,8 +111,12 @@ export function createActiveTurnRegistry({
   function brainLive(rec) {
     const b = rec?.brain;
     if (!b) return null;
-    if (b.state === "active" && b.inFlight === 0 && b.expiresAt <= now()) {
+    // closing 态同样受 TTL 兜底：finalizeTurn 被跳过（闭合期投递失败等异常路径）时，
+    // 卡死的 execution 到期回收——否则该 executionKey 上的后续 run 永远 activate 失败。
+    if ((b.state === "active" || b.state === "closing") && b.inFlight === 0 && b.expiresAt <= now()) {
       rec.brain = null;
+      if (b.drainTimer) clearTimeoutFn(b.drainTimer);
+      b.drainTimer = null;
       prune(rec);
       return null;
     }

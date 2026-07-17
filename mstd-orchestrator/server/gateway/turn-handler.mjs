@@ -171,14 +171,41 @@ export function createTurnHandler({
       throw new Error("active mode requires responder, taskStore, and coordinator");
     }
     if (!budget.allow(sessionKey).ok) {
-      appendItems(session.id, items);
-      await sendAndRecord(sessionKey, session.id, BUDGET_REFUSAL);
+      appendItems(session.id, items, { observed: mode === "observe_only" });
+      // 观察期绝不出站：预算兜底话术也不例外
+      if (mode !== "observe_only") await sendAndRecord(sessionKey, session.id, BUDGET_REFUSAL);
       return;
     }
     if (mode === "ambient" && limiter && session.chat_id && !limiter.allow(session.chat_id, Date.now())) {
       appendItems(session.id, items, { observed: true });
       emitEvent({ type: "rate_limited", sessionKey });
       return;
+    }
+
+    // 观察期（F5）：应答机照常判定但绝不出站、不进调度器/推理机；判定结果落 observe_log。
+    if (mode === "observe_only") {
+      appendItems(session.id, items, { observed: true });
+      const obsSnapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
+      let answer = null;
+      try {
+        answer = await responder.answerTurn({
+          sessionKey,
+          items,
+          mode,
+          snapshot: obsSnapshot,
+          soul: obsSnapshot?.soul ?? soul,
+          recentConversation: recentConversationBeforeTurn(session.id).text,
+        });
+      } catch (e) {
+        log(`[turn] observe_only responder 判定失败 session=${sessionKey}: ${e?.message ?? e}`);
+      }
+      if (db) {
+        db.prepare("INSERT INTO observe_log (id, chat_id, action, text, ts) VALUES (?, ?, ?, ?, ?)")
+          .run(randomUUID(), session.chat_id, answer?.action ?? "responder_error",
+            answer?.action === "reply" ? answer.text : null, Date.now());
+      }
+      emitEvent({ type: "observe_only", sessionKey, verdict: { action: answer?.action ?? "responder_error" } });
+      return { action: "observe_only" };
     }
 
     const snapshot = snapshotFn ? snapshotFn({ sessionKey }) : null;
@@ -383,8 +410,9 @@ export function createTurnHandler({
     const { session, sessionKey, items, mode } = turn;
 
     if (!budget.allow(sessionKey).ok) {
-      appendItems(session.id, items);
-      await sendAndRecord(sessionKey, session.id, BUDGET_REFUSAL);
+      appendItems(session.id, items, { observed: mode === "observe_only" });
+      // 观察期绝不出站：预算兜底话术也不例外
+      if (mode !== "observe_only") await sendAndRecord(sessionKey, session.id, BUDGET_REFUSAL);
       return;
     }
 

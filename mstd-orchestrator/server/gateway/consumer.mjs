@@ -29,12 +29,21 @@ export function createGatewayConsumer({ spawnFn, larkCliPath, events, onEvent, r
       }
     });
     child.stderr?.on?.("data", (d) => log(`[gateway:${eventKey}] ${String(d).trimEnd()}`));
-    child.on("error", (e) => log(`[gateway:${eventKey}] spawn 失败: ${e}`));
-    child.on("exit", (code) => {
-      if (stopped) return;
-      log(`[gateway:${eventKey}] consumer 退出(code=${code})，${restartDelayMs}ms 后重启`);
+    // spawn 失败（ENOENT/EMFILE 等）只发 error(+close) 不发 exit（真机验证），
+    // 只挂 exit 会让该 EventKey 消费者静默永久死亡。error/exit 都重排重启，
+    // 一次性标志防双触发重复 spawn。
+    let restartScheduled = false;
+    const scheduleRestart = (why) => {
+      if (stopped || restartScheduled) return;
+      restartScheduled = true;
+      log(`[gateway:${eventKey}] consumer ${why}，${restartDelayMs}ms 后重启`);
       setTimeoutFn(() => spawnOne(eventKey), restartDelayMs);
+    };
+    child.on("error", (e) => {
+      log(`[gateway:${eventKey}] spawn 失败: ${e}`);
+      scheduleRestart(`spawn 失败(${e?.code ?? e?.message ?? e})`);
     });
+    child.on("exit", (code) => scheduleRestart(`退出(code=${code})`));
   }
 
   function stop() {

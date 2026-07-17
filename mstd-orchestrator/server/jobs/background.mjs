@@ -15,6 +15,9 @@ export function createBackgroundJobs({
 }) {
   const queue = [];
 
+  // 共享信号量的任何释放（含 launcher 队列的）都要唤醒本队列，防交叉饥饿
+  semaphore.onRelease?.(() => pump());
+
   function spawn({
     sessionKey,
     sessionVersion,
@@ -102,5 +105,34 @@ export function createBackgroundJobs({
     }
   }
 
-  return { spawn };
+  // 进程在 240s 执行窗口内被重启（全仓无 SIGTERM drain）时 orch_jobs 残留裸 'running'：
+  // 不收口则 hasActiveJobForSession 令 owner 会话永久豁免归档，且 reinjector.onJobComplete
+  // 永不触发——推理机对用户的委托承诺永远没有下文。启动时统一标 failed 并回调闭环。
+  function recoverOnBoot() {
+    const rows = db.prepare(
+      "SELECT id, params_json FROM orch_jobs WHERE template_id = 'agent_background' AND status IN ('running','queued')"
+    ).all();
+    let recovered = 0;
+    for (const row of rows) {
+      let meta = null;
+      try { meta = JSON.parse(row.params_json); } catch { meta = null; }
+      try {
+        updateJobStatus(db, row.id, "failed", now());
+        const seq = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM job_events WHERE job_id = ?").get(row.id).seq;
+        db.prepare(
+          "INSERT INTO job_events (id, job_id, phase, seq, type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ).run(randomUUID(), row.id, "background", seq, "background_failed",
+          JSON.stringify({ errorKind: "crashed", error: "process restarted during background job" }), now());
+      } catch (e) {
+        log(`[background] boot 回收 job ${row.id} 落库失败: ${e?.message ?? e}`);
+        continue;
+      }
+      onEvent({ type: "background_job_failed", jobId: row.id, sessionKey: meta?.sessionKey ?? null, errorKind: "crashed", error: "process restarted during background job" });
+      onComplete({ jobId: row.id, ...(meta ?? {}), ok: false, errorKind: "crashed" });
+      recovered += 1;
+    }
+    return { recovered };
+  }
+
+  return { spawn, recoverOnBoot };
 }

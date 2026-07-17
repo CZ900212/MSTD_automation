@@ -8,6 +8,7 @@ export function maxConcurrentPi(env = {}) {
 
 export function createSemaphore(max) {
   let active = 0;
+  const releaseListeners = new Set();
   return {
     tryAcquire() {
       if (active < max) { active += 1; return true; }
@@ -15,6 +16,16 @@ export function createSemaphore(max) {
     },
     release() {
       if (active > 0) active -= 1;
+      // 释放必须唤醒所有等待方：launcher 与 background 共享同一信号量但各持一条队列，
+      // "各自只 pump 自己"会造成槽位空闲而对方 queued job 永久滞留（交叉饥饿）。
+      for (const fn of releaseListeners) {
+        try { fn(); } catch { /* pump 自含错误处理 */ }
+      }
+    },
+    onRelease(fn) {
+      if (typeof fn !== "function") throw new Error("semaphore.onRelease 需要函数");
+      releaseListeners.add(fn);
+      return () => releaseListeners.delete(fn);
     },
     get active() { return active; },
     get max() { return max; },

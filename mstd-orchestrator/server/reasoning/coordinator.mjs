@@ -115,6 +115,11 @@ export function createReasoningCoordinator({
       currentRun = runStore.upgradeClosure(run.id, "required");
     }
 
+    // finalizeTurn 必须在 finally：闭合期投递失败（deliverTerminal 抛出）时若跳过终态化，
+    // task:<id> 的 brain 永久卡 closing，此后该 task 每次新 run 在 activate 处失败。
+    // legacy 路径 turn-handler 的同一不变量就在 finally 里，coordinator 不得例外。
+    let closureError = null;
+    try {
     if (currentRun.closure_mode === "required") {
       currentRun = runStore.claimClosure(run.id);
       let messageId = finalReceipt?.messageId ?? null;
@@ -187,14 +192,19 @@ export function createReasoningCoordinator({
       currentRun = runStore.closeSilent(run.id);
       emit({ type: "silent_closed", sessionKey, taskId: task.id, runId: run.id, dispatchId, turnId: lifecycle?.turnId ?? null });
     }
-
-    if (activeBrainTurns && lifecycle) {
-      const outcome = activeBrainTurns.finalizeTurn(lifecycle.sessionKey, lifecycle.lease, {
-        taskId: task.id,
-        runId: run.id,
-        executionKey,
-      });
-      if (!outcome) throw new Error("coordinator: business lifecycle 未能终态化");
+    } catch (e) {
+      closureError = e;
+      throw e;
+    } finally {
+      if (activeBrainTurns && lifecycle) {
+        const outcome = activeBrainTurns.finalizeTurn(lifecycle.sessionKey, lifecycle.lease, {
+          taskId: task.id,
+          runId: run.id,
+          executionKey,
+        });
+        // 投递失败路径：finalize 尽力而为（幂等），不得掩盖原始异常
+        if (!outcome && !closureError) throw new Error("coordinator: business lifecycle 未能终态化");
+      }
     }
     return currentRun;
   }
@@ -632,12 +642,37 @@ export function createReasoningCoordinator({
         if (dispatchId) runStore.attachDispatch(openRun.id, dispatchId, { relation: "attach" });
         const updatedRun = runStore.upgradeClosure(openRun.id, decision.closure ?? "silent_ok");
         emit({ type: "task_attached", sessionKey, taskId: task.id, runId: updatedRun.id, dispatchId });
+        // 用户纠正必须先持久化为 pending input（镜像 reinjector 的 attachOrStart）：
+        // run 处于 closing/queued/steer 竞态失败的窗口时，input 由 run 收尾的 follow-up
+        // 或 queued run 启动时消费，不得静默丢弃（project.md 条件闭环）。
+        let input = null;
+        if (dispatchId) {
+          try {
+            input = runStore.attachInput({
+              runId: updatedRun.id,
+              taskId: task.id,
+              originKind: "dispatcher",
+              originId: dispatchId,
+              dispatchId,
+              sessionVersion: session.version ?? 0,
+              brief: decision.brief,
+            });
+          } catch (error) {
+            emit({
+              type: "dispatcher_attach_input_failed",
+              sessionKey, taskId: task.id, runId: updatedRun.id, dispatchId,
+              error: error?.message ?? String(error),
+            });
+          }
+        }
         if (updatedRun.status === "running" && brain.isBusy({ sessionKey, taskId: task.id })) {
           if (!resolveRunWriteInitiator(updatedRun.id)) {
             activeTurnInitiators?.revokeAuthorized?.({ sessionKey, taskId: task.id, runId: updatedRun.id });
           }
-          brain.steer(sessionKey, decision.brief, { taskId: task.id, runId: updatedRun.id });
-          return { action: "attach_existing", taskId: task.id, runId: updatedRun.id, steered: true };
+          // steer 返回值是真相：竞态失败（进程恰好收尾）时 input 保持 pending 兜底
+          const steered = brain.steer(sessionKey, decision.brief, { taskId: task.id, runId: updatedRun.id }) === true;
+          if (steered && input) runStore.markInputDelivered(input.id);
+          return { action: "attach_existing", taskId: task.id, runId: updatedRun.id, steered };
         }
         return { action: "attach_existing", taskId: task.id, runId: updatedRun.id, steered: false, attached: true };
       }

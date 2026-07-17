@@ -116,6 +116,48 @@ describe("reasoning coordinator", () => {
     expect(runStore.getRun(out.runId)).toMatchObject({ task_id: task.id, closure_mode: "required" });
   });
 
+  it("attach_existing 命中 steer 竞态失败窗口：纠正持久化为 pending input 而不是静默丢弃", async () => {
+    const first = sessions.append(session.id, { role: "user", senderOpenId: "ou_a", content: "建日程", ts: 1 });
+    const origin = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [first.id], responderAction: "no_reply" });
+    const task = taskStore.createTask({ sessionId: session.id, title: "建日程" });
+    let run = runStore.createRun({ taskId: task.id, originDispatchId: origin.id, originKind: "dispatcher", originId: origin.id, closureMode: "required", brief: "建日程" });
+    run = runStore.startRun(run.id, { turnId: "turn-open", residentKey: `task:${task.id}` });
+    const second = sessions.append(session.id, { role: "user", senderOpenId: "ou_a", content: "改成周五！", ts: 2 });
+    const attached = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [second.id], responderAction: "no_reply" });
+    brain.isBusy = vi.fn(() => true);
+    brain.steer = vi.fn(() => false);   // 进程恰在收尾窗口，steer 未送达
+    const c = makeCoordinator();
+    const out = await c.applyDecision({
+      session, sessionKey: session.session_key, dispatchId: attached.id, sourceMessageIds: [second.id],
+      decision: { action: "attach_existing", task_id: task.id, brief: "用户改周五", closure: "required" },
+    });
+    expect(out.steered).toBe(false);
+    const pending = runStore.pendingInputs(run.id);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].brief).toBe("用户改周五");
+  });
+
+  it("attach_existing 命中非 busy 开放 run（排队/收尾窗口）：纠正落 pending input 待后续消费", async () => {
+    const first = sessions.append(session.id, { role: "user", senderOpenId: "ou_a", content: "查资料", ts: 1 });
+    const origin = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [first.id], responderAction: "no_reply" });
+    const task = taskStore.createTask({ sessionId: session.id, title: "查资料" });
+    const run = runStore.createRun({ taskId: task.id, originDispatchId: origin.id, originKind: "dispatcher", originId: origin.id, closureMode: "silent_ok", brief: "查资料" });
+    // run 停在 queued（未 startRun），brain 不 busy
+    brain.isBusy = vi.fn(() => false);
+    const second = sessions.append(session.id, { role: "user", senderOpenId: "ou_a", content: "重点看第二季度", ts: 2 });
+    const attached = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [second.id], responderAction: "no_reply" });
+    const c = makeCoordinator();
+    const out = await c.applyDecision({
+      session, sessionKey: session.session_key, dispatchId: attached.id, sourceMessageIds: [second.id],
+      decision: { action: "attach_existing", task_id: task.id, brief: "重点看第二季度", closure: "silent_ok" },
+    });
+    expect(out).toMatchObject({ action: "attach_existing", steered: false, runId: run.id });
+    expect(brain.steer).not.toHaveBeenCalled();
+    const pending = runStore.pendingInputs(run.id);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].brief).toBe("重点看第二季度");
+  });
+
   it("revokes the active run initiator before steering a second sender", async () => {
     const first = sessions.append(session.id, { role: "user", senderOpenId: "ou_a", content: "建日程", ts: 1 });
     const origin = taskStore.createDispatch({ sessionId: session.id, sourceMessageIds: [first.id], responderAction: "no_reply" });
@@ -299,6 +341,40 @@ describe("reasoning coordinator", () => {
       text: expect.stringContaining("没能生成"),
     }));
     expect(activeBrainTurns.resolve("feishu:p2p:ou_a", { taskId: out.taskId, executionKey: `task:${out.taskId}` })).toBeNull();
+  });
+
+  it("闭合期终态投递失败时 lifecycle 仍在 finally 终态化，task 不永久卡 closing", async () => {
+    const activeBrainTurns = createActiveTurnRegistry().brainTurns;
+    const deliverTerminal = vi.fn(async () => { throw new Error("feishu network down"); });
+    brain.turn = vi.fn(async ({ sessionKey, taskId, runId }) => {
+      const executionKey = `task:${taskId}`;
+      const turnId = `turn:${taskId}`;
+      const identity = { taskId, runId, executionKey };
+      const lease = activeBrainTurns.activate({ sessionKey, ...identity, turnId, purpose: "business" });
+      activeBrainTurns.bindResident(sessionKey, lease, 1, identity);
+      const closing = await activeBrainTurns.closeAdmissions(sessionKey, lease, identity);
+      return { turnLifecycle: { sessionKey, ...identity, turnId, lease, closing } };
+    });
+    const c = makeCoordinator({ activeBrainTurns, deliverTerminal, log: vi.fn() });
+
+    const out = await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: { action: "spawn_new", title: "必须闭合", brief: "处理", closure: "required", reason_code: "promise" },
+    });
+
+    await vi.waitFor(() => expect(deliverTerminal).toHaveBeenCalled());
+    const executionKey = `task:${out.taskId}`;
+    // 修复前：deliverTerminal 抛出 → finalizeTurn 被跳过 → brain 永久卡 closing，
+    // 此后同 task 的新 run activate 恒失败（重启前该 task 永久失效）。
+    await vi.waitFor(() => {
+      expect(activeBrainTurns.resolve("feishu:p2p:ou_a", { taskId: out.taskId, executionKey })).toBeNull();
+    });
+    const nextLease = activeBrainTurns.activate({
+      sessionKey: "feishu:p2p:ou_a", taskId: out.taskId, runId: "run-next",
+      executionKey, turnId: "turn-next", purpose: "business",
+    });
+    expect(nextLease).toBeTruthy();
   });
 
   it("renders no-lifecycle finalText through Responder and never sends the raw reasoner text", async () => {
