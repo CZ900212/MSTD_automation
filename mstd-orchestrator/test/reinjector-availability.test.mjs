@@ -23,7 +23,7 @@ describe("background reinjection availability", () => {
       store,
       actors,
       brain,
-      outbound: { editMessage: vi.fn() },
+
     });
 
     const reinjection = reinjector.onJobComplete({

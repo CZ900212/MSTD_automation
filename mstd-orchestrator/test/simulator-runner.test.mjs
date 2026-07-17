@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createRunner } from "../simulator/runner.mjs";
-import { createChatLock, createDaemonOwner } from "../simulator/process-owner.mjs";
+import { createChatLock } from "../simulator/process-owner.mjs";
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -77,12 +77,4 @@ describe("simulator runner", () => {
     expect(lock.tryAcquire({ pid: process.pid, runId: "r3" }).ok).toBe(true);
   });
 
-  it("daemon owner only stops self-started pid", () => {
-    const o = createDaemonOwner();
-    o.noteExisting();
-    expect(o.canStop(123)).toBe(false);
-    o.noteStarted(456);
-    expect(o.canStop(456)).toBe(true);
-    expect(o.canStop(123)).toBe(false);
-  });
 });

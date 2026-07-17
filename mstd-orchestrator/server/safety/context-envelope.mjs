@@ -174,8 +174,6 @@ export function createContextEnvelope(input = {}, { budget = createContextBudget
   const rawFitted = budget.fit(inputContent);
   const rawContent = rawFitted.text;
   const rawHash = hashText(rawContent);
-  // Scan raw bytes before normalization even though only final-body signals are retained.
-  scanInjectionSignals(rawContent);
   const normalized = rawContent.normalize("NFC");
   if (hasUnpairedSurrogate(normalized)) throw new Error("context content 含非法 Unicode surrogate");
   // NFC can expand one source point. Re-budget by source-point boundaries so

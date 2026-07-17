@@ -4,16 +4,15 @@ import { createSessionStore } from "../server/sessions/store.mjs";
 import { createReinjector } from "../server/jobs/reinjector.mjs";
 import { createContextBudget } from "../server/safety/context-budget.mjs";
 
-describe("后台 job 回注（版本判定 + 进度心跳）", () => {
-  let db, store, actors, brain, outbound, reinject;
+describe("后台 job 回注（版本判定）", () => {
+  let db, store, actors, brain, reinject;
   beforeEach(() => {
     db = openDb();
     migrate(db);
     store = createSessionStore(db);
     actors = { enqueue: vi.fn((_, callback) => callback()) };
     brain = { turn: vi.fn(async () => ({ finalText: "", events: [] })), isBusy: () => false };
-    outbound = { editMessage: vi.fn(async () => ({})), sendMessage: vi.fn(async () => ({ messageId: "om_x" })) };
-    reinject = createReinjector({ store, actors, brain, outbound, versionThreshold: 3 });
+    reinject = createReinjector({ store, actors, brain, versionThreshold: 3 });
   });
 
   it("新鲜回注：版本差 ≤3 → 正常播报 prompt", async () => {
@@ -66,7 +65,7 @@ describe("后台 job 回注（版本判定 + 进度心跳）", () => {
   it("signed envelope binds authoritative background parent provenance and configured budget", async () => {
     const signer = (payload) => `a${Buffer.from(payload).toString("hex").slice(0, 63)}`.padEnd(64, "0").slice(0, 64);
     const contextBudget = createContextBudget({ maxBytes: 8, marker: "" });
-    reinject = createReinjector({ store, actors, brain, outbound, contextSigner: signer, contextBudget });
+    reinject = createReinjector({ store, actors, brain, contextSigner: signer, contextBudget });
     store.getOrCreate("feishu:p2p:ou_parent", { kind: "p2p" });
     await reinject.onJobComplete({
       jobId: "j-parent", sessionKey: "feishu:p2p:ou_parent", sessionVersion: 2, ok: true,
@@ -137,26 +136,11 @@ describe("后台 job 回注（版本判定 + 进度心跳）", () => {
     expect(brain.turn).toHaveBeenCalledTimes(1);
   });
 
-  it("进度心跳：每 3 分钟编辑同一条消息，不发新消息；stop 后停止", () => {
-    vi.useFakeTimers();
-    reinject = createReinjector({ store, actors, brain, outbound });  // fake timer 生效后构造
-    reinject.trackProgress({ jobId: "j4", messageId: "om_prog" });
-    vi.advanceTimersByTime(3 * 60_000);
-    vi.advanceTimersByTime(3 * 60_000);
-    expect(outbound.editMessage).toHaveBeenCalledTimes(2);
-    expect(outbound.editMessage.mock.calls[0][0].messageId).toBe("om_prog");
-    expect(outbound.sendMessage).not.toHaveBeenCalled();
-    reinject.stopProgress("j4");
-    vi.advanceTimersByTime(10 * 60_000);
-    expect(outbound.editMessage).toHaveBeenCalledTimes(2);
-    vi.useRealTimers();
-  });
-
   it("prep 段抛错收敛为 controlled/prep_failed,不产生 unhandled rejection", async () => {
     const hostileStore = { getOrCreate: () => { throw new Error("db 抖动"); } };
     // 贴近真实 actor 语义:回调抛错成为返回 promise 的拒绝(而非同步 throw)
     const asyncActors = { enqueue: (_, cb) => Promise.resolve().then(cb) };
-    const r = createReinjector({ store: hostileStore, actors: asyncActors, brain, outbound, log: () => {} });
+    const r = createReinjector({ store: hostileStore, actors: asyncActors, brain, log: () => {} });
     await expect(r.onJobComplete({
       jobId: "jx", sessionKey: "feishu:p2p:ou_a", sessionVersion: 0, ok: true, result: "文本",
     })).resolves.toMatchObject({ status: "controlled", reason: "prep_failed" });

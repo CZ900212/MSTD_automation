@@ -23,8 +23,10 @@ export function createJobLauncher({
   const queue = [];
 
   async function launch({ jobId, readPrincipal = null }) {
-    const job = getJobRow(db, jobId);
+    // getJobRow 必须在 try 内：同步 DB 异常不得跳过 finally 的槽位归还。
     try {
+      const job = getJobRow(db, jobId);
+      if (!job) throw new Error(`job 不存在: ${jobId}`);
       await runReadonlyPhase({
         db,
         startPi,

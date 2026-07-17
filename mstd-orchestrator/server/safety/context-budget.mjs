@@ -30,15 +30,6 @@ function fitBytes(text, maxBytes, marker) {
   return { text: fitted, truncated: true, originalBytes, bytes: countContextBytes(fitted) };
 }
 
-function fitChars(text, maxChars, marker) {
-  const originalChars = countContextChars(text);
-  if (originalChars <= maxChars) return { text, truncated: false, originalChars, chars: originalChars };
-  const markerChars = countContextChars(marker);
-  const suffix = markerChars < maxChars ? marker : "";
-  const clipped = Array.from(text).slice(0, maxChars - countContextChars(suffix)).join("") + suffix;
-  return { text: clipped, truncated: true, originalChars, chars: countContextChars(clipped) };
-}
-
 // Envelope construction is byte-only. `maxChars` is intentionally unsupported:
 // accepting it here could silently turn CJK/emoji-heavy prompt data into an
 // over-budget byte payload.

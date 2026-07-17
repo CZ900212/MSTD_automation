@@ -59,6 +59,10 @@ export function createSimulatorAuth({
     } catch {
       return { ok: false, status: 403, error: "nonce_replay" };
     }
+    // 低频清扫过期 nonce：verify 热路径上做，避免 simulator_nonces 表无界增长。
+    if (Math.random() < 0.02) {
+      try { purgeExpired(); } catch { /* best-effort */ }
+    }
     return { ok: true };
   }
 

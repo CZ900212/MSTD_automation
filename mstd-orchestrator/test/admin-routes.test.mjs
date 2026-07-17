@@ -28,6 +28,7 @@ describe("调试台管理 API（admin 白名单）", () => {
     const s = store.getOrCreate("feishu:p2p:ou_x", { kind: "p2p", title: "小明" });
     store.append(s.id, { role: "user", content: "问题", ts: 1000 });
     debugTurns = [];
+    const modelLog = createModelLog(db);
     app = createApp({
       db,
       config: { sessionSecret: SECRET, sessionTtlSeconds: 3600, adminOpenIds: new Set(["ou_admin"]) },
@@ -37,6 +38,7 @@ describe("调试台管理 API（admin 白名单）", () => {
         agentStore: store,
         cronStore: createCronStore(db, { now: () => 5000 }),
         debugTurn: vi.fn(async ({ text }) => { debugTurns.push(text); return { ok: true }; }),
+        modelLog,
       },
     });
   });

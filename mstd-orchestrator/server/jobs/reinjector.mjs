@@ -1,4 +1,4 @@
-// 后台 job 完成回注：版本判定（新鲜→正常播报；过时→提示可能翻篇由 5.5 决定）+ 进度心跳编辑。
+// 后台 job 完成回注：版本判定（新鲜→正常播报；过时→提示可能翻篇由 5.5 决定）。
 import { createHash } from "node:crypto";
 import { createContextEnvelope } from "../safety/context-envelope.mjs";
 import { stableHash } from "../safety/action-dsl.mjs";
@@ -32,20 +32,15 @@ export function createReinjector({
   store,
   actors,
   brain,
-  outbound,
   versionThreshold = 3,
-  progressIntervalMs = 3 * 60_000,
   ambiguityBaseMs = 60_000,
   ambiguityMaxMs = 60 * 60_000,
   contextSigner = null,
   contextBudget = null,
   coordinator = null,
-  setIntervalFn = setInterval,
-  clearIntervalFn = clearInterval,
   now = () => Date.now(),
   log = console.error,
 }) {
-  const progressTimers = new Map(); // jobId -> { timer, startedAt }
   const ambiguity = new Map(); // provenance hash -> { attempts, retryAt }
 
   function claimAmbiguity(key) {
@@ -77,7 +72,6 @@ export function createReinjector({
     error,
     errorKind = "unknown",
   }) {
-    stopProgress(jobId);
     const derived = ok ? normalizeDerivedResult({ derived_result, result, sessionKey, sessionVersion, jobId }) : null;
     const provenance = createHash("sha256").update(JSON.stringify({
       jobId,
@@ -150,25 +144,5 @@ export function createReinjector({
     });
   }
 
-  // >3 分钟的 job 编辑同一条消息更新进度，不刷屏
-  function trackProgress({ jobId, messageId }) {
-    if (!messageId || progressTimers.has(jobId)) return;
-    const startedAt = now();
-    const timer = setIntervalFn(() => {
-      const mins = Math.round((now() - startedAt) / 60_000);
-      outbound.editMessage({ messageId, text: `⏳ 任务进行中…已 ${mins} 分钟，完成后同步结果。` })
-        .catch((e) => log(`[reinject] 进度编辑失败 job=${jobId}: ${e?.message ?? e}`));
-    }, progressIntervalMs);
-    if (timer?.unref) timer.unref();
-    progressTimers.set(jobId, { timer, startedAt });
-  }
-
-  function stopProgress(jobId) {
-    const entry = progressTimers.get(jobId);
-    if (!entry) return;
-    clearIntervalFn(entry.timer);
-    progressTimers.delete(jobId);
-  }
-
-  return { onJobComplete, trackProgress, stopProgress };
+  return { onJobComplete };
 }

@@ -11,14 +11,19 @@ export function AdminBoard() {
   const [actions, setActions] = useState<{ id: string; job_id: string; kind: string; status: string; target_open_id: string | null; ts: number }[]>([]);
   const [modelLog, setModelLog] = useState<ModelLogEntry[]>([]);
   const [form, setForm] = useState({ schedule: "0 9 * * *", prompt: "", deliverTo: "" });
+  const [logFilter, setLogFilter] = useState({ kind: "", taskId: "", decision: "" });
   const [error, setError] = useState("");
 
-  const refresh = async () => {
+  const refresh = async (filters = logFilter) => {
     try {
       setCrons(await listCronJobs());
       setJobs(await listAdminJobs());
       setActions((await getAudit()).actions);
-      setModelLog(await getModelLog());
+      setModelLog(await getModelLog({
+        kind: filters.kind || undefined,
+        taskId: filters.taskId || undefined,
+        decision: filters.decision || undefined,
+      }));
     } catch (e) {
       setError(String(e));
     }
@@ -60,11 +65,11 @@ export function AdminBoard() {
                 <td>{c.deliver_to}</td>
                 <td>{c.last_run_at ? new Date(c.last_run_at).toLocaleString() : "—"}</td>
                 <td>
-                  <button type="button" className="ghost" onClick={() => { void setCronEnabled(c.id, !c.enabled).then(refresh); }}>
+                  <button type="button" className="ghost" onClick={() => { void setCronEnabled(c.id, !c.enabled).then(() => refresh()); }}>
                     {c.enabled ? "启用中" : "已停用"}
                   </button>
                 </td>
-                <td><button type="button" className="ghost" onClick={() => { void removeCronJob(c.id).then(refresh); }}>删除</button></td>
+                <td><button type="button" className="ghost" onClick={() => { void removeCronJob(c.id).then(() => refresh()); }}>删除</button></td>
               </tr>
             ))}
             {crons.length === 0 && <tr><td colSpan={6}>（无定时任务）</td></tr>}
@@ -109,9 +114,40 @@ export function AdminBoard() {
       </section>
 
       <section>
-        <h3>模型链路事件（降级 / 重试 / 预算）</h3>
+        <h3>模型链路事件（降级 / 重试 / 预算 / 成功耗时）</h3>
+        <div className="cron-form" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <input
+            placeholder="kind（如 model_call / dispatcher_decide）"
+            value={logFilter.kind}
+            onChange={(e) => setLogFilter({ ...logFilter, kind: e.target.value })}
+            style={{ width: 220 }}
+          />
+          <input
+            placeholder="taskId"
+            value={logFilter.taskId}
+            onChange={(e) => setLogFilter({ ...logFilter, taskId: e.target.value })}
+            style={{ width: 180 }}
+          />
+          <input
+            placeholder="decision"
+            value={logFilter.decision}
+            onChange={(e) => setLogFilter({ ...logFilter, decision: e.target.value })}
+            style={{ width: 140 }}
+          />
+          <button type="button" onClick={() => { void refresh(logFilter); }}>筛选</button>
+          <button type="button" className="ghost" onClick={() => {
+            const empty = { kind: "", taskId: "", decision: "" };
+            setLogFilter(empty);
+            void refresh(empty);
+          }}>清空</button>
+        </div>
         <table>
-          <thead><tr><th>事件</th><th>链</th><th>路径</th><th>会话</th><th>详情</th><th>时间</th></tr></thead>
+          <thead>
+            <tr>
+              <th>事件</th><th>链</th><th>路径</th><th>会话</th>
+              <th>task</th><th>decision</th><th>延迟</th><th>详情</th><th>时间</th>
+            </tr>
+          </thead>
           <tbody>
             {modelLog.map((m) => (
               <tr key={m.id}>
@@ -119,11 +155,14 @@ export function AdminBoard() {
                 <td>{m.chain || "—"}</td>
                 <td>{m.from_key ? (m.to_key ? `${m.from_key} → ${m.to_key}` : `${m.from_key}${m.attempt ? `（第 ${m.attempt} 次）` : ""}`) : "—"}</td>
                 <td>{m.session_key || "—"}</td>
+                <td title={m.task_id || undefined}>{m.task_id ? m.task_id.slice(0, 8) : "—"}</td>
+                <td>{m.decision || "—"}</td>
+                <td>{m.latency_ms != null ? `${Math.round(m.latency_ms)}ms` : "—"}</td>
                 <td>{m.detail || "—"}</td>
                 <td>{new Date(m.ts).toLocaleString()}</td>
               </tr>
             ))}
-            {modelLog.length === 0 && <tr><td colSpan={6}>（链路健康，无事件）</td></tr>}
+            {modelLog.length === 0 && <tr><td colSpan={9}>（链路健康，无事件）</td></tr>}
           </tbody>
         </table>
       </section>

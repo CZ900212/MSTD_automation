@@ -41,16 +41,12 @@ export function createMemoryFiles({ rootDir }) {
     return join(rootDir, "memory", "user-journal", `${openId}.md`);
   }
 
-  function readLayer(layer, id) {
-    const p = pathOf(layer, id);
+  function readWithHash(p) {
     const content = existsSync(p) ? readFileSync(p, "utf8") : "";
     return { content, snapshotHash: sha256(content) };
   }
 
-  function writeLayer(layer, id, content, { expectedHash } = {}) {
-    const limit = LIMITS[layer];
-    if (limit && content.length > limit) throw new LimitError(layer, limit);
-    const p = pathOf(layer, id);
+  function writeGuarded(p, content, { expectedHash } = {}) {
     if (expectedHash !== undefined) {
       const current = existsSync(p) ? readFileSync(p, "utf8") : "";
       if (sha256(current) !== expectedHash) {
@@ -61,6 +57,16 @@ export function createMemoryFiles({ rootDir }) {
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, content, "utf8");
     return { snapshotHash: sha256(content) };
+  }
+
+  function readLayer(layer, id) {
+    return readWithHash(pathOf(layer, id));
+  }
+
+  function writeLayer(layer, id, content, { expectedHash } = {}) {
+    const limit = LIMITS[layer];
+    if (limit && content.length > limit) throw new LimitError(layer, limit);
+    return writeGuarded(pathOf(layer, id), content, { expectedHash });
   }
 
   function appendJournal(entryText, now = Date.now()) {
@@ -75,26 +81,14 @@ export function createMemoryFiles({ rootDir }) {
   }
 
   function readUserJournal(openId) {
-    const p = userJournalPath(openId);
-    const content = existsSync(p) ? readFileSync(p, "utf8") : "";
-    return { content, snapshotHash: sha256(content) };
+    return readWithHash(userJournalPath(openId));
   }
 
   function writeUserJournal(openId, content, { expectedHash } = {}) {
     if (content.length > USER_JOURNAL_MAX_CHARS) {
       throw new LimitError("user-journal", USER_JOURNAL_MAX_CHARS);
     }
-    const p = userJournalPath(openId);
-    if (expectedHash !== undefined) {
-      const current = existsSync(p) ? readFileSync(p, "utf8") : "";
-      if (sha256(current) !== expectedHash) {
-        if (existsSync(p)) copyFileSync(p, `${p}.bak.${Date.now()}`);
-        throw new DriftError(p);
-      }
-    }
-    mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, content, "utf8");
-    return { snapshotHash: sha256(content) };
+    return writeGuarded(userJournalPath(openId), content, { expectedHash });
   }
 
   return {

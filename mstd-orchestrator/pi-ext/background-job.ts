@@ -4,6 +4,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { postInternal } from "./internal-channel.ts";
 import { createTurnContextReader } from "./turn-context.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -22,33 +23,25 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_id, params, signal) {
-      const base = process.env.MSTD_INTERNAL_URL;
-      const token = process.env.MSTD_INTERNAL_TOKEN;
-      const sessionKey = process.env.MSTD_SESSION_KEY;
-      if (!base || !token || !sessionKey) {
-        return { content: [{ type: "text", text: "错误：内部通道未配置" }], details: { error: "no internal channel" } };
-      }
       const turnContext = currentTurnContext();
       if (!turnContext) {
         return { content: [{ type: "text", text: "注册失败: 当前 Pi 回合没有 daemon turn context" }], details: { error: "no turn context" } };
       }
       try {
-        const resp = await fetch(`${base}/internal/background`, {
-          method: "POST",
-          signal,
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            session_key: sessionKey,
-            turn_id: turnContext.turnId,
-            turn_lease: turnContext.lease,
-            ...params,
-          }),
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) return { content: [{ type: "text", text: `注册失败: ${data.error ?? resp.status}` }], details: data };
-        return { content: [{ type: "text", text: `后台 job 已注册: ${data.job_id}，完成后结果会回注本会话。` }], details: data };
+        const r = await postInternal("/internal/background", {
+          turn_id: turnContext.turnId,
+          turn_lease: turnContext.lease,
+          ...params,
+        }, { signal });
+        if (!r.ok) {
+          return {
+            content: [{ type: "text", text: r.status === 0 ? `错误：${r.errorText}` : `注册失败: ${r.errorText}` }],
+            details: r.data,
+          };
+        }
+        return { content: [{ type: "text", text: `后台 job 已注册: ${r.data.job_id}，完成后结果会回注本会话。` }], details: r.data };
       } catch (e) {
-        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
+        if (signal?.aborted) throw e;
         return { content: [{ type: "text", text: `注册异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

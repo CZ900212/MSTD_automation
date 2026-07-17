@@ -64,7 +64,7 @@ describe("reinjector → reasoning coordinator provenance", () => {
       store: sessions,
       actors: { enqueue: vi.fn((_key, callback) => callback()) },
       brain,
-      outbound: { editMessage: vi.fn(async () => ({})) },
+
       coordinator,
     });
   });
@@ -102,7 +102,7 @@ describe("reinjector → reasoning coordinator provenance", () => {
       store: sessions,
       actors: { enqueue: vi.fn((_key, callback) => callback()) },
       brain,
-      outbound: { editMessage: vi.fn(async () => ({})) },
+
       coordinator,
     });
     const blocker = taskStore.createTask({ sessionId: session.id, title: "占用公平槽" });

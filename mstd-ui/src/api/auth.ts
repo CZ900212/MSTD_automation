@@ -26,8 +26,20 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
     throw new Error("鉴权失效，请重新登录");
   }
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!response.ok) throw new Error((data as { error?: string }).error || "请求失败");
+  let data: unknown = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // 网关/反代常返回 HTML 或纯文本；先按 status 分流，避免 SyntaxError 吞掉友好文案。
+      if (!response.ok) throw new Error(`请求失败(${response.status})`);
+      throw new Error(`响应不是 JSON(${response.status})`);
+    }
+  }
+  if (!response.ok) {
+    const err = (data as { error?: string })?.error;
+    throw new Error(typeof err === "string" && err ? err : `请求失败(${response.status})`);
+  }
   return data as T;
 }
 

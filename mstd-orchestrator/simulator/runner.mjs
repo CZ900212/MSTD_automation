@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createChatLock, createDaemonOwner } from "./process-owner.mjs";
+import { createChatLock } from "./process-owner.mjs";
 
 /**
  * Deterministic director: sole scheduler and stop authority for actor bots.
@@ -24,7 +24,6 @@ export function createRunner({
   const turnRecords = [];
   const errors = [];
   let consecutiveErrors = 0;
-  const daemonOwner = createDaemonOwner();
   const lock = lockDir
     ? createChatLock(join(lockDir, `${chatId.replace(/[^a-zA-Z0-9_-]/g, "_")}.lock`))
     : null;
@@ -191,7 +190,6 @@ export function createRunner({
     run,
     requestAbort,
     getStatus: () => status,
-    daemonOwner,
     turnRecords,
   };
 }

@@ -34,8 +34,16 @@ beforeEach(() => {
     actions: [{ id: "a1", job_id: "j1", kind: "create_task", status: "done", target_open_id: "ou_a", ts: 1000 }],
   });
   vi.mocked(admin.getModelLog).mockResolvedValue([
-    { id: "m1", kind: "model_fallback", chain: "fast", from_key: "v4-flash", to_key: "opus-4.6", session_key: null, attempt: null, detail: "HTTP 500", ts: 2000 },
-    { id: "m2", kind: "budget_exceeded", chain: null, from_key: null, to_key: null, session_key: "feishu:p2p:ou_a", attempt: null, detail: "session", ts: 3000 },
+    {
+      id: "m1", kind: "model_fallback", chain: "fast", from_key: "v4-flash", to_key: "opus-4.6",
+      session_key: null, attempt: null, detail: "HTTP 500", ts: 2000,
+      task_id: "task-abc12345", decision: null, latency_ms: 1200,
+    },
+    {
+      id: "m2", kind: "budget_exceeded", chain: null, from_key: null, to_key: null,
+      session_key: "feishu:p2p:ou_a", attempt: null, detail: "session", ts: 3000,
+      task_id: null, decision: "budget", latency_ms: null,
+    },
   ]);
   vi.mocked(admin.addCronJob).mockResolvedValue({ ok: true, id: "c2" });
   vi.mocked(admin.setCronEnabled).mockResolvedValue({ ok: true });
@@ -50,13 +58,28 @@ describe("AdminBoard", () => {
     expect(screen.getByText("create_task")).toBeInTheDocument();
   });
 
-  it("模型链路事件表：kind 可读化、降级路径 from→to、会话/详情列", async () => {
+  it("模型链路事件表：kind 可读化、降级路径 from→to、会话/详情/task/延迟列", async () => {
     render(<AdminBoard />);
     expect(await screen.findByText("链内降级")).toBeInTheDocument();
     expect(screen.getByText("v4-flash → opus-4.6")).toBeInTheDocument();
     expect(screen.getByText("预算命中")).toBeInTheDocument();
     expect(screen.getByText("feishu:p2p:ou_a")).toBeInTheDocument();
     expect(screen.getByText("HTTP 500")).toBeInTheDocument();
+    expect(screen.getByText("task-abc")).toBeInTheDocument();
+    expect(screen.getByText("1200ms")).toBeInTheDocument();
+  });
+
+  it("模型链路筛选：提交 kind/taskId 给 getModelLog", async () => {
+    render(<AdminBoard />);
+    await screen.findByText("链内降级");
+    await userEvent.type(screen.getByPlaceholderText(/kind/), "model_call");
+    await userEvent.type(screen.getByPlaceholderText("taskId"), "task-1");
+    await userEvent.click(screen.getByRole("button", { name: "筛选" }));
+    expect(admin.getModelLog).toHaveBeenLastCalledWith({
+      kind: "model_call",
+      taskId: "task-1",
+      decision: undefined,
+    });
   });
 
   it("新建 cron：填 prompt+deliver_to 后提交调用 addCronJob 并刷新", async () => {

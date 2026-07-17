@@ -11,6 +11,8 @@ export function createSessionExpiry({
   idleMs = 24 * 3600_000,
   resetHourBJ = 4,
   hasActiveJob = () => false,
+  // 会话真正结束后再清逐字引用 shingle（勿绑 resident/epoch 回收，否则会缩窄防护窗口）。
+  onArchived = null,
   log = console.error,
 }) {
   // 最近一次北京 resetHour 的 UTC 时间戳
@@ -67,7 +69,13 @@ export function createSessionExpiry({
         const result = db.prepare(
           "UPDATE agent_sessions SET status = 'archived' WHERE id = ? AND status = 'active' AND updated_at < ?"
         ).run(current.id, cutoff);
-        return result.changes === 1 ? 1 : 0;
+        if (result.changes === 1) {
+          try { onArchived?.(current.session_key); } catch (e) {
+            log(`[expiry] onArchived 失败 ${current.session_key}: ${e?.message ?? e}`);
+          }
+          return 1;
+        }
+        return 0;
       });
       if (didArchive === 1) archived += 1;
     }

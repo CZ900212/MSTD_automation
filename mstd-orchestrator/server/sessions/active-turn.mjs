@@ -152,6 +152,8 @@ export function createActiveTurnRegistry({
       return rec;
     }
     if (!receiptLive(rec) && !brainLive(rec)) {
+      // Live 检查可能通过 prune() 副作用把 rec 从 Map 删掉；轮换后必须重新登记，
+      // 否则新回合的 receipt/brain 会挂在游离对象上，业务单飞门禁随之失效。
       rec.sessionKey = sessionKey;
       rec.taskId = opts.taskId ?? null;
       rec.runId = opts.runId ?? null;
@@ -159,6 +161,7 @@ export function createActiveTurnRegistry({
       rec.turnId = turnId;
       rec.lease = issueLease();
       rec.initiator = null;      // 上一回合的发起人授权不得跨回合存活
+      sessions.set(executionKey, rec);
       return rec;
     }
     if (rec.turnId !== turnId) return null;
@@ -473,13 +476,6 @@ export function createActiveTurnRegistry({
       b.resolveDrain = null;
       prune(rec);
       return frozen;
-    },
-
-    // Compatibility for non-business callers: close admissions, drain, then freeze.
-    async finishTurn(sessionKey, lease, options = {}) {
-      const drained = await brainTurns.closeAdmissions(sessionKey, lease, options);
-      if (!drained) return null;
-      return brainTurns.finalizeTurn(sessionKey, lease);
     },
 
     clear(sessionKey, lease, opts = {}) {

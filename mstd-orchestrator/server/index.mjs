@@ -9,6 +9,7 @@ import { createApp } from "./app.mjs";
 import { createSemaphore } from "./jobs/semaphore.mjs";
 import { createEventBus } from "./jobs/event-bus.mjs";
 import { createEventBuffer } from "./jobs/event-buffer.mjs";
+import { sweepExpiredExports } from "./execute/job-workdir.mjs";
 import { createRuntimeRegistry } from "./jobs/runtime.mjs";
 import { makeFeishuClient } from "./auth/feishu-client.mjs";
 import { makeRunLark, DEFAULT_LARK_CLI } from "./execute/run-lark.mjs";
@@ -346,9 +347,9 @@ if (config.enableAgent && config.botOpenId) {
   });
   // A process may die after physical delivery but before the assistant row/dispatch state
   // commits. Retry with the durable idempotency key, then let the normal review pump claim it.
+  const sessionById = (sessionId) => db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(sessionId);
   for (const row of taskStore.listRetryableSends()) {
-    const session = agentStore.getById?.(row.session_id)
-      ?? db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(row.session_id);
+    const session = sessionById(row.session_id);
     if (!session) continue;
     try {
       await coordinator.retryPendingSend({
@@ -363,12 +364,10 @@ if (config.enableAgent && config.botOpenId) {
   // Release stale dispatcher claims, then recover durable runs before admitting new reviews.
   const pendingReviews = coordinator.resumePending();
   await coordinator.recoverRuns({
-    resolveSession: (sessionId) => agentStore.getById?.(sessionId)
-      ?? db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(sessionId),
+    resolveSession: sessionById,
   });
   for (const row of pendingReviews) {
-    const session = agentStore.getById?.(row.session_id)
-      ?? db.prepare("SELECT * FROM agent_sessions WHERE id = ?").get(row.session_id);
+    const session = sessionById(row.session_id);
     if (!session) continue;
     coordinator.schedule({
       dispatchId: row.id,
@@ -414,7 +413,6 @@ if (config.enableAgent && config.botOpenId) {
     store: agentStore,
     actors,
     brain,
-    outbound,
     contextSigner,
     contextBudget,
     coordinator,
@@ -576,8 +574,16 @@ if (config.enableAgent && config.botOpenId) {
   const expiry = createSessionExpiry({
     db, agentStore, actors, brain, snapshotFn,
     hasActiveJob: (key) => hasActiveJobForSession(db, key),
+    onArchived: (sessionKey) => verbatimGuard.clear(sessionKey),
   });
   ticker.register("session-expiry", 10, () => expiry.sweep());
+  // job out/<jobId> 产物按 mtime TTL 收割（默认 7 天）；比照 session-expiry 低频扫。
+  const jobExportsDir = join(ROOT, "out");
+  const jobExportTtlMs = intEnv(process.env, "MSTD_JOB_EXPORT_TTL_MS", 7 * 24 * 3600_000);
+  ticker.register("job-exports-sweep", 10, () => {
+    try { sweepExpiredExports(jobExportsDir, jobExportTtlMs); }
+    catch (e) { console.error(`[job-exports-sweep] ${e?.message ?? e}`); }
+  });
   if (larkHealth) ticker.register("lark-health", 10, () => larkHealth.checkOnce().catch(() => {}));
   // T1.3 token 续期哨兵：6h 一查（本地读零网络）,refresh 剩 <48h 私聊 owner
   if (bootLark) {

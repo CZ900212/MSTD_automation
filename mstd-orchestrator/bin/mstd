@@ -172,7 +172,11 @@ stop() {
 status() {
   if running; then
     green "orchestrator 运行中（pid $(owned_pid)，profile=${PROFILE:-由 .env 提供}）"
-    verify || true
+    # verify 失败必须非 0 退出，否则脚本化巡检（status || alert）会漏报装聋降级态。
+    # exit 3 = degraded（进程在但 HTTP/消费者不健康）；exit 1 = 未运行。
+    if ! verify; then
+      exit 3
+    fi
   else
     red "orchestrator 未运行。敲 'mstd' 启动。"
     exit 1

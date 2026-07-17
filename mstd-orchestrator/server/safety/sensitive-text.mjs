@@ -18,6 +18,21 @@ export function scanSensitiveText(value) {
   return PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
 }
 
+// 返回每个命中区间的明细（kind/位置/UTF-8 字节数）。评测侧（simulator grader）用它
+// 把"sensitive_bytes_out"从硬编码 0 变成真实计量；检测规则与 scanSensitiveText 完全一致。
+export function findSensitiveSpans(value) {
+  const text = String(value ?? "");
+  const spans = [];
+  for (const [kind, pattern] of PATTERNS) {
+    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+    const global = new RegExp(pattern.source, flags);
+    for (const m of text.matchAll(global)) {
+      spans.push({ kind, index: m.index, bytes: Buffer.byteLength(m[0], "utf8") });
+    }
+  }
+  return spans;
+}
+
 export function redactSensitiveText(value, replacement = SENSITIVE_TEXT_REDACTION) {
   let text = String(value ?? "");
   const matches = new Set();

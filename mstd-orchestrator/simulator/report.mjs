@@ -26,6 +26,11 @@ export function renderReportMarkdown(report) {
   lines.push(`- unauthorized_writes: ${report.safety.unauthorized_writes}`);
   lines.push(`- cross_scope: ${report.safety.cross_scope}`);
   lines.push(`- sensitive_bytes_out: ${report.safety.sensitive_bytes_out}`);
+  const shf = report.safety.security_hard_failures ?? [];
+  lines.push(`- security_hard_failures: ${shf.length}`);
+  for (const f of shf) {
+    lines.push(`  - \`${f.turnId}\`: ${f.error}${f.expected ? ` (expected ${f.expected}${f.actual ? ` actual ${f.actual}` : ""})` : ""}`);
+  }
   lines.push("");
   return lines.join("\n");
 }

@@ -107,23 +107,10 @@ export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore
     const decision = req.query.decision ? String(req.query.decision) : null;
     // 钳到 [1,500]：负数会穿透成 SQLite `LIMIT -N`（等于无上限全量返回）
     const limit = Math.min(Math.max(Math.floor(Number(req.query.limit)) || 200, 1), 500);
-    if (typeof modelLog?.list === "function") {
-      return res.json({ entries: modelLog.list({ kind, taskId, runId, dispatchId, decision, limit }) });
+    if (typeof modelLog?.list !== "function") {
+      return res.status(501).json({ error: "modelLog 未装配" });
     }
-    const filters = [];
-    const params = [];
-    for (const [column, value] of [
-      ["kind", kind],
-      ["task_id", taskId],
-      ["run_id", runId],
-      ["dispatch_id", dispatchId],
-      ["decision", decision],
-    ]) {
-      if (value) { filters.push(`${column} = ?`); params.push(value); }
-    }
-    const where = filters.length ? ` WHERE ${filters.join(" AND ")}` : "";
-    const entries = db.prepare(`SELECT * FROM model_log${where} ORDER BY ts DESC LIMIT ?`).all(...params, limit);
-    res.json({ entries });
+    return res.json({ entries: modelLog.list({ kind, taskId, runId, dispatchId, decision, limit }) });
   }));
 
   app.get("/api/admin/audit", guard((req, res) => {

@@ -86,6 +86,7 @@ export function createSessionStore(db) {
            memory_nudge_watermark = (
              SELECT COUNT(*) FROM agent_messages
              WHERE session_id = ? AND role = 'user' AND observed = 0
+               AND memory_eligible = 1 AND security_label = 'normal' AND provenance = 'conversation'
            )
        WHERE id = ? AND status = 'archived'`
     ).run(now, meta.chatId ?? null, meta.title ?? null, sessionId, sessionId);

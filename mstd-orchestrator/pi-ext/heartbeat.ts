@@ -4,6 +4,8 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { formatDueAtBeijing } from "../server/time/beijing-iso.mjs";
+import { postInternal } from "./internal-channel.ts";
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
@@ -21,35 +23,33 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_id, params, signal) {
-      const base = process.env.MSTD_INTERNAL_URL;
-      const token = process.env.MSTD_INTERNAL_TOKEN;
-      const sessionKey = process.env.MSTD_SESSION_KEY;
-      if (!base || !token || !sessionKey) {
-        return { content: [{ type: "text", text: "错误：内部通道未配置" }], details: { error: "no internal channel" } };
-      }
       try {
-        const resp = await fetch(`${base}/internal/heartbeat`, {
-          method: "POST",
-          signal,
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ session_key: sessionKey, action: params.action, due_iso: params.due_iso, text: params.text, item_id: params.item_id }),
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) return { content: [{ type: "text", text: `heartbeat 失败: ${data.error ?? resp.status}` }], details: data };
+        const r = await postInternal("/internal/heartbeat", {
+          action: params.action,
+          due_iso: params.due_iso,
+          text: params.text,
+          item_id: params.item_id,
+        }, { signal });
+        if (!r.ok) {
+          return {
+            content: [{ type: "text", text: r.status === 0 ? `错误：${r.errorText}` : `heartbeat 失败: ${r.errorText}` }],
+            details: r.data,
+          };
+        }
         let text: string;
         if (params.action === "add") {
-          text = `已加入本会话提醒（item_id: ${data.item_id}）,到期自动投递。`;
+          text = `已加入本会话提醒（item_id: ${r.data.item_id}）,到期自动投递。`;
         } else if (params.action === "list") {
-          const items = (data.items ?? []) as Array<{ id: string; due_at: number; text: string }>;
+          const items = (r.data.items ?? []) as Array<{ id: string; due_at: number; text: string }>;
           text = items.length
-            ? items.map((i) => `- ${i.id} @ ${new Date(i.due_at).toISOString()} ${i.text}`).join("\n")
+            ? items.map((i) => `- ${formatDueAtBeijing(i.due_at)} ${i.text}（取消用 item_id=${i.id}）`).join("\n")
             : "当前会话没有待办提醒。";
         } else {
           text = "已取消该提醒。";
         }
-        return { content: [{ type: "text", text }], details: data };
+        return { content: [{ type: "text", text }], details: r.data };
       } catch (e) {
-        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
+        if (signal?.aborted) throw e;
         return { content: [{ type: "text", text: `heartbeat 异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

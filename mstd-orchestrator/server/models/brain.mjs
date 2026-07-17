@@ -413,6 +413,7 @@ export function createBrain({
     purpose = "automation",
   }) {
     const events = [];
+    const turnStarted = Date.now();
     const identity = resolveTarget({ sessionKey, taskId, residentKey });
     // malformed 检查、legacy 包装、assertEnvelope、telemetry 全部单点在
     // resolveTurnContext（enforce 在 spawn/semaphore 之前 fail-closed；
@@ -614,10 +615,32 @@ export function createBrain({
       ? activeBrainTurns?.finalizeTurn(sessionKey, brainLease, { taskId, runId, executionKey: identity.executionKey })
       : null;
     if (terminalError) {
+      emit({
+        type: "brain_turn",
+        sessionKey,
+        taskId,
+        runId,
+        dispatchId,
+        purpose,
+        outcome: "error",
+        latencyMs: Date.now() - turnStarted,
+        error: String(terminalError?.message ?? terminalError).slice(0, 200),
+      });
       if (turnLifecycle) terminalError.turnLifecycle = turnLifecycle;
       if (turnOutcome) terminalError.turnOutcome = turnOutcome;
       throw terminalError;
     }
+    emit({
+      type: "brain_turn",
+      sessionKey,
+      taskId,
+      runId,
+      dispatchId,
+      purpose,
+      model: completed?.providerKey ?? null,
+      outcome: "ok",
+      latencyMs: Date.now() - turnStarted,
+    });
     return { ...completed, turnLifecycle, turnOutcome };
   }
 

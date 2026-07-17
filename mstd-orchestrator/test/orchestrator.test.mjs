@@ -4,7 +4,7 @@ import { createJob, getJobRow, transitionJobStatus } from "../server/store/jobs.
 import { createEventBus } from "../server/jobs/event-bus.mjs";
 import { createEventBuffer } from "../server/jobs/event-buffer.mjs";
 import { createRuntimeRegistry } from "../server/jobs/runtime.mjs";
-import { runReadonlyPhase, runWritePhase } from "../server/jobs/orchestrator.mjs";
+import { runReadonlyPhase } from "../server/jobs/orchestrator.mjs";
 import { buildCapabilityProfile } from "../server/pi/resident-extensions.mjs";
 
 function fakeStartPi(script) {
@@ -139,43 +139,3 @@ describe("runReadonlyPhase", () => {
   });
 });
 
-describe("runWritePhase", () => {
-  it("is gated when MSTD_ENABLE_WRITE off", async () => {
-    await expect(runWritePhase({ config: { enableWrite: false } })).resolves.toEqual({ gated: true, reason: expect.any(String) });
-  });
-  it("delegates to execute write-phase when enableWrite is on", async () => {
-    // Without db/jobId full wiring this will attempt import and fail on missing opts — just assert not gated
-    await expect(runWritePhase({ config: { enableWrite: true }, db: null, jobId: "x", spawnPi: async () => {}, runLark: async () => ({ exitCode: 0, stdout: "", stderr: "" }), testTarget: { allowOpenIds: new Set() } })).rejects.toThrow();
-  });
-
-  // §5.2 审卷补杀（Task 4B）：wrapper 必须把 heartbeat adapter 原样转发给 execute 层——
-  // 丢转发时 schedule_reminder 全部 no_heartbeat_adapter
-  it("forwards heartbeat adapter through to schedule_reminder execution", async () => {
-    const db = openDb(); migrate(db);
-    const { buildAgentAction } = await import("../server/safety/action-dsl.mjs");
-    const { recordActions } = await import("../server/safety/action-store.mjs");
-    const { createHeartbeatStore } = await import("../server/ticker/heartbeat-store.mjs");
-    const { randomUUID } = await import("node:crypto");
-    db.prepare(
-      "INSERT INTO orch_jobs (id, template_id, status, created_at, updated_at, params_json) VALUES ('jw','agent_write','running_write',1,1,?)"
-    ).run(JSON.stringify({ sessionKey: "feishu:p2p:ou_owner" }));
-    const a = buildAgentAction({
-      jobId: "jw", kind: "schedule_reminder", ordinal: 0,
-      payload: { deliver_to: "feishu:p2p:ou_tgt", due_iso: "2026-07-12T09:00:00+08:00", text: "催" },
-    });
-    recordActions(db, "jw", [a]);
-    db.prepare(
-      "INSERT INTO decisions (id, job_id, decided_by, decision, approved_action_keys_json, ts) VALUES (?, 'jw', 'ou_owner', 'approve', ?, 1)"
-    ).run(randomUUID(), JSON.stringify([{ action_key: a.action_key, payload_hash: a.payload_hash }]));
-    const opts = {
-      config: { enableWrite: true }, db, jobId: "jw",
-      spawnPi: async () => { throw new Error("force fallback"); },
-      runLark: async () => ({ exitCode: 0, stdout: "{}", stderr: "" }),
-      testTarget: { allowOpenIds: new Set(["ou_tgt"]), allowChatIds: new Set() },
-      heartbeat: createHeartbeatStore(db),
-    };
-    const out = await runWritePhase(opts);
-    expect(out.results[0].ok).toBe(true);
-    expect(db.prepare("SELECT COUNT(*) n FROM heartbeat_items").get().n).toBe(1);
-  });
-});

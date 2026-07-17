@@ -65,12 +65,15 @@ export const getModelLog = (filters: { kind?: string; taskId?: string; runId?: s
 
 // 模型链路事件可读化（降级/重试/预算命中一眼看穿）
 export const MODEL_LOG_LABEL: Record<string, string> = {
+  model_call: "调用成功",
   model_retry: "调用重试",
   model_fallback: "链内降级",
   pipeline_error: "全链耗尽",
   brain_fallback: "中枢降级",
+  brain_turn: "推理回合",
   budget_exceeded: "预算命中",
   outbound_retry: "出站重试",
+  responder_send_failed: "首答发送失败",
 };
 
 export const getAudit = () =>

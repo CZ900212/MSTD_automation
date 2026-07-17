@@ -132,7 +132,7 @@ describe("turn-handler active architecture", () => {
       order.push("commit_send");
       return origRecordSent(dispatchId, options);
     };
-    taskStore.markDispatchSent = () => { throw new Error("active path must use atomic recordDispatchSent"); };
+    // active path must use atomic recordDispatchSent (legacy markDispatchSent removed)
     const handler = createTurnHandler({
       architectureMode: "active",
       triage: { triage: vi.fn() },
@@ -166,6 +166,55 @@ describe("turn-handler active architecture", () => {
     expect(order).not.toContain("reasoner");
     expect(coordinator.schedule).toHaveBeenCalled();
     expect(outboundCalls[0].opts.idempotencyKey).toMatch(/^[a-f0-9]{32}$/);
+  });
+
+  it("active 物理发送失败时 emit responder_send_failed 且不 commit_send", async () => {
+    const db = openDb();
+    migrate(db);
+    const store = createSessionStore(db);
+    const taskStore = createReasoningTaskStore(db);
+    const session = store.getOrCreate("feishu:p2p:ou_send_fail", { kind: "p2p" });
+    const events = [];
+    const deliverText = vi.fn(async () => {
+      throw new Error("outbound exhausted");
+    });
+    const handler = createTurnHandler({
+      architectureMode: "active",
+      triage: { triage: vi.fn() },
+      brain: { turn: vi.fn(), isBusy: () => false, steer: vi.fn(), recycle: vi.fn() },
+      responder: { answerTurn: vi.fn(async () => ({ action: "reply", text: "首答" })) },
+      taskStore,
+      coordinator: { schedule: vi.fn() },
+      store,
+      budget: { allow: () => ({ ok: true }), record: vi.fn() },
+      replyPipeline: {
+        deliverText,
+        deliverTerminal: vi.fn(),
+        handleReply: vi.fn(),
+        renderAutomationReply: vi.fn(),
+        deliverTrusted: vi.fn(),
+      },
+      onEvent: (e) => events.push(e),
+    });
+
+    await expect(handler.handleTurn({
+      kind: "message",
+      session,
+      sessionKey: "feishu:p2p:ou_send_fail",
+      mode: "p2p",
+      items: [{ content: "hi", senderOpenId: "ou_send_fail", ts: Date.now() }],
+    })).rejects.toThrow(/outbound exhausted/);
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "responder_send_failed",
+        sessionKey: "feishu:p2p:ou_send_fail",
+        error: expect.stringContaining("outbound exhausted"),
+      }),
+    ]));
+    expect(events.some((e) => e.type === "responder_sent")).toBe(false);
+    const row = db.prepare("SELECT status FROM reasoning_dispatches ORDER BY created_at DESC LIMIT 1").get();
+    expect(row?.status).toBe("pending_send");
   });
 
   it("reaches responder while a task reasoner remains blocked", async () => {

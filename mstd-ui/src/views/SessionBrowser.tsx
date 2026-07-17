@@ -14,9 +14,17 @@ export function SessionBrowser() {
   const [live, setLive] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    listSessions().then(setSessions).catch((e) => setError(String(e)));
+  const refreshSessions = useCallback(async () => {
+    try {
+      setSessions(await listSessions());
+    } catch (e) {
+      setError(String(e));
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshSessions();
+  }, [refreshSessions]);
 
   const load = useCallback(async (s: AgentSession) => {
     setSelected(s);
@@ -30,10 +38,14 @@ export function SessionBrowser() {
   }, []);
 
   useEffect(() => {
-    if (!live || !selected) return;
-    const timer = setInterval(() => { void load(selected); }, 2000);
+    if (!live) return;
+    // 实时模式：刷新当前 transcript，并周期性刷新左侧会话列表让新会话上榜。
+    const timer = setInterval(() => {
+      void refreshSessions();
+      if (selected) void load(selected);
+    }, 2000);
     return () => clearInterval(timer);
-  }, [live, selected, load]);
+  }, [live, selected, load, refreshSessions]);
 
   const verdictBadge = (v: Verdict) => {
     const inner = v.verdict;

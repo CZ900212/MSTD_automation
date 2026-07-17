@@ -185,7 +185,7 @@ function HelpView() {
 }
 
 // ── 底部栏 / 确认栏 ─────────────────────────────────────────────────
-function Footer({ view, focus, flash, confirm }) {
+function Footer({ view, focus, flash, confirm, snapErr = null }) {
   if (confirm) {
     return html`<${Box} paddingX=${1}>
       <${Text} color="yellow" bold>确认 <//>
@@ -196,6 +196,10 @@ function Footer({ view, focus, flash, confirm }) {
   }
   if (flash) {
     return html`<${Box} paddingX=${1}><${Text} color=${flash.warn ? "red" : "greenBright"}>${flash.text}<//><//>`;
+  }
+  // 瞬时 DB 读失败不得伪装成"空仪表盘"：优先露出错误，与真的没数据区分开。
+  if (snapErr) {
+    return html`<${Box} paddingX=${1}><${Text} color="red">读库失败: ${String(snapErr).slice(0, 120)}<//><//>`;
   }
   let hint;
   if (view === "session") hint = "[Esc]返回  [q]退出";
@@ -358,6 +362,6 @@ export function App({ store, queries, ops, config }) {
     <${Box} flexDirection="column" width=${cols} height=${rows}>
       <${StatusBar} snap=${snap} config=${config} />
       ${content}
-      <${Footer} view=${view} focus=${focus} flash=${flash} confirm=${confirm} />
+      <${Footer} view=${view} focus=${focus} flash=${flash} confirm=${confirm} snapErr=${snap.err} />
     <//>`;
 }

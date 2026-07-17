@@ -35,25 +35,6 @@ export function createChatLock(lockPath) {
   };
 }
 
-export function createDaemonOwner() {
-  let ownedPid = null;
-  return {
-    noteExisting() {
-      // Caller records that we are reusing an external daemon.
-      ownedPid = null;
-    },
-    noteStarted(pid) {
-      ownedPid = pid;
-    },
-    canStop(pid) {
-      return ownedPid != null && ownedPid === pid;
-    },
-    ownedPid() {
-      return ownedPid;
-    },
-  };
-}
-
 function isAlive(pid) {
   try {
     process.kill(pid, 0);

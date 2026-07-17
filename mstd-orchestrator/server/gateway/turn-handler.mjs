@@ -81,7 +81,8 @@ export function createTurnHandler({
   function recentConversationBeforeTurn(sessionId) {
     // SQL limit is only a defensive retrieval ceiling. The semantic boundary is
     // the strict token window, selected newest-first and rendered chronologically.
-    const rows = store.promptRecent(sessionId, { limit: 10_000, roles: ["user", "assistant"] });
+    // 8,192-token 窗口在极短行场景下最多约 4k 行；5_000 留安全裕量，避免大会话每回合物化上万行。
+    const rows = store.promptRecent(sessionId, { limit: 5_000, roles: ["user", "assistant"] });
     const window = tokenWindow(rows, {
       budget: responderHistoryTokens,
       format: formatHistoryLine,
@@ -236,9 +237,23 @@ export function createTurnHandler({
       responderText: answer.text,
       mode,
     });
-    const { messageId } = await deliverText(sessionKey, answer.text, {
-      idempotencyKey: dispatch.outbound_idempotency_key,
-    });
+    let messageId;
+    try {
+      ({ messageId } = await deliverText(sessionKey, answer.text, {
+        idempotencyKey: dispatch.outbound_idempotency_key,
+      }));
+    } catch (err) {
+      // 物理发送失败时 actor 会吞异常；必须先落可观测事件，避免 turn_trace 卡在 batch_open。
+      // dispatch 停在 pending_send，coordinator 仍可后续恢复重投。
+      emitEvent({
+        type: "responder_send_failed",
+        sessionKey,
+        action: "reply",
+        dispatchId: dispatch.id,
+        error: err?.message ?? String(err),
+      });
+      throw err;
+    }
     taskStore.recordDispatchSent(dispatch.id, {
       platformMessageId: messageId,
       appendAssistant: () => store.append(session.id, {

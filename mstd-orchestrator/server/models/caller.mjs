@@ -156,8 +156,9 @@ export function createModelCaller({
       });
       let lastErr = null;
       for (let attempt = 1; attempt <= retries; attempt++) {
+        const started = Date.now();
         try {
-          return await callOne(modelKey, {
+          const result = await callOne(modelKey, {
             system: fitted.system,
             messages: fitted.messages,
             thinking: wantThinking,
@@ -165,9 +166,25 @@ export function createModelCaller({
             // requests turn on its binary thinking mode; response calls stay non-thinking.
             deepseekThinking: chain === "reason" && wantThinking,
           });
+          // 成功路径也记耗时：TUI/调试台 p50/p95 需要数据，不只记失败。
+          emit({
+            type: "model_call",
+            chain,
+            model: modelKey,
+            attempt,
+            latencyMs: Date.now() - started,
+          });
+          return result;
         } catch (e) {
           lastErr = e;
-          emit({ type: "model_retry", chain, model: modelKey, attempt, error: e.message });
+          emit({
+            type: "model_retry",
+            chain,
+            model: modelKey,
+            attempt,
+            error: e.message,
+            latencyMs: Date.now() - started,
+          });
           if (attempt < retries) await sleepFn(delayMs);
         }
       }

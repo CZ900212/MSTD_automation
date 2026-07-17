@@ -48,9 +48,13 @@ export function createBackgroundJobs({
   }
 
   async function launch(jobId) {
-    const row = db.prepare("SELECT * FROM orch_jobs WHERE id = ?").get(jobId);
-    const meta = JSON.parse(row.params_json);
+    // 行读取与 params_json 解析必须在 try 内：损坏参数或短暂 DB 错误都不得跳过
+    // finally 的 semaphore.release()，否则默认并发槽（2）会永久泄漏。
+    let meta = null;
     try {
+      const row = db.prepare("SELECT * FROM orch_jobs WHERE id = ?").get(jobId);
+      if (!row) throw new Error(`background job 不存在: ${jobId}`);
+      meta = JSON.parse(row.params_json);
       updateJobStatus(db, jobId, "running", now());
       const output = await runJob({ jobId, ...meta });
       // Keep result transport structured. A future envelope provider may supply
@@ -74,13 +78,17 @@ export function createBackgroundJobs({
       const errorKind = ["timeout", "tool_error", "crashed", "unknown"].includes(e?.errorKind)
         ? e.errorKind : "unknown";
       log(`[background] job ${jobId} 失败: ${error}`);
-      updateJobStatus(db, jobId, "failed", now());
-      const seq = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM job_events WHERE job_id = ?").get(jobId).seq;
-      db.prepare(
-        "INSERT INTO job_events (id, job_id, phase, seq, type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run(randomUUID(), jobId, "background", seq, "background_failed", JSON.stringify({ errorKind, error }), now());
-      onEvent({ type: "background_job_failed", jobId, sessionKey: meta.sessionKey, errorKind, error });
-      onComplete({ jobId, ...meta, ok: false, errorKind });
+      try {
+        updateJobStatus(db, jobId, "failed", now());
+        const seq = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM job_events WHERE job_id = ?").get(jobId).seq;
+        db.prepare(
+          "INSERT INTO job_events (id, job_id, phase, seq, type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ).run(randomUUID(), jobId, "background", seq, "background_failed", JSON.stringify({ errorKind, error }), now());
+      } catch (persistErr) {
+        log(`[background] job ${jobId} 失败态落库也失败: ${persistErr?.message ?? persistErr}`);
+      }
+      onEvent({ type: "background_job_failed", jobId, sessionKey: meta?.sessionKey ?? null, errorKind, error });
+      onComplete({ jobId, ...(meta ?? {}), ok: false, errorKind });
     } finally {
       semaphore.release();
       pump();

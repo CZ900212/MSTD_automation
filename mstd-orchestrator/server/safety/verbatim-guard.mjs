@@ -77,9 +77,5 @@ export function createVerbatimGuard({
     return sessions.delete(sessionKey);
   }
 
-  function inspect(sessionKey) {
-    return { shingles: sessions.get(sessionKey)?.size ?? 0 };
-  }
-
-  return { record, check, clear, inspect };
+  return { record, check, clear };
 }

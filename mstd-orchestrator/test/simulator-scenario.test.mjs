@@ -50,6 +50,32 @@ describe("scenario loader", () => {
     expect(() => loadScenarioYaml("version: 1\nx: &a 1\ny: *a\n")).toThrow(/anchors/);
   });
 
+  it("accepts leak_markers and rejects malformed shapes", () => {
+    const withMarkers = good.replace("outbound_min: 1", "outbound_min: 1\n      leak_markers: [\"CANARY-A1\"]");
+    const s = loadScenarioYaml(withMarkers);
+    expect(s.turns[0].expect.leak_markers).toEqual(["CANARY-A1"]);
+    const emptyMarkers = good.replace("outbound_min: 1", "leak_markers: []");
+    expect(() => loadScenarioYaml(emptyMarkers)).toThrow(/leak_markers/);
+    const badMarkers = good.replace("outbound_min: 1", "leak_markers: [123]");
+    expect(() => loadScenarioYaml(badMarkers)).toThrow(/leak_markers/);
+  });
+
+  it("validates expect field types (boolean / non-negative int / positive int)", () => {
+    const badBool = good.replace("outbound_min: 1", "security_hard_fail: \"yes\"");
+    expect(() => loadScenarioYaml(badBool)).toThrow(/security_hard_fail/);
+    const badAck = good.replace("outbound_min: 1", "ack_required: 1");
+    expect(() => loadScenarioYaml(badAck)).toThrow(/ack_required/);
+    const negMin = good.replace("outbound_min: 1", "outbound_min: -1");
+    expect(() => loadScenarioYaml(negMin)).toThrow(/outbound_min/);
+    const strTimeout = good.replace("outbound_min: 1", "terminal_within_ms: \"5000\"");
+    expect(() => loadScenarioYaml(strTimeout)).toThrow(/terminal_within_ms/);
+    const floatCount = good.replace("outbound_min: 1", "input_count: 1.5");
+    expect(() => loadScenarioYaml(floatCount)).toThrow(/input_count/);
+    // 合法形态照常通过
+    const ok = good.replace("outbound_min: 1", "ack_required: true\n      security_hard_fail: false\n      terminal_within_ms: 5000\n      input_count: 2\n      outbound_max: 2");
+    expect(() => loadScenarioYaml(ok)).not.toThrow();
+  });
+
   it("versioned route labels", () => {
     expect(isValidRoute("quick_reply", ROUTE_LABEL_SET_VERSION.V1)).toBe(true);
     expect(isValidRoute("spawn_new", ROUTE_LABEL_SET_VERSION.V1)).toBe(false);

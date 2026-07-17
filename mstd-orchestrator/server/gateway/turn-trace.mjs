@@ -180,6 +180,13 @@ export function createTurnTrace(db, { now = Date.now, pipeline = "legacy" } = {}
       return;
     }
 
+    if (type === "responder_send_failed") {
+      const traceId = resolveTraceId(event);
+      if (!traceId) return;
+      updateStatus.run("responder_send_failed", t, traceId);
+      return;
+    }
+
     if (type === "business_turn_terminal") {
       updateTerminal.run(
         event.messageId ?? null,
@@ -189,6 +196,7 @@ export function createTurnTrace(db, { now = Date.now, pipeline = "legacy" } = {}
         event.traceId ?? null,
         event.turnId ?? null
       );
+      if (event.turnId) businessToTrace.delete(event.turnId);
       return;
     }
 
@@ -196,6 +204,7 @@ export function createTurnTrace(db, { now = Date.now, pipeline = "legacy" } = {}
       const traceId = resolveTraceId(event);
       if (!traceId) return;
       updateStatus.run("abandoned", t, traceId);
+      if (event.turnId) businessToTrace.delete(event.turnId);
       return;
     }
 

@@ -1,8 +1,11 @@
 // dreaming 夜间蒸馏：两阶段（V4 per-chunk 提取 → 5.5 跨块合并/冲突裁决）+ 人类可读报告。
 // 生产运行一律 shadow；仅显式测试运行可 apply，配置绝不能打开生产写入。
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { scanInjectionSignals } from "../safety/injection-signals.mjs";
+import { scanSensitiveText } from "../safety/sensitive-text.mjs";
 
 const SEP = "\n\n§ ";
 const CHUNK_CHARS = 8000;
@@ -17,6 +20,20 @@ const MERGE_SYSTEM = `你是记忆合并裁决器。给你某记忆层的现有�
 - 与现有条目矛盾的 → 新条目进 add，同时把被推翻的旧条目定位子串放进 invalidate
 - 全新信息 → 进 add
 只输出 JSON：{"add":["条目文本"],"invalidate":["旧条目定位子串"]}。`;
+
+// 写入长期记忆层的确定性闸门：与 memory/tool.mjs 的 validatePersistentEntry 同规——
+// 凡落层文本必过注入信号 + 敏感文本扫描。蒸馏管道不得成为绕过 tool.mjs 写闸门的旁路。
+function screenMemoryEntry(text) {
+  const value = String(text ?? "");
+  const signals = scanInjectionSignals(value);
+  const sensitive = scanSensitiveText(value);
+  return { ok: signals.length === 0 && sensitive.length === 0, signals, sensitive };
+}
+
+// 报告只留拦截类别与短哈希，不把投毒原文再落盘一次。
+function blockedEntryDigest(text) {
+  return createHash("sha256").update(String(text ?? ""), "utf8").digest("hex").slice(0, 12);
+}
 
 export function createDreaming({
   db,
@@ -88,10 +105,25 @@ export function createDreaming({
         messages: [{ role: "user", content: `来源: ${chunk.sessionKey}\n片段:\n${chunk.text}` }],
       });
       const arr = JSON.parse(out.text.match(/\[[\s\S]*\]/)?.[0] ?? "[]");
-      return arr.filter((e) => e?.content && e.confidence !== "low");
+      const entries = [];
+      const blocked = [];
+      for (const e of arr) {
+        if (!e?.content || e.confidence === "low") continue;
+        // 提取级拦截：投毒候选不进合并（也保护合并模型的输入）
+        const screen = screenMemoryEntry(`${e.content}\n${e.evidence ?? ""}`);
+        if (!screen.ok) {
+          const item = { signals: [...screen.signals, ...screen.sensitive], sha: blockedEntryDigest(e.content) };
+          blocked.push(item);
+          log(`[dreaming] 候选已拦截 ${chunk.sessionKey}: signals=${item.signals.join(",")} sha=${item.sha}`);
+          emit({ type: "dreaming_candidate_blocked", sessionKey: chunk.sessionKey, signals: screen.signals, sensitive: screen.sensitive, sha: item.sha });
+          continue;
+        }
+        entries.push(e);
+      }
+      return { entries, blocked };
     } catch (e) {
       log(`[dreaming] 提取失败 ${chunk.sessionKey}: ${e?.message ?? e}`);
-      return [];
+      return { entries: [], blocked: [] };
     }
   }
 
@@ -142,22 +174,41 @@ export function createDreaming({
     // Shadow does not mutate memory, so there is nothing to back up. Keep backups only for test-only apply.
     if (effectiveMode === "apply") gitBackup();
     const chunks = sliceChunks(nowTs);
-    const byTarget = new Map();  // layer:id -> {target, candidates}
+    const byTarget = new Map();  // layer:id -> {target, candidates, blocked}
     let extracted = 0;
     for (const chunk of chunks) {
-      const entries = await extractChunk(chunk);
+      const { entries, blocked } = await extractChunk(chunk);
       extracted += entries.length;
       const key = `${chunk.target.layer}:${chunk.target.id}`;
-      if (!byTarget.has(key)) byTarget.set(key, { target: chunk.target, candidates: [] });
+      if (!byTarget.has(key)) byTarget.set(key, { target: chunk.target, candidates: [], blocked: [] });
       byTarget.get(key).candidates.push(...entries);
+      byTarget.get(key).blocked.push(...blocked);
     }
 
     const dateStr = new Date(nowTs).toISOString().slice(0, 10);
     const report = [`# dreaming 报告 ${dateStr}`, ``, `模式: ${effectiveMode}${applyBlocked ? `（已拒绝配置 ${requestedMode}）` : ""} · 切片 ${chunks.length} · 提取 ${extracted} 条`];
-    for (const { target, candidates } of byTarget.values()) {
+    for (const { target, candidates, blocked } of byTarget.values()) {
+      report.push(``, `## ${target.layer}/${target.id}`);
+      // 提取级拦截留痕（不落投毒原文，只留类别+短哈希）
+      for (const b of blocked) report.push(`  - 已拦截: signals=${b.signals.join(",")} sha=${b.sha}`);
       if (!candidates.length) continue;
       const merged = await mergeLayer(target, candidates);
-      report.push(``, `## ${target.layer}/${target.id}`);
+      // 合并级拦截：合并模型改写也可能产出违规文本，落层/落报告前再过同一道闸门
+      merged.add = merged.add.filter((text) => {
+        const screen = screenMemoryEntry(text);
+        if (screen.ok) return true;
+        report.push(`  - 已拦截: signals=${[...screen.signals, ...screen.sensitive].join(",")} sha=${blockedEntryDigest(text)}`);
+        emit({ type: "dreaming_candidate_blocked", sessionKey: `${target.layer}:${target.id}`, signals: screen.signals, sensitive: screen.sensitive, sha: blockedEntryDigest(text) });
+        return false;
+      });
+      // invalidate 子句同闸：它会原样写进 shadow 报告（投毒载体），并在 apply 中驱动失效标记
+      merged.invalidate = merged.invalidate.filter((text) => {
+        const screen = screenMemoryEntry(text);
+        if (screen.ok) return true;
+        report.push(`  - 已拦截: signals=${[...screen.signals, ...screen.sensitive].join(",")} sha=${blockedEntryDigest(text)}`);
+        emit({ type: "dreaming_candidate_blocked", sessionKey: `${target.layer}:${target.id}`, signals: screen.signals, sensitive: screen.sensitive, sha: blockedEntryDigest(text) });
+        return false;
+      });
       if (effectiveMode === "apply") {
         applyLayer(target, merged, nowTs, report);
       } else {

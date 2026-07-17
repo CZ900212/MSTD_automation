@@ -7,6 +7,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { postInternal } from "./internal-channel.ts";
 import { createTurnContextReader } from "./turn-context.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -31,53 +32,47 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_id, params, signal) {
-      const base = process.env.MSTD_INTERNAL_URL;
-      const token = process.env.MSTD_INTERNAL_TOKEN;
-      const sessionKey = process.env.MSTD_SESSION_KEY;
-      if (!base || !token || !sessionKey) {
-        return { content: [{ type: "text", text: "错误：内部通道未配置（MSTD_INTERNAL_URL/TOKEN/SESSION_KEY）" }], details: { error: "no internal channel" } };
-      }
       const turnContext = currentTurnContext();
       if (!turnContext) {
         return { content: [{ type: "text", text: "reply 失败: 当前 Pi 回合没有 daemon turn context" }], details: { error: "no turn context" } };
       }
       try {
-        const resp = await fetch(`${base}/internal/reply`, {
-          method: "POST",
-          signal,
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            session_key: sessionKey,
-            turn_id: turnContext.turnId,
-            turn_lease: turnContext.lease,
-            kind: params.kind,
-            stage: params.stage,
-            brief: params.brief,
-            tone: params.tone,
-            target: params.target,
-          }),
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) {
-          const errText = typeof data.error === "string" ? data.error : JSON.stringify(data.error ?? resp.status);
-          return { content: [{ type: "text", text: `reply 失败: ${errText}` }], details: data };
+        const r = await postInternal("/internal/reply", {
+          turn_id: turnContext.turnId,
+          turn_lease: turnContext.lease,
+          kind: params.kind,
+          stage: params.stage,
+          brief: params.brief,
+          tone: params.tone,
+          target: params.target,
+        }, { signal });
+        if (!r.ok) {
+          return {
+            content: [{
+              type: "text",
+              text: r.status === 0
+                ? `错误：${r.errorText}`
+                : `reply 失败: ${r.errorText}`,
+            }],
+            details: r.data,
+          };
         }
         return {
           content: [{
             type: "text",
             text: params.kind === "card_copy"
-              ? `已生成卡片文案：${String(data.text ?? "").slice(0, 500)}`
-              : `已发送（声明阶段=${data.declared_stage ?? params.stage}，有效阶段=${data.effective_stage ?? params.stage}）：${String(data.text ?? "").slice(0, 500)}`,
+              ? `已生成卡片文案：${String(r.data.text ?? "").slice(0, 500)}`
+              : `已发送（声明阶段=${r.data.declared_stage ?? params.stage}，有效阶段=${r.data.effective_stage ?? params.stage}）：${String(r.data.text ?? "").slice(0, 500)}`,
           }],
           details: {
-            messageId: data.message_id ?? null,
-            declaredStage: data.declared_stage ?? params.stage,
-            effectiveStage: data.effective_stage ?? params.stage,
-            stageCorrected: data.stage_corrected === true,
+            messageId: r.data.message_id ?? null,
+            declaredStage: r.data.declared_stage ?? params.stage,
+            effectiveStage: r.data.effective_stage ?? params.stage,
+            stageCorrected: r.data.stage_corrected === true,
           },
         };
       } catch (e) {
-        if (signal?.aborted) throw e; // 回合被取消时如实以 abort 传播,不伪造成"已完成的错误结果"(与 draft.ts 同则)
+        if (signal?.aborted) throw e;
         return { content: [{ type: "text", text: `reply 异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

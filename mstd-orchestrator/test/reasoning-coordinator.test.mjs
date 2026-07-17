@@ -601,13 +601,14 @@ describe("reasoning coordinator", () => {
       responderText: "收到",
       mode: "p2p",
     });
-    const assistant = sessions.append(session.id, {
-      role: "assistant",
-      content: "收到",
-      platformMessageId: "om_responder",
-      ts: 3,
+    taskStore.recordDispatchSent(dispatch.id, {
+      appendAssistant: () => sessions.append(session.id, {
+        role: "assistant",
+        content: "收到",
+        platformMessageId: "om_responder",
+        ts: 3,
+      }),
     });
-    taskStore.markDispatchSent(dispatch.id, assistant.id);
     const dispatcher = {
       review: vi.fn(async () => ({ action: "no_reasoning", reason_code: "complete" })),
     };
@@ -646,8 +647,9 @@ describe("reasoning coordinator", () => {
       responderText: "我去查",
       mode: "p2p",
     });
-    const assistant = sessions.append(session.id, { role: "assistant", content: "我去查", ts: 2 });
-    taskStore.markDispatchSent(dispatch.id, assistant.id);
+    taskStore.recordDispatchSent(dispatch.id, {
+      appendAssistant: () => sessions.append(session.id, { role: "assistant", content: "我去查", ts: 2 }),
+    });
     const modelLog = createModelLog(db, { now: () => 10 });
     const dispatcher = createDispatcher({
       caller: { call: vi.fn(async () => ({
@@ -705,12 +707,13 @@ describe("reasoning coordinator", () => {
       responderText: "收到，我先处理一下。",
       mode: "addressed",
     });
-    const assistant = sessions.append(session.id, {
-      role: "assistant",
-      content: "收到，我先处理一下。",
-      ts: 2,
+    taskStore.recordDispatchSent(dispatch.id, {
+      appendAssistant: () => sessions.append(session.id, {
+        role: "assistant",
+        content: "收到，我先处理一下。",
+        ts: 2,
+      }),
     });
-    taskStore.markDispatchSent(dispatch.id, assistant.id);
     const deliverTerminal = vi.fn(async () => ({ messageId: "om_dispatcher_fallback_terminal" }));
     const dispatcher = createDispatcher({
       caller: { call: vi.fn(async () => { throw new Error("dispatcher unavailable"); }) },

@@ -179,6 +179,8 @@ export function createReplyProvenanceRegistry() {
     const current = active.get(key);
     if (!current || current.epoch !== epoch) return false;
     active.delete(key);
+    // epochs 刻意保留；taints 在 revoke 后 isTainted 已恒 false，条目只占内存，随 task 回收。
+    taints.delete(key);
     return true;
   }
 

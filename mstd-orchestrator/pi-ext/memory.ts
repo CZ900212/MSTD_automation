@@ -4,6 +4,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { postInternal } from "./internal-channel.ts";
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
@@ -22,24 +23,20 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_id, params, signal) {
-      const base = process.env.MSTD_INTERNAL_URL;
-      const token = process.env.MSTD_INTERNAL_TOKEN;
-      const sessionKey = process.env.MSTD_SESSION_KEY;
-      if (!base || !token || !sessionKey) {
-        return { content: [{ type: "text", text: "错误：内部通道未配置" }], details: { error: "no internal channel" } };
-      }
       try {
-        const resp = await fetch(`${base}/internal/memory`, {
-          method: "POST",
-          signal,
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ session_key: sessionKey, ...params }),
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) return { content: [{ type: "text", text: `memory 失败: ${data.error ?? resp.status}` }], details: data };
-        return { content: [{ type: "text", text: params.action === "read" ? (data.content || "（空）") : "已写入" }], details: data };
+        const r = await postInternal("/internal/memory", { ...params }, { signal });
+        if (!r.ok) {
+          return {
+            content: [{ type: "text", text: r.status === 0 ? `错误：${r.errorText}` : `memory 失败: ${r.errorText}` }],
+            details: r.data,
+          };
+        }
+        return {
+          content: [{ type: "text", text: params.action === "read" ? (r.data.content || "（空）") : "已写入" }],
+          details: r.data,
+        };
       } catch (e) {
-        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
+        if (signal?.aborted) throw e;
         return { content: [{ type: "text", text: `memory 异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

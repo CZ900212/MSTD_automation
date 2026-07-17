@@ -229,8 +229,34 @@ describe("model caller", () => {
     expect(retries).toHaveLength(5);
     expect(retries[0]).toMatchObject({ chain: "fast", model: "v4-flash", attempt: 1 });
     expect(retries[0].error).toContain("500");
+    expect(typeof retries[0].latencyMs).toBe("number");
     const fallbacks = events.filter((e) => e.type === "model_fallback");
     expect(fallbacks).toEqual([expect.objectContaining({ chain: "fast", from: "v4-flash", to: "gpt-5.5" })]);
+    // 最终成功也要记 model_call + latencyMs（成功路径可观测）
+    const calls = events.filter((e) => e.type === "model_call");
+    expect(calls).toEqual([expect.objectContaining({
+      chain: "fast", model: "gpt-5.5", attempt: 1,
+    })]);
+    expect(typeof calls[0].latencyMs).toBe("number");
+    expect(calls[0].latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("onEvent 首次成功上报 model_call（含 latencyMs）", async () => {
+    const fetchFn = vi.fn(async () => okResponse("hi", "m"));
+    const events = [];
+    const caller = createModelCaller({
+      fetchFn, env: ENV, sleepFn: async () => {}, log: () => {},
+      onEvent: (e) => events.push(e),
+    });
+    await caller.call("responder", { messages: [{ role: "user", content: "x" }] });
+    expect(events.filter((e) => e.type === "model_retry")).toHaveLength(0);
+    expect(events).toEqual([expect.objectContaining({
+      type: "model_call",
+      chain: "responder",
+      model: "v4-pro",
+      attempt: 1,
+    })]);
+    expect(events[0].latencyMs).toBeGreaterThanOrEqual(0);
   });
 
   it("onEvent 全链耗尽上报 pipeline_error；onEvent 抛错不影响主流程", async () => {

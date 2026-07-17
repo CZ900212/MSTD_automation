@@ -100,8 +100,9 @@ export function tokenWindow(rows, {
 
   return {
     lines: selected,
+    // used 用整数 separator 近似；tokens 仍按最终拼接串精算，与历史语义一致。
     tokens: estimateTokens(selected.join("\n")),
-    truncated: truncated || selected.length < source.filter((row) => String(format(row) ?? "")).length,
+    truncated,
   };
 }
 

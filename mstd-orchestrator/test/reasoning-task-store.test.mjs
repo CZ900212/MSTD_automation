@@ -126,8 +126,9 @@ describe("createReasoningTaskStore", () => {
     expect(d.status).toBe("pending_send");
     expect(() => store.claimDispatchForReview(d.id)).toThrow(/pending_send/);
 
-    const assistant = append(session.id, "我去查", "assistant");
-    const reviewed = store.markDispatchSent(d.id, assistant.id);
+    const { dispatch: reviewed, assistant } = store.recordDispatchSent(d.id, {
+      appendAssistant: () => append(session.id, "我去查", "assistant"),
+    });
     expect(reviewed.status).toBe("pending_review");
     expect(reviewed.responder_message_id).toBe(assistant.id);
 
@@ -215,8 +216,9 @@ describe("createReasoningTaskStore", () => {
     });
     expect(store.listRetryableSends().map((r) => r.id)).toContain(d.id);
 
-    const assistant = append(session.id, "ok", "assistant");
-    store.markDispatchSent(d.id, assistant.id);
+    store.recordDispatchSent(d.id, {
+      appendAssistant: () => append(session.id, "ok", "assistant"),
+    });
     store.claimDispatchForReview(d.id);
 
     // Simulate process age: force updated_at into the past.

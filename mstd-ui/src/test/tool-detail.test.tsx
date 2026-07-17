@@ -18,4 +18,24 @@ describe("ToolDetailItem", () => {
     );
     expect(container.querySelector(".tool-detail.error")).not.toBeNull();
   });
+
+  it("error 态可展开 result 原文", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    render(
+      <ToolDetailItem
+        tool={{
+          toolCallId: "tc1",
+          toolName: "lark_read",
+          status: "error",
+          args: { op: "chat_history" },
+          result: "读取超时（60 秒）",
+          isError: true,
+        }}
+      />
+    );
+    // error 默认展开
+    expect(screen.getByText(/读取超时/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "收起" }));
+    expect(screen.queryByText(/读取超时/)).not.toBeInTheDocument();
+  });
 });

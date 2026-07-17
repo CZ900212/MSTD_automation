@@ -8,7 +8,7 @@ const TURN_KEYS = new Set(["id", "actor", "text", "after_ms", "expect", "burst",
 const BURST_ITEM_KEYS = new Set(["actor", "text", "at_ms"]);
 const EXPECT_KEYS = new Set([
   "route", "outbound_min", "outbound_max", "terminal_within_ms", "input_count",
-  "ack_required", "security_hard_fail",
+  "ack_required", "security_hard_fail", "leak_markers",
 ]);
 
 export function validateScenarioObject(doc, { routeLabelVersion = ROUTE_LABEL_SET_VERSION.V1 } = {}) {
@@ -92,6 +92,28 @@ export function validateScenarioObject(doc, { routeLabelVersion = ROUTE_LABEL_SE
       }
       if (!isValidRoute(turn.expect.route, labelVersion)) {
         throw new Error(`illegal route: ${turn.expect.route} (label set ${labelVersion})`);
+      }
+      if (turn.expect.leak_markers != null) {
+        const lm = turn.expect.leak_markers;
+        if (!Array.isArray(lm) || lm.length === 0 || lm.length > 16
+          || lm.some((m) => typeof m !== "string" || !m || m.length > 128)) {
+          throw new Error(`turn ${turn.id}: leak_markers must be 1-16 non-empty strings (<=128 chars)`);
+        }
+      }
+      // 类型校验：布尔字段不得拿真值字符串/数字蒙混，数字字段不得拿字符串/负数/浮点蒙混
+      for (const key of ["ack_required", "security_hard_fail"]) {
+        if (turn.expect[key] != null && typeof turn.expect[key] !== "boolean") {
+          throw new Error(`turn ${turn.id}: expect.${key} must be boolean`);
+        }
+      }
+      for (const key of ["outbound_min", "outbound_max", "input_count"]) {
+        if (turn.expect[key] != null && (!Number.isInteger(turn.expect[key]) || turn.expect[key] < 0)) {
+          throw new Error(`turn ${turn.id}: expect.${key} must be non-negative integer`);
+        }
+      }
+      if (turn.expect.terminal_within_ms != null
+        && (!Number.isInteger(turn.expect.terminal_within_ms) || turn.expect.terminal_within_ms <= 0)) {
+        throw new Error(`turn ${turn.id}: expect.terminal_within_ms must be positive integer`);
       }
     }
   }

@@ -1,11 +1,9 @@
 // 轮询与状态聚合：每次 snapshot() 读一遍只读查询，model_log 用 rowid 游标只取
 // 增量并压入环形缓冲。事件的上色/告警分类也在这里，UI 只负责渲染。
 
+// 正则漏掉的 warn kinds；其余 error/fallback/reject/invalid/abandon/rate_limit 由正则覆盖。
 const WARN_KINDS = new Set([
-  "model_fallback", "model_retry", "brain_fallback", "brain_error", "pipeline_error",
-  "dispatcher_fallback", "dispatcher_invalid", "responder_fallback", "rate_limited",
-  "reply_egress_fallback", "reply_egress_rejected", "reply_model_hash_mismatch",
-  "reply_target_rejected", "reply_turn_rejected", "outbound_retry", "business_turn_abandoned",
+  "model_retry", "reply_model_hash_mismatch", "outbound_retry", "responder_send_failed",
 ]);
 
 function classify(row) {
@@ -52,7 +50,7 @@ export function createStore({ queries, health, config }) {
     const h = health.read();
     let err = null;
     let runs = [];
-    let reliability = { fallbacks: [], kinds: [], chainEvents: [], latency: { p50: null, p95: null, n: 0 } };
+    let reliability = { fallbacks: [], kinds: [], latency: { p50: null, p95: null, n: 0 } };
     let sessions = [];
     try {
       for (const r of queries.tail(cursor)) {

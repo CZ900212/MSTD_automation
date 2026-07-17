@@ -4,6 +4,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { postInternal } from "./internal-channel.ts";
 import { createTurnContextReader } from "./turn-context.ts";
 
 const Intent = Type.Object({
@@ -43,35 +44,30 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_id, params, signal) {
-      const base = process.env.MSTD_INTERNAL_URL;
-      const token = process.env.MSTD_INTERNAL_TOKEN;
-      const sessionKey = process.env.MSTD_SESSION_KEY;
-      if (!base || !token || !sessionKey) {
-        return { content: [{ type: "text", text: "错误：内部通道未配置" }], details: { error: "no internal channel" } };
-      }
       const turnContext = currentTurnContext();
       if (!turnContext) {
         return { content: [{ type: "text", text: "意图未通过: 当前 Pi 回合没有 daemon turn context" }], details: { error: "no turn context" } };
       }
       try {
-        const resp = await fetch(`${base}/internal/propose-actions`, {
-          method: "POST",
-          signal,
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            session_key: sessionKey,
-            turn_id: turnContext.turnId,
-            turn_lease: turnContext.lease,
-            ...params,
-          }),
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) {
-          return { content: [{ type: "text", text: `意图未通过: ${data.error ?? resp.status}。请修正参数或向用户问清，不要猜。` }], details: data };
+        const r = await postInternal("/internal/propose-actions", {
+          turn_id: turnContext.turnId,
+          turn_lease: turnContext.lease,
+          ...params,
+        }, { signal });
+        if (!r.ok) {
+          return {
+            content: [{
+              type: "text",
+              text: r.status === 0
+                ? `错误：${r.errorText}`
+                : `意图未通过: ${r.errorText}。请修正参数或向用户问清，不要猜。`,
+            }],
+            details: r.data,
+          };
         }
-        return { content: [{ type: "text", text: `确认卡已发出（job ${data.job_id}），等用户确认后执行；结果会回注会话，本回合不必等待。` }], details: data };
+        return { content: [{ type: "text", text: `确认卡已发出（job ${r.data.job_id}），等用户确认后执行；结果会回注会话，本回合不必等待。` }], details: r.data };
       } catch (e) {
-        if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
+        if (signal?.aborted) throw e;
         return { content: [{ type: "text", text: `提交异常: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };
       }
     },

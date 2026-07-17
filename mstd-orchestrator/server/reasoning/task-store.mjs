@@ -328,22 +328,6 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
     return getDispatch.get(dispatchId);
   }
 
-  /** After physical send succeeds: record assistant message id and advance to pending_review. */
-  function markDispatchSent(dispatchId, responderMessageId) {
-    if (!dispatchId || !responderMessageId) throw new Error("markDispatchSent: 参数必填");
-    const row = getDispatch.get(dispatchId);
-    if (!row) throw new Error("markDispatchSent: dispatch 不存在");
-    if (row.status === "pending_review" && row.responder_message_id === responderMessageId) {
-      return getDispatch.get(dispatchId);
-    }
-    if (row.status !== "pending_send") {
-      throw new Error(`markDispatchSent: 非法状态 ${row.status}`);
-    }
-    const r = markPendingReview.run(responderMessageId, now(), dispatchId);
-    if (!r.changes) throw new Error("markDispatchSent: 状态竞争失败");
-    return getDispatch.get(dispatchId);
-  }
-
   const recordDispatchSentTx = db.transaction((dispatchId, {
     platformMessageId = null,
     appendAssistant,
@@ -438,7 +422,6 @@ export function createReasoningTaskStore(db, { now = Date.now } = {}) {
     dispatchSourceItems,
     getTask: (id) => getTask.get(id),
     createDispatch,
-    markDispatchSent,
     recordDispatchSent,
     claimDispatchForReview,
     completeDispatch,

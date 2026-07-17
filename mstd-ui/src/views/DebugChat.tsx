@@ -1,20 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { sendDebugChat, listSessions, getSessionMessages, type AgentMessage } from "../api/admin";
 
+const DEBUG_ID_KEY = "mstd.debugChatId";
+
+function loadOrCreateDebugId(): string {
+  try {
+    const existing = localStorage.getItem(DEBUG_ID_KEY);
+    if (existing && /^web-[a-z0-9]+$/i.test(existing)) return existing;
+  } catch { /* SSR / 隐私模式 */ }
+  const id = `web-${Date.now().toString(36)}`;
+  try { localStorage.setItem(DEBUG_ID_KEY, id); } catch { /* ignore */ }
+  return id;
+}
+
 // 调试对话（G6）：web 里直接与 agent 聊（debug: 会话），轮询 transcript 看回合内部。
 export function DebugChat() {
-  const [debugId] = useState(() => `web-${Date.now().toString(36)}`);
+  const [debugId, setDebugId] = useState(loadOrCreateDebugId);
   const [text, setText] = useState("");
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const sessionIdRef = useRef<string | null>(null);
 
-  async function refresh() {
+  async function refresh(currentDebugId = debugId) {
     let sid = sessionIdRef.current;
     if (!sid) {
       const sessions = await listSessions();
-      sid = sessions.find((s) => s.session_key === `debug:${debugId}`)?.id ?? null;
+      sid = sessions.find((s) => s.session_key === `debug:${currentDebugId}`)?.id ?? null;
       sessionIdRef.current = sid;
     }
     if (sid) {
@@ -24,9 +36,10 @@ export function DebugChat() {
   }
 
   useEffect(() => {
-    const timer = setInterval(() => { refresh().catch(() => {}); }, 2500);
+    sessionIdRef.current = null;
+    const timer = setInterval(() => { refresh(debugId).catch(() => {}); }, 2500);
     return () => clearInterval(timer);
-  }, []);
+  }, [debugId]);
 
   async function onSend() {
     if (!text.trim() || sending) return;
@@ -43,9 +56,23 @@ export function DebugChat() {
     }
   }
 
+  function newSession() {
+    const id = `web-${Date.now().toString(36)}`;
+    try { localStorage.setItem(DEBUG_ID_KEY, id); } catch { /* ignore */ }
+    sessionIdRef.current = null;
+    setDebugId(id);
+    setMessages([]);
+    setError("");
+  }
+
   return (
     <div className="debug-chat">
-      <h3>调试对话 <small>（debug:{debugId}，不出飞书）</small></h3>
+      <h3>
+        调试对话 <small>（debug:{debugId}，不出飞书）</small>
+        <button type="button" className="ghost" style={{ marginLeft: 12, fontSize: 12 }} onClick={newSession}>
+          新开会话
+        </button>
+      </h3>
       {error && <p className="error">{error}</p>}
       <div className="transcript" style={{ minHeight: 260 }}>
         {messages.map((m) => (

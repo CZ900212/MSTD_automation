@@ -13,20 +13,44 @@ import { readJobArtifactUtf8 } from "../server/execute/job-workdir.mjs";
 const LARK_CLI = join(homedir(), ".hermes", "node", "bin", "lark-cli");
 const CLIP = 20000;
 
-function runLark(args: string[], signal?: AbortSignal): Promise<{ stdout: string; stderr: string; code: number | null }> {
+const LARK_TIMEOUT_MS = 60_000;
+
+function runLark(args: string[], signal?: AbortSignal): Promise<{
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+}> {
   return new Promise((resolve, reject) => {
     const profile = process.env.LARK_PROFILE;
     const finalArgs = profile ? ["--profile", profile, ...args] : args;
     const child = spawn(LARK_CLI, finalArgs, { stdio: ["ignore", "pipe", "pipe"] });
     const out: Buffer[] = []; const err: Buffer[] = [];
-    const timer = setTimeout(() => child.kill("SIGTERM"), 60_000);
-    signal?.addEventListener("abort", () => child.kill("SIGTERM"), { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, LARK_TIMEOUT_MS);
+    const onAbort = () => child.kill("SIGTERM");
+    signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (d) => out.push(d));
     child.stderr.on("data", (d) => err.push(d));
-    child.on("error", (e) => { clearTimeout(timer); reject(e); });
-    child.on("close", (code) => {
+    child.on("error", (e) => {
       clearTimeout(timer);
-      resolve({ stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), code });
+      signal?.removeEventListener("abort", onAbort);
+      reject(e);
+    });
+    child.on("close", (code, closeSignal) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({
+        stdout: Buffer.concat(out).toString(),
+        stderr: Buffer.concat(err).toString(),
+        code,
+        signal: closeSignal,
+        timedOut,
+      });
     });
   });
 }
@@ -38,6 +62,8 @@ interface LarkReadDetails {
   exitCode?: number | null;
   argv?: string[];
   error?: string;
+  timedOut?: boolean;
+  signal?: string | null;
 }
 
 // 批次 C：向 daemon 上报本次读到的源文本（逐字引用守卫的比对基准 + 席位私有 taint）。
@@ -112,10 +138,21 @@ export default function (pi: ExtensionAPI) {
         }
         const args = buildLarkReadArgsScoped(params.op, params, resolveLarkScope(process.env));
         const r = await runLark(args, signal);
-        const body = r.code === 0 ? r.stdout || "(空输出)" : `exit=${r.code}\nSTDERR:\n${r.stderr}`;
+        if (r.timedOut) {
+          return {
+            content: [{ type: "text", text: `读取超时（${LARK_TIMEOUT_MS / 1000} 秒），请稍后重试或缩小查询范围` }],
+            details: { exitCode: r.code, signal: r.signal, timedOut: true, argv: args },
+          };
+        }
+        const body = r.code === 0
+          ? r.stdout || "(空输出)"
+          : `exit=${r.code}${r.signal ? ` signal=${r.signal}` : ""}\nSTDERR:\n${r.stderr}`;
         const clipped = clip(body);
         if (r.code === 0) await reportSource(params.op, clipped);
-        return { content: [{ type: "text", text: clipped }], details: { exitCode: r.code, argv: args } };
+        return {
+          content: [{ type: "text", text: clipped }],
+          details: { exitCode: r.code, signal: r.signal, timedOut: false, argv: args },
+        };
       } catch (e) {
         if (signal?.aborted) throw e; // 与 draft.ts 同则:abort 如实传播,不伪造错误结果
         return { content: [{ type: "text", text: `拒绝/失败: ${e instanceof Error ? e.message : String(e)}` }], details: { error: String(e) } };

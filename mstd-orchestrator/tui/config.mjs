@@ -29,7 +29,6 @@ export function loadTuiConfig(env = process.env) {
     enableAgent: String(env.MSTD_ENABLE_AGENT ?? "") === "1",
     enableWrite: String(env.MSTD_ENABLE_WRITE ?? "") === "1",
     maxConcurrentPi: maxConcurrentPi(env),
-    maxReasonersPerSession: intEnv(env, "MSTD_MAX_REASONERS_PER_SESSION", 3),
     refreshMs: intEnv(env, "MSTD_TUI_REFRESH_MS", 800),
     windowMs: intEnv(env, "MSTD_TUI_WINDOW_MS", 15 * 60 * 1000),
     feedCap: intEnv(env, "MSTD_TUI_FEED_CAP", 500),

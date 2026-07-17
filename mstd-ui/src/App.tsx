@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { bootstrap, feishuLogin, setOnAuthInvalid, type Me } from "./api/auth";
 import { LoginFeishu } from "./views/LoginFeishu";
 import { WorkspaceView } from "./views/WorkspaceView";
@@ -23,10 +23,12 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<JobEventLog>(emptyLog());
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setOnAuthInvalid(() => setMe(null));
     bootstrap().then((u) => { setMe(u); setReady(true); });
+    return () => { streamAbortRef.current?.abort(); };
   }, []);
 
   const refreshJobs = useCallback(async () => {
@@ -47,6 +49,9 @@ export default function App() {
 
   // H1：审批/驳回入口退役——动作确认统一走飞书卡片；web 只触发与观察。
   async function onTrigger() {
+    streamAbortRef.current?.abort();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
     setRunning(true);
     setLog(emptyLog());
     try {
@@ -55,6 +60,7 @@ export default function App() {
       });
       setActiveJobId(jobId);
       await openJobStream(jobId, {
+        signal: controller.signal,
         onEvent: (e) => setLog((prev) => reduceJobEvent(prev, e as SseEvent)),
         onDone: () => {
           setRunning(false);
@@ -69,6 +75,7 @@ export default function App() {
 
   async function onAbort() {
     if (!activeJobId) return;
+    streamAbortRef.current?.abort();
     try { await abortJob(activeJobId); } finally { setRunning(false); refreshJobs(); }
   }
 

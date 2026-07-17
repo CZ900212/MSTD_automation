@@ -4,6 +4,19 @@
 每条 `feat/fix` 均经 opus 证伪式代码审核 + Codex(GPT-5.6)变异审卷,补杀测试后合入;
 详细审核处置见 `../docs/operator-journal.md`,实施偏差见 `../docs/superpowers/plans/2026-07-10-agent-persona-runtime.md` 各任务段。
 
+> **阶段一之后的演进**（Responder–Dispatcher–Reasoner 架构、active/shadow/legacy 三模式、
+> model_log 关联 ID、可靠性批次、ambient 收紧等）以 `README.md`、`../project.md` 与
+> `../docs/superpowers/specs/` 为准；下方阶段一条目保留作历史基线，**不再代表当前架构心智**。
+
+---
+
+## [阶段二起] 架构转向与可观测 — 2026-07-14 起（摘要）
+
+- **RDR 三角色**：应答机 / 独立调度器 / 任务级推理机；`MSTD_AGENT_ARCHITECTURE_MODE=legacy|shadow|active`。
+- **可观测**：`model_log` 扩展 task/run/dispatch/decision/latency；成功调用 `model_call`、推理回合 `brain_turn`、首答发送失败 `responder_send_failed`。
+- **可靠性批次与诊断**：见 `../docs/research/2026-07-15-framework-reliability-diagnosis.md` 与相关 specs。
+- **产品定案续写**：双回复条件闭环、兜底话术承诺、ambient 受话判断、8192 history / 128k 输入上限等见 `../project.md`。
+
 ---
 
 ## [阶段一] 人格运行时(Persona Runtime) — 2026-07-10 ~ 2026-07-12
