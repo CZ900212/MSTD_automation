@@ -1,7 +1,7 @@
 // 记忆文件层：五层读写 + 字符上限 + 外部漂移检测（.bak 备份）+ journal 追加。
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, copyFileSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 export class DriftError extends Error {
   constructor(path) { super(`记忆文件被外部修改，拒绝覆盖（已 .bak 备份）: ${path}`); this.name = "DriftError"; }
@@ -55,7 +55,10 @@ export function createMemoryFiles({ rootDir }) {
       }
     }
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, content, "utf8");
+    // 同目录 tmp+rename 保证覆盖写原子：rename 是文件系统级单步操作，崩溃/断电不会截断目标文件。
+    const tmp = join(dirname(p), `${p.split(/[\\/]/).pop()}.tmp-${randomBytes(6).toString("hex")}`);
+    writeFileSync(tmp, content, "utf8");
+    renameSync(tmp, p);
     return { snapshotHash: sha256(content) };
   }
 

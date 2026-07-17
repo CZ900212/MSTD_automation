@@ -41,16 +41,24 @@ export function MemoryEditor() {
   async function open(ref: LayerRef) {
     setCurrent(ref);
     setStatus("");
-    if (ref.layer === "dreams") {
-      setContent(await readDreamReport(ref.id!));
+    try {
+      if (ref.layer === "dreams") {
+        setContent(await readDreamReport(ref.id!));
+        setHash(null);
+        setReadonly(true);
+        return;
+      }
+      const r = await readMemory(ref.layer, ref.id);
+      setContent(r.content);
+      setHash(r.snapshotHash);
+      setReadonly(false);
+    } catch (e) {
+      // 加载失败必须复位内容，否则会把上一层的文本误当作本层内容留在编辑框里
+      setContent("");
       setHash(null);
       setReadonly(true);
-      return;
+      setStatus(`❌ 加载失败：${String((e as Error).message ?? e)}`);
     }
-    const r = await readMemory(ref.layer, ref.id);
-    setContent(r.content);
-    setHash(r.snapshotHash);
-    setReadonly(false);
   }
 
   async function save() {

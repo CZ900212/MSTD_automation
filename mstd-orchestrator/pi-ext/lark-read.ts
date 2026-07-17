@@ -81,7 +81,14 @@ async function reportSource(op: string, text: string): Promise<void> {
       body: JSON.stringify({ session_key: sessionKey, op, text }),
       signal: AbortSignal.timeout(3000),
     });
-  } catch { /* 登记失败不阻断只读链路 */ }
+  } catch (e) {
+    // fail-open 不阻断只读链路是刻意设计（见 L13），但要留痕：否则 shingle 悄悄空登记、
+    // 逐字引用守卫失去比对基准且无人知晓。带 op/scope 定位到具体会话域。
+    const scope = resolveLarkScope(process.env);
+    console.error(
+      `[lark-read] egress 上报失败 op=${op} scope=${scope.kind} session=${sessionKey}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
 
 export default function (pi: ExtensionAPI) {

@@ -44,6 +44,15 @@ describe("DebugChat", () => {
     expect(await screen.findByText("你好，我是小达")).toBeInTheDocument();
   });
 
+  it("中文输入法组合态下按 Enter 只确认候选词，不触发发送", async () => {
+    render(<DebugChat />);
+    const input = screen.getByPlaceholderText(/说点什么/) as HTMLInputElement;
+    await userEvent.type(input, "拼音");
+    // 模拟 IME 组合态回车：isComposing=true 时不应发送
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true }));
+    expect(admin.sendDebugChat).not.toHaveBeenCalled();
+  });
+
   it("发送失败显示错误信息", async () => {
     vi.mocked(admin.sendDebugChat).mockRejectedValue(new Error("内部服务不可用"));
     render(<DebugChat />);

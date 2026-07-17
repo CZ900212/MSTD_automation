@@ -57,4 +57,24 @@ describe("session_search（FTS + 权限过滤）", () => {
     const r = search.run({ query: "武汉项目" }, { sessionKey: "feishu:group:oc_A" });
     expect(r.hits.map((h) => h.content).join("")).not.toContain("撤回的话");
   });
+
+  it("含未配对引号的 query 触发 FTS 语法错误时优雅降级，不抛错", () => {
+    const r = search.run({ query: '"未配对引号触发语法错误' }, { sessionKey: "feishu:group:oc_A" });
+    expect(r.ok).toBe(true);
+    expect(r.hits).toEqual([]);
+    expect(r.error).toBeTruthy();
+  });
+
+  it("limit 被钳到 [1, 50]：负数不再是 SQLite 的无上限语义，超大值不超过上限", () => {
+    const gA = store.getOrCreate("feishu:group:oc_A");
+    for (let i = 0; i < 60; i++) {
+      store.append(gA.id, { role: "user", content: `武汉项目批量记录 ${i}`, ts: 10000 + i });
+    }
+    // SQLite 的 LIMIT -1 语义是"无上限"，修复前会一次性吐出全部 61 条；钳到下限 1 后应只有 1 条
+    const neg = search.run({ query: "武汉项目", limit: -1 }, { sessionKey: "feishu:group:oc_A" });
+    expect(neg.ok).toBe(true);
+    expect(neg.hits.length).toBe(1);
+    const huge = search.run({ query: "武汉项目", limit: 999999 }, { sessionKey: "feishu:group:oc_A" });
+    expect(huge.hits.length).toBe(50);
+  });
 });

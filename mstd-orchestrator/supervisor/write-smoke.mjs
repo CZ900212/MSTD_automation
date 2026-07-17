@@ -17,6 +17,11 @@ if (!jobId) {
   console.error("usage: node supervisor/write-smoke.mjs <jobId>");
   process.exit(1);
 }
+if (process.env.MSTD_ENABLE_WRITE !== "1") {
+  // 本脚本是真写 smoke（不是 dry-run），未显式开写闸时拒绝执行，避免注释与行为不一致
+  console.error("[write-smoke] 未设置 MSTD_ENABLE_WRITE=1，拒绝执行（本脚本会真实写飞书）");
+  process.exit(2);
+}
 
 const LARK_CLI = join(homedir(), ".hermes", "node", "bin", "lark-cli");
 function runLark(argv) {

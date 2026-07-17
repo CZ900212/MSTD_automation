@@ -50,6 +50,7 @@ export function createRunner({
     status = "running";
 
     try {
+      turnsLoop:
       for (const turn of scenario.turns) {
         if (abortRequested) break;
         if (sent >= max_turns) {
@@ -68,7 +69,16 @@ export function createRunner({
         if (turn.burst) {
           const base = now();
           for (const item of turn.burst) {
-            if (abortRequested) break;
+            // burst 内层同样要复查，否则一条 burst turn 可以突破 max_turns/墙钟一次性打光多条消息
+            if (abortRequested) break turnsLoop;
+            if (sent >= max_turns) {
+              errors.push({ code: "max_turns" });
+              break turnsLoop;
+            }
+            if (now() - startedAt > max_duration_ms) {
+              errors.push({ code: "wall_timeout" });
+              break turnsLoop;
+            }
             const wait = item.at_ms - (now() - base);
             if (wait > 0) await sleep(wait);
             await sendOne({

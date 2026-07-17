@@ -156,8 +156,6 @@ export function buildTaskNotificationAction({ jobId, taskActionKey, toOpenId, ti
 
 // ---- D1: agent 意图通用规范化（类型封闭，每类 payload 形状由服务端定）----
 
-const isIso = (v) => typeof v === "string" && v.length >= 10 && !Number.isNaN(Date.parse(v));
-
 const AGENT_PAYLOADS = {
   create_task(p) {
     if (typeof p.title !== "string" || !p.title.trim()) throw new Error("create_task 缺 title");
@@ -175,7 +173,10 @@ const AGENT_PAYLOADS = {
   },
   create_event(p) {
     if (typeof p.summary !== "string" || !p.summary.trim()) throw new Error("create_event 缺 summary");
-    if (!isIso(p.start_time) || !isIso(p.end_time)) throw new Error("create_event 时间必须为 ISO 8601");
+    // 必须带时区的严格 ISO 8601，否则日程随执行环境时区漂移；只校验，不改写原字符串（保持 canonical payload 存储格式不变）。
+    if (parseStrictIsoWithTimezone(p.start_time) === null || parseStrictIsoWithTimezone(p.end_time) === null) {
+      throw new Error("create_event 时间必须为带时区的严格 ISO 8601");
+    }
     const ids = Array.isArray(p.attendee_open_ids) ? p.attendee_open_ids : [];
     if (!ids.every(isValidOpenId)) throw new Error("create_event 含非法 attendee open_id");
     return {

@@ -89,7 +89,7 @@ export function DebugChat() {
           value={text}
           placeholder="对 agent 说点什么…"
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") void onSend(); }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) void onSend(); }}
         />
         <button type="button" disabled={sending} onClick={() => { void onSend(); }}>{sending ? "处理中…" : "发送"}</button>
       </div>

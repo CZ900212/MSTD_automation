@@ -115,4 +115,20 @@ describe("观察期模式（observe_only）", () => {
     );
     expect(deliverSystemText.mock.calls[0][1]).toContain("2/4"); // 会发言 2 / 总 4
   });
+
+  it("周报投递抛错：返回 ok:false（调用方据此不烧档期），下次 tick 用同样入参重发即可成功", async () => {
+    const ins = db.prepare("INSERT INTO observe_log (id, chat_id, action, text, ts) VALUES (?, 'oc_obs', ?, ?, ?)");
+    ins.run("1", "quick_reply", "答A", 1000);
+    ins.run("2", "escalate", "深度回答B", 2000);
+    const deliverSystemText = vi.fn(async () => { throw new Error("网关超时"); });
+    const report = createObserveReport({ db, deliverSystemText, adminOpenId: "ou_admin", log: vi.fn() });
+
+    const failed = await report.sendWeekly(10_000);
+    expect(failed).toEqual({ ok: false, error: "网关超时" }); // 失败必须显式冒泡，不能吞成 ok:true
+
+    deliverSystemText.mockImplementation(async () => ({ messageId: "om_retry" }));
+    const retried = await report.sendWeekly(10_000); // 同一周档期重试
+    expect(retried).toMatchObject({ ok: true, groups: 1 });
+    expect(deliverSystemText).toHaveBeenCalledTimes(2);
+  });
 });

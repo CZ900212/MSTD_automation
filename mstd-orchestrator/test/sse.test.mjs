@@ -87,6 +87,24 @@ describe("streamJobEvents", () => {
       expect(body).toContain("id: 3\nevent: message_done");            // 后续好行照常补发
     });
 
+    it("回放数据源整体抛错:不留悬挂订阅,连接被清理并收尾", () => {
+      const brokenDb = {
+        prepare() {
+          return { all() { throw new Error("db down"); } };
+        },
+      };
+      const res = fakeRes();
+      const cleared = [];
+      expect(() => streamJobEvents({
+        db: brokenDb, bus, buffer, jobId: "job1", res, sinceSeq: 0, heartbeatMs: 60000,
+        setInterval: () => 123, clearInterval: (id) => cleared.push(id),
+      })).not.toThrow();
+      expect(bus.subscriberCount("job1")).toBe(0); // 订阅未泄漏
+      expect(cleared).toContain(123); // 心跳定时器已清
+      const body = res.writes.join("");
+      expect(body).toContain("event: error");
+    });
+
     it("sinceSeq 重放：先补历史关键事件（带 id 行），再接实时", () => {
       seedJobEvent(db, "job1", 1, "tool_start", { toolName: "lark_read" });
       seedJobEvent(db, "job1", 2, "message_done", {});

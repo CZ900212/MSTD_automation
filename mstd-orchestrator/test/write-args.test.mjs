@@ -105,6 +105,10 @@ describe("buildWriteArgs D1 扩类", () => {
   it("create_event 非法时间 fail-closed", () => {
     expect(() => buildWriteArgs({ kind: "create_event", payload: { summary: "x", start_time: "后天", end_time: "2026-07-10T15:00:00Z", attendee_open_ids: [] } }, "k")).toThrow();
   });
+  it("create_event 拒绝无时区/纯日期时间串（会随执行环境时区漂移）", () => {
+    expect(() => buildWriteArgs({ kind: "create_event", payload: { summary: "x", start_time: "2026-07-10T14:00:00", end_time: "2026-07-10T15:00:00Z", attendee_open_ids: [] } }, "k")).toThrow();
+    expect(() => buildWriteArgs({ kind: "create_event", payload: { summary: "x", start_time: "2026-07-10T14:00:00Z", end_time: "2026-07-10", attendee_open_ids: [] } }, "k")).toThrow();
+  });
   it("send_group_msg argv 白名单（含幂等 key）", () => {
     const argv = buildWriteArgs({ kind: "send_group_msg", payload: { chat_id: "oc_9", card_ref: "j:c" } }, "job1:g1");
     expect(argv).toEqual([

@@ -1,5 +1,19 @@
 const TOKEN_KEY = "mstd-token";
+// 登录 CSRF/会话固定防护：本 tab 发起登录时生成的一次性 nonce，随 redirectAfter 回跳
+// 保留在 URL query 里；bootstrap 只采信携带同一 nonce 的 #token= fragment。
+const OAUTH_NONCE_KEY = "mstd-oauth-nonce";
+const OAUTH_NONCE_PARAM = "authNonce";
 let onAuthInvalid: (() => void) | null = null;
+
+function randomNonce(): string {
+  try {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  }
+}
 
 export function setOnAuthInvalid(fn: () => void) { onAuthInvalid = fn; }
 export function authToken() {
@@ -44,18 +58,34 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
 }
 
 export async function feishuLogin(redirectAfter = "/") {
+  const nonce = randomNonce();
+  try { sessionStorage.setItem(OAUTH_NONCE_KEY, nonce); } catch { /* 隐私模式无 sessionStorage 时降级为不校验 */ }
+  const sep = redirectAfter.includes("?") ? "&" : "?";
+  const redirectWithNonce = `${redirectAfter}${sep}${OAUTH_NONCE_PARAM}=${nonce}`;
   const { authorizeUrl } = await apiFetch<{ authorizeUrl: string }>(
-    `/api/auth/feishu/login?redirectAfter=${encodeURIComponent(redirectAfter)}`
+    `/api/auth/feishu/login?redirectAfter=${encodeURIComponent(redirectWithNonce)}`
   );
   window.location.assign(authorizeUrl);
 }
 
 export async function bootstrap(): Promise<Me | null> {
-  // OAuth callback puts token in URL fragment
+  // OAuth callback puts token in URL fragment；回跳 URL 由后端拼出，任何页面都能被诱导带着
+  // 伪造/他人的 #token= 打开，必须校验随 redirectAfter 回传的一次性 nonce 才采信，防会话固定。
   if (typeof window !== "undefined" && window.location.hash.startsWith("#token=")) {
-    const t = decodeURIComponent(window.location.hash.slice("#token=".length));
-    setAuthToken(t);
-    history.replaceState(null, "", window.location.pathname + window.location.search);
+    let expectedNonce = "";
+    try { expectedNonce = sessionStorage.getItem(OAUTH_NONCE_KEY) || ""; } catch { /* ignore */ }
+    const gotNonce = new URLSearchParams(window.location.search).get(OAUTH_NONCE_PARAM) || "";
+    try { sessionStorage.removeItem(OAUTH_NONCE_KEY); } catch { /* ignore */ }
+    if (expectedNonce && expectedNonce === gotNonce) {
+      try {
+        const t = decodeURIComponent(window.location.hash.slice("#token=".length));
+        setAuthToken(t);
+      } catch { /* fragment 编码损坏，视为无效登录，不写入 token */ }
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete(OAUTH_NONCE_PARAM);
+    url.hash = "";
+    history.replaceState(null, "", url.pathname + url.search);
   }
   if (!authToken()) return null;
   try {

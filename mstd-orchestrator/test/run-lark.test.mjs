@@ -51,4 +51,30 @@ describe("makeRunLark spawn 包装", () => {
     child.emit("close", 143); // SIGTERM 退出码
     await expect(p).resolves.toMatchObject({ exitCode: 143 });
   });
+
+  it("SIGTERM 后 CLI 仍不退出(吞信号挂死)→宽限期后升级 SIGKILL,仍等 close 才 resolve", async () => {
+    vi.useFakeTimers();
+    const child = fakeChild();
+    const runLark = makeRunLark({ larkCli: "/fake", profile: "", timeoutMs: 60_000, spawnFn: () => child });
+    const p = runLark(["im", "+messages-send"]);
+    vi.advanceTimersByTime(60_000);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(child.kill).not.toHaveBeenCalledWith("SIGKILL");
+
+    // 宽限期内 CLI 仍未退出,Promise 不得提前 resolve
+    vi.advanceTimersByTime(4_999);
+    expect(child.kill).not.toHaveBeenCalledWith("SIGKILL");
+
+    vi.advanceTimersByTime(1);
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+
+    // SIGKILL 发出后 Promise 仍未 settle,必须等 close 事件
+    let settled = false;
+    p.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit("close", 137); // SIGKILL 退出码
+    await expect(p).resolves.toMatchObject({ exitCode: 137 });
+  });
 });

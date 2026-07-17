@@ -42,6 +42,20 @@ describe("memory files（五层/上限/漂移/journal）", () => {
     files.writeLayer("user", "ou_a", "x".repeat(1375));               // 恰好达限可写
   });
 
+  it("覆盖写原子：无 .tmp 残留且内容完整（含 SOUL.md）", () => {
+    files.writeLayer("soul", null, "版本一");
+    files.writeLayer("soul", null, "版本二，内容更长一些用于验证完整性");
+    expect(readFileSync(join(root, "SOUL.md"), "utf8")).toBe("版本二，内容更长一些用于验证完整性");
+    const rootFiles = readdirSync(root);
+    expect(rootFiles.some((f) => f.includes(".tmp-"))).toBe(false);
+
+    files.writeLayer("group", "oc_1", "群记忆一版");
+    files.writeLayer("group", "oc_1", "群记忆二版");
+    expect(readFileSync(join(root, "memory", "groups", "oc_1.md"), "utf8")).toBe("群记忆二版");
+    const groupFiles = readdirSync(join(root, "memory", "groups"));
+    expect(groupFiles.some((f) => f.includes(".tmp-"))).toBe(false);
+  });
+
   it("journal 按日期文件追加", () => {
     const now = new Date("2026-07-09T10:00:00Z").getTime();
     files.appendJournal("- 10:00 发生了A", now);

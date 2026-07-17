@@ -18,6 +18,8 @@ export function createSessionSearch(db) {
     if (!query?.trim()) return { ok: false, error: "query 必填" };
     const prefix = scopePrefix(ctx.sessionKey);
     if (prefix === "__deny__") return { ok: false, error: "非法会话" };
+    // limit 模型可控，钳到闭区间防止负数/超大值被 SQLite 当作无上限
+    const safeLimit = Math.min(Math.max(Number.isFinite(limit) ? Math.trunc(limit) : 10, 1), 50);
 
     const useMatch = query.length >= 3;
     const base = `
@@ -35,9 +37,15 @@ export function createSessionSearch(db) {
       LIMIT ?`;
     const params = [useMatch ? query : `%${query}%`];
     if (prefix) params.push(prefix, `${prefix}:%`);
-    params.push(limit);
-    const hits = db.prepare(base).all(...params);
-    return { ok: true, hits };
+    params.push(safeLimit);
+    // query 直接喂给 FTS5 MATCH，模型可控内容可能含未配对引号/括号等触发 FTS 语法错误；
+    // 降级为空结果而非让工具整体抛错中断调用方
+    try {
+      const hits = db.prepare(base).all(...params);
+      return { ok: true, hits };
+    } catch (e) {
+      return { ok: true, hits: [], error: `FTS 查询语法错误已降级为空结果：${e.message}` };
+    }
   }
 
   return { run };

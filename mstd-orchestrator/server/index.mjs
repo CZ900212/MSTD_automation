@@ -590,6 +590,23 @@ if (config.enableAgent && config.botOpenId) {
     try { sweepExpiredExports(jobExportsDir, jobExportTtlMs); }
     catch (e) { console.error(`[job-exports-sweep] ${e?.message ?? e}`); }
   });
+  // dispatch 停在 pending_send 不止靠重启恢复：运行期首答发送失败后本任务周期性补投。
+  // outbound_idempotency_key 持久且幂等，重复触发安全。
+  ticker.register("pending-send-retry", intEnv(process.env, "MSTD_PENDING_SEND_RETRY_EVERY_TICKS", 5), async () => {
+    for (const row of taskStore.listRetryableSends()) {
+      const session = sessionById(row.session_id);
+      if (!session) continue;
+      try {
+        await coordinator.retryPendingSend({
+          dispatchId: row.id,
+          session,
+          sessionKey: session.session_key,
+        });
+      } catch (error) {
+        console.error(`[mstd] pending_send retry failed dispatch=${row.id}: ${error?.message ?? error}`);
+      }
+    }
+  });
   if (larkHealth) ticker.register("lark-health", 10, () => larkHealth.checkOnce().catch(() => {}));
   // T1.3 token 续期哨兵：6h 一查（本地读零网络）,refresh 剩 <48h 私聊 owner
   if (bootLark) {
@@ -608,8 +625,11 @@ if (config.enableAgent && config.botOpenId) {
     const bj = new Date(Date.now() + 8 * 3600_000);
     const week = `${bj.getUTCFullYear()}-w${Math.floor(bj.getTime() / (7 * 86_400_000))}`;
     if (bj.getUTCDay() === 1 && bj.getUTCHours() === 9 && lastObsWeek !== week) {
-      lastObsWeek = week;
-      return observeReport.sendWeekly();
+      // 只在投递成功（或本周无内容可发）后才烧掉档期；投递失败保留档期，下一跳重试
+      return observeReport.sendWeekly().then((r) => {
+        if (!r || r.ok !== false) lastObsWeek = week;
+        return r;
+      });
     }
   });
   ticker.start();

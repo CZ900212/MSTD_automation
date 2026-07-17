@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { bootstrap, feishuLogin, setOnAuthInvalid, type Me } from "./api/auth";
+import { bootstrap, feishuLogin, setAuthToken, setOnAuthInvalid, type Me } from "./api/auth";
 import { LoginFeishu } from "./views/LoginFeishu";
 import { WorkspaceView } from "./views/WorkspaceView";
 import { BoardView } from "./views/BoardView";
@@ -23,11 +23,12 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<JobEventLog>(emptyLog());
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setOnAuthInvalid(() => setMe(null));
-    bootstrap().then((u) => { setMe(u); setReady(true); });
+    bootstrap().then((u) => { setMe(u); setReady(true); }).catch(() => { setMe(null); setReady(true); });
     return () => { streamAbortRef.current?.abort(); };
   }, []);
 
@@ -53,6 +54,7 @@ export default function App() {
     const controller = new AbortController();
     streamAbortRef.current = controller;
     setRunning(true);
+    setStreamError(null);
     setLog(emptyLog());
     try {
       const { jobId } = await createJob(selectedTemplateId, {
@@ -66,10 +68,21 @@ export default function App() {
           setRunning(false);
           refreshJobs();
         },
-        onError: () => { setRunning(false); },
+        onError: (err) => {
+          setRunning(false);
+          if (err.message === "aborted") return; // 用户主动中止，不是错误
+          if (/\(401\)/.test(err.message)) {
+            // job stream 走裸 fetch，不经过 apiFetch 的 401 拦截，鉴权失效需在这里自己触发重登
+            setAuthToken("");
+            setMe(null);
+            return;
+          }
+          setStreamError(err.message);
+        },
       });
-    } catch {
+    } catch (e) {
       setRunning(false);
+      setStreamError(String((e as Error).message ?? e));
     }
   }
 
@@ -107,6 +120,11 @@ export default function App() {
         </ul>
       </aside>
       <main className="app-main">
+        {streamError && (
+          <p className="error">
+            {streamError} <button type="button" className="ghost" onClick={() => setStreamError(null)}>关闭</button>
+          </p>
+        )}
         {tab === "workspace" ? (
           <WorkspaceView
             templates={templates.length ? templates : [{ id: "meeting_to_task", name: "会议纪要 → 建任务" }]}

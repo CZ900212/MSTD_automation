@@ -1,6 +1,7 @@
 import { buildTaskNotificationCard } from "../cards/templates.mjs";
 // open_id / task_guid 非法即 fail-closed，绝不构造 argv；校验规则与 action-dsl 单一来源。
 import { isValidDocToken, isValidOpenId, isValidTaskGuid } from "./action-dsl.mjs";
+import { parseStrictIsoWithTimezone } from "../time/strict-iso.mjs";
 
 function createTaskArgs(payload, key) {
   if (!isValidOpenId(payload.assignee_open_id)) {
@@ -36,17 +37,13 @@ function notifyTaskAssigneeArgs(payload, key) {
     "--msg-type", "interactive", "--content", JSON.stringify(card), "--idempotency-key", key];
 }
 
-// ISO 8601 校验（create_event 用）；不合法 fail-closed
-function isIso(v) {
-  return typeof v === "string" && v.length >= 10 && !Number.isNaN(Date.parse(v));
-}
-
 function createEventArgs(payload) {
   if (typeof payload.summary !== "string" || !payload.summary.trim()) {
     throw new Error("create_event 拒绝空 summary");
   }
-  if (!isIso(payload.start_time) || !isIso(payload.end_time)) {
-    throw new Error(`create_event 拒绝非 ISO 时间: ${payload.start_time} ~ ${payload.end_time}`);
+  // 必须带时区的严格 ISO 8601，否则日程随执行环境时区漂移；只校验，argv 仍用原字符串（不改写形状）。
+  if (parseStrictIsoWithTimezone(payload.start_time) === null || parseStrictIsoWithTimezone(payload.end_time) === null) {
+    throw new Error(`create_event 拒绝非严格 ISO 时间: ${payload.start_time} ~ ${payload.end_time}`);
   }
   const ids = Array.isArray(payload.attendee_open_ids) ? payload.attendee_open_ids : [];
   for (const id of ids) {

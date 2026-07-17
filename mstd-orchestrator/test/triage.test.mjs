@@ -82,6 +82,14 @@ describe("triage 四选一", () => {
     expect(fenced.action).toBe("no_reply");
   });
 
+  // L4L5-triage-guards(b):解析失败兜底按 mode 分叉——ambient 没人点名,fail closed
+  // 不能变成无故插话;addressed/p2p 的 escalate+ack 兜底不受影响(上面用例已覆盖)。
+  it("ambient 下解析失败兜底为 no_reply,不无故插话", async () => {
+    const out = await createTriage({ caller: mkCaller("我觉得应该回复他"), store })
+      .triage({ session, items, mode: "ambient" });
+    expect(out).toMatchObject({ action: "no_reply" });
+  });
+
   it("quick_reply 超 200 字或含写意图 → 代码兜底强制 escalate", async () => {
     const long = '{"action":"quick_reply","text":"' + "长".repeat(201) + '"}';
     const t1 = createTriage({ caller: mkCaller(long), store });
@@ -373,6 +381,21 @@ describe("判断与事实问题强制慢机(ADVICE_INTENT)", () => {
       expect(v.action).toBe("quick_reply");
     }
   );
+
+  // L4L5-triage-guards(a):addressed/p2p 下 no_reply 与 quick_reply 同样不可信——
+  // 点名场景快机把事实/建议问题误判装聋,必须升级(与下面 ambient 用例对照,只动 addressed)。
+  it("addressed 下 no_reply 命中判断/事实特征同样强制 escalate(点名不装聋)", async () => {
+    const adviceItems = [{ senderName: "李四", content: "咱们该用哪个好?" }];
+    const v1 = await createTriage({ caller: mk('{"action":"no_reply"}'), store })
+      .triage({ session, items: adviceItems, mode: "addressed" });
+    expect(v1.action).toBe("escalate");
+    expect(v1.brief).toContain("判断或建议");
+
+    const v2 = await createTriage({ caller: mk('{"action":"no_reply"}'), store })
+      .triage({ session, items: [{ content: "现在几点?" }], mode: "addressed" });
+    expect(v2.action).toBe("escalate");
+    expect(v2.brief).toContain("事实回答或核查");
+  });
 
   it("模型自主 no_reply/escalate 不被 guard 改写", async () => {
     const adviceItems = [{ senderName: "李四", content: "咱们该用哪个好?" }];

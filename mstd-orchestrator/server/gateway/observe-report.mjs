@@ -29,6 +29,8 @@ export function createObserveReport({ db, deliverSystemText, adminOpenId, log = 
       });
     } catch (e) {
       log(`[observe-report] 发送失败: ${e?.message ?? e}`);
+      // 投递失败必须让调用方看见，否则周档期会被误判为"已发"而提前烧掉
+      return { ok: false, error: e?.message ?? String(e) };
     }
     return { ok: true, groups: rows.length };
   }

@@ -10,14 +10,23 @@ export function makeRunLark({ larkCli = DEFAULT_LARK_CLI, profile = "", timeoutM
       const finalArgs = profile ? ["--profile", profile, ...argv] : argv;
       const child = spawnFn(larkCli, finalArgs, { stdio: ["ignore", "pipe", "pipe"] });
       const out = []; const err = [];
-      const timer = setTimeout(() => { try { child.kill("SIGTERM"); } catch { /* 已退出 */ } }, timeoutMs);
+      let killTimer = null;
+      // 超时先 SIGTERM,挂死 CLI 吞信号时宽限期后升级 SIGKILL;SIGKILL 不可捕获、close 事件必达,
+      // 因此仍等 close 事件 resolve(发信号后不直接 resolve,避免写路径卡死到重启)。
+      const termTimer = setTimeout(() => {
+        try { child.kill("SIGTERM"); } catch { /* 已退出 */ }
+        killTimer = setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
+        }, 5000);
+      }, timeoutMs);
       child.stdout.on("data", (d) => out.push(d));
       child.stderr.on("data", (d) => err.push(d));
       child.on("close", (code) => {
-        clearTimeout(timer);
+        clearTimeout(termTimer);
+        clearTimeout(killTimer);
         resolve({ exitCode: code, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() });
       });
-      child.on("error", (e) => { clearTimeout(timer); resolve({ exitCode: -1, stdout: "", stderr: String(e) }); });
+      child.on("error", (e) => { clearTimeout(termTimer); clearTimeout(killTimer); resolve({ exitCode: -1, stdout: "", stderr: String(e) }); });
     });
   };
 }

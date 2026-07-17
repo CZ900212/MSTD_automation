@@ -18,16 +18,21 @@ export const ADVICE_INTENT = /怎么选|选哪|哪个(好|更|合适|靠谱)|哪
 export const FACTUAL_QUESTION_INTENT = /[?？]|什么|多少|几(?:个|点|号|岁|天|次|钱|等于)?|谁|哪里|哪儿|何时|什么时候|为什么|为何|怎么回事|怎么样|是不是|是否|对不对|真的吗|准确吗|属实|核实|查证|确认一下|告诉我|说下|说说|介绍一下|解释一下/;
 const TRIVIAL_ARITHMETIC = /^\s*(?:请问\s*)?[+-]?\d+(?:\.\d+)?\s*[+\-×xX*÷/]\s*[+-]?\d+(?:\.\d+)?\s*(?:等于|是|=)?\s*(?:多少|几|什么|\?)?\s*[？?]?\s*$/;
 
+// addressed/p2p 下 no_reply 与 quick_reply 一样不可信——快机把事实/建议类问题误判
+// 装聋,点名场景绝不能装聋。ambient 排除:旁听群里的沉默倾向是刻意设计,不受此约束。
+const QUICK_REPLY_OR_ADDRESSED_SILENCE = ({ verdict, mode }) =>
+  verdict.action === "quick_reply" || (verdict.action === "no_reply" && mode !== "ambient");
+
 const ESCALATION_RULES = [
   {
     guard: "advice_intent",
-    matches: ({ verdict, joined }) => verdict.action === "quick_reply" && ADVICE_INTENT.test(joined),
+    matches: (ctx) => QUICK_REPLY_OR_ADDRESSED_SILENCE(ctx) && ADVICE_INTENT.test(ctx.joined),
     brief: (joined) => `用户需要判断或建议:${joined.slice(0, 100)}`,
   },
   {
     guard: "factual_question",
-    matches: ({ verdict, joined }) => verdict.action === "quick_reply"
-      && FACTUAL_QUESTION_INTENT.test(joined) && !TRIVIAL_ARITHMETIC.test(joined),
+    matches: (ctx) => QUICK_REPLY_OR_ADDRESSED_SILENCE(ctx)
+      && FACTUAL_QUESTION_INTENT.test(ctx.joined) && !TRIVIAL_ARITHMETIC.test(ctx.joined),
     brief: (joined) => `用户需要事实回答或核查:${joined.slice(0, 100)}`,
   },
   {
@@ -133,7 +138,7 @@ export function createTriage({ caller, store, soul = "", windowTokens = 2048 }) 
       messages: [{ role: "user", content: prompt }],
     });
 
-    const parsed = parse(out.text);
+    const parsed = parse(out.text, mode);
     // guard 是 enforce 的改判理由（中间字段），只经 meta 出场——verdict 本体保持四选一契约字段。
     const { guard = null, ...verdict } = enforce(parsed, items, mode);
     verdict.meta = {
@@ -148,7 +153,7 @@ export function createTriage({ caller, store, soul = "", windowTokens = 2048 }) 
     return verdict;
   }
 
-  function parse(text) {
+  function parse(text, mode) {
     try {
       if (typeof text !== "string" || !text.trim()) throw new Error("empty json");
       const trimmed = text.trim();
@@ -170,7 +175,11 @@ export function createTriage({ caller, store, soul = "", windowTokens = 2048 }) 
       if (j.action === "escalate" && j.ack != null && (typeof j.ack !== "string" || !j.ack.trim())) throw new Error("bad ack");
       return j;
     } catch {
-      return { action: "escalate", brief: "分诊输出不可解析，升级处理", ack: DEFAULT_ACK };
+      // fail closed 按 mode 分叉:addressed/p2p 必须先接话(装聋违反"点名不装聋");
+      // ambient 没人点名,解析失败静默好过无故插话打断旁听。
+      return mode === "ambient"
+        ? { action: "no_reply" }
+        : { action: "escalate", brief: "分诊输出不可解析，升级处理", ack: DEFAULT_ACK };
     }
   }
 

@@ -46,6 +46,18 @@ describe("MemoryEditor", () => {
     expect(screen.getByRole("button", { name: "重新载入" })).toBeInTheDocument();
   });
 
+  it("加载失败时复位状态并显示错误，不把上一层内容误留在编辑框里", async () => {
+    render(<MemoryEditor />);
+    const orgButton = () => screen.getByRole("button", { name: /ORG\.md/ });
+    await userEvent.click(await screen.findByRole("button", { name: /ORG\.md/ }));
+    await screen.findByDisplayValue(/周报周一交/);
+    vi.mocked(admin.readMemory).mockRejectedValueOnce(new Error("网络中断"));
+    await userEvent.click(orgButton());
+    expect(await screen.findByText(/加载失败/)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue(/周报周一交/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+  });
+
   it("dreams 报告只读打开", async () => {
     render(<MemoryEditor />);
     await userEvent.click(await screen.findByText("2026-07-08.md"));

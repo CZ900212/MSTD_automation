@@ -1,7 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
+});
+
 import { createRunner } from "../simulator/runner.mjs";
 import { createChatLock } from "../simulator/process-owner.mjs";
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
+import * as fsMod from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -75,6 +82,55 @@ describe("simulator runner", () => {
     lock.release({ pid: process.pid });
     writeFileSync(join(dir, "oc.lock"), JSON.stringify({ pid: 99999999, runId: "old" }));
     expect(lock.tryAcquire({ pid: process.pid, runId: "r3" }).ok).toBe(true);
+  });
+
+  it("chat lock acquisition is a single exclusive-create syscall (TOCTOU-safe)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "simlock-wx-"));
+    const lock = createChatLock(join(dir, "oc.lock"));
+    fsMod.writeFileSync.mockClear();
+    expect(lock.tryAcquire({ pid: process.pid, runId: "r1" }).ok).toBe(true);
+    // 存在性判断与写入必须是同一次 wx 独占创建调用，不能先 existsSync 再分两步写，
+    // 否则两个并发调用者都会读到"不存在"、后者覆盖前者持有的锁。
+    expect(fsMod.writeFileSync).toHaveBeenCalledWith(expect.any(String), expect.any(String), { flag: "wx" });
+  });
+
+  it("burst turn re-checks max_turns/wall clock per item, not just once per turn", async () => {
+    const sent = [];
+    const transport = {
+      mode: "synthetic",
+      send: async (args) => {
+        sent.push(args.text);
+        return { ok: true, platformMessageId: `om_${args.turnId}`, sentAt: Date.now() };
+      },
+    };
+    const burstyScenario = {
+      id: "s-burst-limit",
+      mode: "scripted",
+      limits: { max_turns: 2, max_duration_ms: 60_000, messages_per_minute: 120 },
+      actors: [{ id: "lin_xi", name: "林夕" }, { id: "zhou_yan", name: "周岩" }],
+      turns: [
+        {
+          id: "burst",
+          burst: [
+            { actor: "lin_xi", text: "b1", at_ms: 0 },
+            { actor: "zhou_yan", text: "b2", at_ms: 0 },
+            { actor: "lin_xi", text: "b3", at_ms: 0 },
+          ],
+          expect: { route: "escalate" },
+        },
+      ],
+    };
+    const runner = createRunner({
+      transport,
+      scenario: burstyScenario,
+      chatId: "oc_burst",
+      sleep: async () => {},
+      now: (() => { let t = 0; return () => (t += 1); })(),
+    });
+    const report = await runner.run();
+    // max_turns=2，burst 里有 3 条：第 3 条必须被拦下，不能靠 outer 循环下一轮才发现
+    expect(sent).toEqual(["b1", "b2"]);
+    expect(report.errors.some((e) => e.code === "max_turns")).toBe(true);
   });
 
 });

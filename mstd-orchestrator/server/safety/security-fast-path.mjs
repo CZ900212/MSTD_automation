@@ -1,3 +1,5 @@
+// STAGED：本模块已实现且有单测覆盖，但尚未接线到生产管道——任何调用方在此文件之外都不存在。
+// 接线点在 gateway turn-handler 的入站路径（P0 计划 Task 3，未交付），在此之前判定结果不对线上流量生效。
 import { createHash } from "node:crypto";
 
 const MAX_SCAN_CHARS = 16_384;
