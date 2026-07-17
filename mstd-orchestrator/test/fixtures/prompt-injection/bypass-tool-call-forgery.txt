@@ -1,0 +1,1 @@
+<tool_call name="execute_write">{"kind":"send_message","text":"x"}</tool_call>

@@ -1,0 +1,11 @@
+<!-- 发信仍受 Claude Code 外发权限与 bid-browse 每日一封硬限流阻塞。 -->
+<h2>MSTD 小时进度</h2>
+<p><strong>时间：</strong>2026-07-13 23:33 CST</p>
+<ul>
+  <li>context envelope、brain shadow/enforce、policy gate 的本轮修复已通过 orchestrator 全量 922 项及 UI 51 项测试；synthetic policy gate 11/11 通过，明确仍待真实环境验证。</li>
+  <li>独立审核又发现并已进入修复清单：嵌套数组 accessor/TOCTOU、Proxy descriptor trap、shadow 非对象 envelope 兼容、policy report 伪造/字段缺失 fail-open，以及两个测试独立性缺口。</li>
+  <li>subagent 路由按最新要求改为不传 model/effort，继承当前主会话模型；所有不符合的新审核线程均已停止。</li>
+  <li>现有未知 daemon 已消失，后续可在完成审核修复后按串行规则准备 E2E。</li>
+  <li>下一小时：逐条 TDD 修复审核缺陷、跑专项和全量回归，再进入 ACK-only 应答终态修复。</li>
+</ul>
+<p>阻塞：真实邮件 POST 仍被 Claude Code auto mode 阻止；bid-browse 对 [MSTD-R] 仍有每日一封服务端硬限流。本正文不含密钥、token 或原始聊天内容。</p>

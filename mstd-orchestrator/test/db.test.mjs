@@ -1,10 +1,21 @@
 import { describe, it, expect } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { existsSync, rmSync } from "node:fs";
 import { openDb, migrate } from "../server/db/index.mjs";
 
 const TABLES = [
   "users", "orch_jobs", "job_events", "job_draft",
   "decisions", "job_actions", "auth_challenges", "approval_tokens",
 ];
+
+function insertJob(db, id) {
+  db.prepare(
+    `INSERT INTO orch_jobs (id, template_id, title, params_json, status, created_by, thread_ref, created_at, updated_at)
+     VALUES (?, ?, NULL, NULL, 'pending', NULL, NULL, ?, ?)`
+  ).run(id, "tpl", 1, 1);
+}
 
 describe("db migrate", () => {
   it("creates all v1 tables", () => {
@@ -27,6 +38,7 @@ describe("db migrate", () => {
   it("job_actions enforces UNIQUE(job_id, action_key)", () => {
     const db = openDb();
     migrate(db);
+    insertJob(db, "job1");
     const ins = db.prepare(
       `INSERT INTO job_actions (id, job_id, action_key, kind, canonical_payload_json, payload_hash, idempotency_key, status, ts)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -35,6 +47,44 @@ describe("db migrate", () => {
     expect(() =>
       ins.run("a2", "job1", "k1", "create_task", "{}", "h", "job1:k1", "pending", 2)
     ).toThrow(/UNIQUE/i);
+    db.close();
+  });
+
+  it("openDb 对文件库启用 WAL journal mode（双进程并发写防护）", () => {
+    const path = join(tmpdir(), `mstd-wal-test-${randomBytes(8).toString("hex")}.sqlite`);
+    const db = openDb(path);
+    try {
+      expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
+    } finally {
+      db.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
+  });
+
+  it("openDb creates a missing parent directory for a fresh file database", () => {
+    const root = join(tmpdir(), `mstd-fresh-db-${randomBytes(8).toString("hex")}`);
+    const path = join(root, "nested", "mstd.sqlite");
+    expect(existsSync(join(root, "nested"))).toBe(false);
+
+    const db = openDb(path);
+    try {
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("job_actions.job_id enforces FK to orch_jobs (orphan insert rejected)", () => {
+    const db = openDb();
+    migrate(db);
+    const ins = db.prepare(
+      `INSERT INTO job_actions (id, job_id, action_key, kind, canonical_payload_json, payload_hash, idempotency_key, status, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    expect(() =>
+      ins.run("a1", "ghost_job", "k1", "create_task", "{}", "h", "ghost_job:k1", "pending", 1)
+    ).toThrow(/FOREIGN KEY/i);
     db.close();
   });
 });

@@ -1,5 +1,13 @@
 .env
 node_modules/
 *.log
-data/
+daemon.pid
+# 仅忽略仓库根下运行期 data/，勿吞掉 tui/data/ 源码
+/data/
 demo/out/
+
+# agent 记忆（独立 git 仓，见 dreaming 备份机制）
+agent-memory/
+
+# simulator director outputs
+simulator-results/

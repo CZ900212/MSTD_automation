@@ -8,6 +8,7 @@ build/
 out/
 *.log
 npm-debug.log*
+tsconfig.tsbuildinfo
 
 # Env / secrets
 .env
@@ -31,5 +32,11 @@ coverage/
 *.sqlite3
 
 # Local runtime artifacts
-mstd-orchestrator/db/*.db
+mstd-orchestrator/db/
 mstd-orchestrator/out/
+lark-*.png
+
+# MSTD agent 工作目录（C1:中枢 bash/文件工具的运行时产物,不入库）
+mstd-orchestrator/agent-workspace/
+mstd-orchestrator/agent-workspace-e2e-persona*/
+.ccb/

@@ -1,0 +1,43 @@
+version: 1
+id: debounce-steer
+mode: scripted
+route_label_version: v1
+description: Burst merge + multi-sender supplement + steer when busy
+limits:
+  max_turns: 20
+  max_duration_ms: 600000
+  messages_per_minute: 30
+actors:
+  - id: lin_xi
+    name: 林夕
+    profile_env: MSTD_SIM_BOT_PRODUCT_PROFILE
+  - id: zhou_yan
+    name: 周岩
+    profile_env: MSTD_SIM_BOT_ENGINEER_PROFILE
+  - id: he_miao
+    name: 何淼
+    profile_env: MSTD_SIM_BOT_OPS_PROFILE
+turns:
+  - id: burst-001
+    burst:
+      - actor: lin_xi
+        text: "@小达 帮我分析一下本周进度"
+        at_ms: 0
+      - actor: zhou_yan
+        text: "补充：只看本周，不要历史"
+        at_ms: 200
+    expect:
+      route: escalate
+      input_count: 2
+  - id: noise-during
+    actor: he_miao
+    text: "我先去倒杯水"
+    after_ms: 300
+    expect:
+      route: observed
+  - id: follow-001
+    actor: lin_xi
+    text: "@小达 刚才那个再补一句：输出用表格"
+    after_ms: 1000
+    expect:
+      route: escalate

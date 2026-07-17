@@ -1,0 +1,26 @@
+<!-- 本正文仅含脱敏工程进度，不含密钥、token、原始聊天或个人数据。 -->
+<h2>MSTD 小时进度</h2>
+<p><strong>时间：</strong>2026-07-14 11:55 CST</p>
+<h3>本小时真实进度</h3>
+<ul>
+  <li>防提示词注入计划的批次 A/C/D/E 残余缺口已收口：生产 Pi 新增 capability readiness fail-fast 探针；会话搜索不再以空 scope 表示无限范围；reply 出站新增链接白名单、mention 管控和逐字引用守卫；席位私有读取会污染当前 reply provenance 并在业务回合后 recycle；确认卡增加连续提案冷却。</li>
+  <li>新增负向注入语料矩阵，覆盖指令覆盖与外传、伪造 SYSTEM 妙记、零宽混淆、短链、群体 mention、多 JSON 夹带及正常业务负对照。</li>
+  <li>仓库最新记录的全量验证为 orchestrator 1052 passed / 6 gated skipped；synthetic policy gate=true、p95 0.79ms，但状态仍明确为 synthetic-only，不能替代真实公司语料 shadow 评测与真机负向 E2E。</li>
+  <li>P0“慢机应答终态缺失”已实现两阶段 active→closing→closed、终态发送 reservation、真实 message_id 校验和物理送达后先提交回执再写 transcript；专项生命周期回归最近一次为 159 passed。P0 仍未关闭，因为串行 persona E2E 只收到 ACK 与 daemon 固定兜底，没有正式回答。</li>
+</ul>
+<h3>当前阻塞与未关闭缺陷</h3>
+<ul>
+  <li>daemon fallback 连续发送失败后，当前 active receipt 会长期阻塞后续 business turn；需要明确的重试/恢复 owner，而不是仅保留内存状态。</li>
+  <li>纯文本多段发送可能出现前段已送达、后段失败，再发送矛盾 daemon fallback；尚未形成原子终态语义。</li>
+  <li>已 admission 的 reply 若永久悬挂，closeAdmissions 尚无 drain deadline；debounce/wire 的异步拒绝边界也需 fail-safe 收口。</li>
+  <li>独立代码复审与测试审卷尚未取得可接受的最终结论：最近一批审核线程受模型网关 HTTP 503/429 影响失败。工作树仍为多批混合脏状态，未整树暂存、未提交、未覆盖继承改动。</li>
+  <li>邮件服务端仍对 [MSTD-R] 执行北京时区每日一封硬限流；即使本次客户端外发权限放行，也可能返回 429。不会改标签或绕过限流。</li>
+</ul>
+<h3>下一小时计划</h3>
+<ol>
+  <li>为 daemon fallback 失败增加有界重试与明确恢复 owner，保证失败状态可观测且不会永久卡住下一回合。</li>
+  <li>补齐 debounce/wire promise 拒绝处理、active reply drain deadline 与对应 strict unhandled-rejection 回归。</li>
+  <li>统一 multiline final 的原子投递语义，避免“部分正式回复 + daemon 兜底”矛盾组合。</li>
+  <li>诊断 persona E2E 未调用 reply(stage=final) 的 resident/model 日志；随后重跑专项、全量、mock/local Pi、独立双审与串行测试群 E2E。</li>
+</ol>
+<p><strong>结论：</strong>防注入代码层取得新增可验证棘轮；P0 终态生命周期仍在修复，当前没有可宣称完成或可提交的批次。</p>

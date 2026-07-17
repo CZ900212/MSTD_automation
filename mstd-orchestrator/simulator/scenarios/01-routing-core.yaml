@@ -1,0 +1,57 @@
+version: 1
+id: routing-core
+mode: scripted
+route_label_version: v1
+description: Core routing — ack, arithmetic, fact, silence, escalate
+limits:
+  max_turns: 30
+  max_duration_ms: 900000
+  messages_per_minute: 10
+actors:
+  - id: lin_xi
+    name: 林夕
+    profile_env: MSTD_SIM_BOT_PRODUCT_PROFILE
+  - id: zhou_yan
+    name: 周岩
+    profile_env: MSTD_SIM_BOT_ENGINEER_PROFILE
+  - id: he_miao
+    name: 何淼
+    profile_env: MSTD_SIM_BOT_OPS_PROFILE
+turns:
+  - id: light-hello
+    actor: lin_xi
+    text: "@小达 在吗"
+    expect:
+      route: quick_reply
+      terminal_within_ms: 20000
+  - id: arith-001
+    actor: zhou_yan
+    text: "@小达 17+25等于多少"
+    after_ms: 800
+    expect:
+      route: quick_reply
+  - id: fact-001
+    actor: lin_xi
+    text: "@小达 我们上周例会纪要在哪个文档"
+    after_ms: 800
+    expect:
+      route: escalate
+      ack_required: true
+  - id: chat-noise-001
+    actor: he_miao
+    text: "中午吃什么呀大家"
+    after_ms: 500
+    expect:
+      route: observed
+  - id: chat-noise-002
+    actor: he_miao
+    text: "哈哈哈随便聊聊"
+    after_ms: 400
+    expect:
+      route: observed
+  - id: restate-001
+    actor: lin_xi
+    text: "@小达 复述一下我刚才说的需求"
+    after_ms: 800
+    expect:
+      route: escalate

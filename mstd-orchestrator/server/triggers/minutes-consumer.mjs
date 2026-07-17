@@ -1,0 +1,109 @@
+import { spawn } from "node:child_process";
+import { recordTriggerEvent, bindTriggerJob, releaseTriggerEvent } from "./ingest.mjs";
+import { normalizeMinuteToken } from "../safety/minute-token.mjs";
+
+export const MINUTES_EVENT_KEY = "minutes.minute.generated_v1";
+
+/**
+ * 长连接消费妙记生成事件；同 event_id / 同 minute_token 只建一个 job。
+ * @returns {{ handleLine: (line: string) => void, stop: () => void }}
+ */
+export function startMinutesConsumer({
+  db,
+  launcher,
+  larkCli,
+  profile = "",
+  spawnFn = spawn,
+  restartDelayMs = 5000,
+  now = () => Date.now(),
+  log = console.error,
+}) {
+  let stopped = false;
+  let child = null;
+  let timer = null;
+
+  function handleLine(line) {
+    const s = line.trim();
+    if (!s) return;
+    let evt;
+    try {
+      evt = JSON.parse(s);
+    } catch {
+      log(`[trigger] 无法解析事件行: ${s.slice(0, 200)}`);
+      return;
+    }
+    let minuteToken;
+    try { minuteToken = normalizeMinuteToken(evt.minute_token); }
+    catch { return; }
+    const eventId = evt.event_id;
+    if (!minuteToken || !eventId) return;
+    const { fresh } = recordTriggerEvent(db, {
+      eventKey: MINUTES_EVENT_KEY,
+      eventId,
+      dedupeKey: `minutes:${minuteToken}`,
+      payloadJson: s,
+      ts: now(),
+    });
+    if (!fresh) return;
+    try {
+      const job = launcher.submit({
+        templateId: "meeting_to_task",
+        // owner_id（事件若带）透传为确认人；缺席时由 onActionsReady 侧反查/兜底
+        params: { minute_token: minuteToken, ...(evt.owner_id ? { host_open_id: evt.owner_id } : {}) },
+        title: `[自动] ${evt.title ?? minuteToken}`,
+        readPrincipal: { source: "minutes_event", privateDataAuthorized: true },
+      });
+      bindTriggerJob(db, eventId, job.id);
+      log(`[trigger] 妙记 ${minuteToken} → job ${job.id}`);
+    } catch (e) {
+      // 补偿：撤销 dedupe 墓碑。否则该妙记被 event_id/dedupe_key 双 UNIQUE 永久封死
+      // （backfill 同样被挡），一次瞬时建 job 失败 = 该会议纪要永远不再触发，零告警。
+      try {
+        releaseTriggerEvent(db, eventId);
+        log(`[trigger] 建 job 失败，已释放墓碑待重试 minute=${minuteToken}: ${e?.message ?? e}`);
+      } catch (releaseErr) {
+        log(`[trigger] 建 job 失败且墓碑释放失败（该妙记将被封死，需人工处理）minute=${minuteToken}: ${e?.message ?? e} / ${releaseErr?.message ?? releaseErr}`);
+      }
+    }
+  }
+
+  function run() {
+    if (stopped) return;
+    const args = [];
+    if (profile) args.push("--profile", profile);
+    args.push("event", "consume", MINUTES_EVENT_KEY, "--as", "user", "--quiet");
+    // stdin 必须保活：event consume 把 stdin EOF 当退出信号（同 gateway consumer 的坑）
+    child = spawnFn(larkCli, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let buf = "";
+    child.stdout?.on?.("data", (d) => {
+      buf += d.toString("utf8");
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        handleLine(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+      }
+    });
+    child.stderr?.on?.("data", (d) => log(`[trigger-stderr] ${String(d).trimEnd()}`));
+    child.on?.("error", (e) => log(`[trigger] spawn 失败: ${e}`));
+    child.on?.("close", (code) => {
+      if (stopped) return;
+      log(`[trigger] consumer 退出(code=${code})，${restartDelayMs}ms 后重启`);
+      timer = setTimeout(run, restartDelayMs);
+      if (timer.unref) timer.unref();
+    });
+  }
+
+  run();
+  return {
+    handleLine,
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      try {
+        child?.kill?.("SIGTERM");
+      } catch {
+        /* 已退出 */
+      }
+    },
+  };
+}

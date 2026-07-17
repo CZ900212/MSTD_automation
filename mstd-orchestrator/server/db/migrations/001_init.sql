@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT,
   avatar TEXT,
   role TEXT NOT NULL DEFAULT 'user',
-  created_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS orch_jobs (
@@ -13,24 +13,43 @@ CREATE TABLE IF NOT EXISTS orch_jobs (
   title TEXT,
   params_json TEXT,
   status TEXT NOT NULL,
-  created_by TEXT,
+  created_by TEXT REFERENCES users(id),
   thread_ref TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approval_tokens (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT UNIQUE NOT NULL,
+  job_id TEXT NOT NULL,
+  issued_to_open_id TEXT NOT NULL,
+  issued_at BIGINT NOT NULL,
+  expires_at BIGINT NOT NULL,
+  used_at BIGINT
+);
+
+CREATE TABLE IF NOT EXISTS auth_challenges (
+  state TEXT PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  redirect_after TEXT,
+  created_at BIGINT NOT NULL,
+  expires_at BIGINT NOT NULL,
+  consumed_at BIGINT
 );
 
 CREATE TABLE IF NOT EXISTS job_events (
   id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL,
+  job_id TEXT NOT NULL REFERENCES orch_jobs(id),
   phase TEXT NOT NULL,
   seq INTEGER NOT NULL,
   type TEXT NOT NULL,
   payload_json TEXT,
-  ts INTEGER NOT NULL
+  ts BIGINT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS job_draft (
-  job_id TEXT PRIMARY KEY,
+  job_id TEXT PRIMARY KEY REFERENCES orch_jobs(id),
   card_text TEXT,
   items_json TEXT,
   action_set_json TEXT,
@@ -39,20 +58,20 @@ CREATE TABLE IF NOT EXISTS job_draft (
 
 CREATE TABLE IF NOT EXISTS decisions (
   id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL,
+  job_id TEXT NOT NULL REFERENCES orch_jobs(id),
   decided_by TEXT NOT NULL,
   decision TEXT NOT NULL,
   edited_items_json TEXT,
   approved_action_keys_json TEXT,
   payload_hash_at_decision TEXT,
-  approval_token_id TEXT,
+  approval_token_id TEXT REFERENCES approval_tokens(id),
   note TEXT,
-  ts INTEGER NOT NULL
+  ts BIGINT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS job_actions (
   id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL,
+  job_id TEXT NOT NULL REFERENCES orch_jobs(id),
   action_key TEXT NOT NULL,
   kind TEXT NOT NULL,
   target_open_id TEXT,
@@ -62,25 +81,7 @@ CREATE TABLE IF NOT EXISTS job_actions (
   status TEXT NOT NULL,
   external_ref TEXT,
   result_json TEXT,
-  ts INTEGER NOT NULL,
+  ordinal INTEGER,
+  ts BIGINT NOT NULL,
   UNIQUE (job_id, action_key)
-);
-
-CREATE TABLE IF NOT EXISTS auth_challenges (
-  state TEXT PRIMARY KEY,
-  nonce TEXT NOT NULL,
-  redirect_after TEXT,
-  created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  consumed_at INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS approval_tokens (
-  id TEXT PRIMARY KEY,
-  token_hash TEXT UNIQUE NOT NULL,
-  job_id TEXT NOT NULL,
-  issued_to_open_id TEXT NOT NULL,
-  issued_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  used_at INTEGER
 );

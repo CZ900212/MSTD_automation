@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "identity": "user",
+  "data": {
+    "task": {
+      "agent_task_status": 1,
+      "completed_at": "0",
+      "guid": "task-guid-fixture",
+      "status": "todo",
+      "summary": "Disposable completion probe"
+    }
+  }
+}
