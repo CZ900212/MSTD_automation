@@ -45,7 +45,10 @@ export function createEventBuffer(db, { flushIntervalMs = 1000, maxBatch = 200, 
       releaseDrainedSeqs();
       return;
     }
-    const batch = pending.splice(0, pending.length);
+    // 先写库成功再从 pending 移除：反过来 DB 异常直接丢事件。
+    // 且必须 try/catch——flush 也跑在 setInterval 回调里，异常即 uncaughtException
+    // 崩掉整个 daemon（全仓无兜底处理器）；失败保留 pending 待下一轮重试。
+    const batch = pending.slice(0, pending.length);
     const stmt = db.prepare(
       "INSERT INTO job_events (id, job_id, phase, seq, type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?)"
     );
@@ -54,7 +57,13 @@ export function createEventBuffer(db, { flushIntervalMs = 1000, maxBatch = 200, 
         stmt.run(randomUUID(), r.jobId, r.phase, r.seq, r.type, r.payloadJson, r.ts);
       }
     });
-    tx(batch);
+    try {
+      tx(batch);
+    } catch (e) {
+      console.error(`[event-buffer] flush 失败（保留 ${batch.length} 条待重试）: ${e?.message ?? e}`);
+      return;
+    }
+    pending.splice(0, batch.length);
     releaseDrainedSeqs();
   }
 

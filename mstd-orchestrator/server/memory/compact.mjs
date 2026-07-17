@@ -18,7 +18,24 @@ export function createCompactor({ caller, store, thresholdTokens = 60_000, keepR
   if (typeof store?.memoryTranscript !== "function") {
     throw new Error("createCompactor: store.memoryTranscript 安全接口必填");
   }
+  if (typeof store?.compactMessages !== "function") {
+    throw new Error("createCompactor: store.compactMessages 原子接口必填");
+  }
+  // 会话级单飞：active 路径 maintenance 在 actor 队列外触发，同会话并行压缩会产出
+  // 永久重复摘要污染每次重放。in-flight 期间的重复触发直接跳过（下回合自然重试）。
+  const inFlight = new Set();
+
   async function maybeCompact({ session, sessionKey, brain, snapshot = null }) {
+    if (inFlight.has(session.id)) return { compacted: false, reason: "in_flight" };
+    inFlight.add(session.id);
+    try {
+      return await compactOnce({ session, sessionKey, brain, snapshot });
+    } finally {
+      inFlight.delete(session.id);
+    }
+  }
+
+  async function compactOnce({ session, sessionKey, brain, snapshot }) {
     const transcript = store.memoryTranscript(session.id, { limit: 1000 });
     const compactable = transcript.filter((m) => m.role !== "system");
     if (!shouldCompact(estimateTokens(compactable), thresholdTokens)) return { compacted: false };
@@ -44,10 +61,18 @@ export function createCompactor({ caller, store, thresholdTokens = 60_000, keepR
       system: "你是会话压缩器。把下面的对话历史压缩成要点摘要（保留人名、时间、决定、未决事项），200 字以内，直接输出摘要。",
       messages: [{ role: "user", content: earlyText }],
     });
+    // 模型返回空串时删真留空 = 历史静默丢失；跳过本次压缩，下回合重试
+    if (typeof out?.text !== "string" || !out.text.trim()) {
+      log(`[compact] 摘要为空，跳过压缩 session=${sessionKey}`);
+      return { compacted: false, reason: "empty_summary" };
+    }
 
-    // ③ 标记压缩点：早期消息软删，摘要以 system 消息插入最前
-    for (const m of early) store.softDelete(m.id);
-    store.append(session.id, { role: "system", content: `〔压缩摘要〕${out.text}`, ts: (early[0]?.ts ?? 0) });
+    // ③ 标记压缩点：软删 + 摘要插入同一事务（中途崩溃不丢历史）
+    store.compactMessages(session.id, {
+      messageIds: early.map((m) => m.id),
+      summary: `〔压缩摘要〕${out.text}`,
+      ts: (early[0]?.ts ?? 0),
+    });
     return { compacted: true, summarized: early.length };
   }
 

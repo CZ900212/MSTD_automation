@@ -294,6 +294,61 @@ describe("wireGateway 管道装配", () => {
     }
   });
 
+  it("入站 at-most-once 收口：debounce 窗口内'崩溃'的消息在下一进程 replayUnhandled 找回", async () => {
+    const turns = [];
+    const { db, children, wired } = setup({ handleTurn: (t) => { turns.push(t); } });
+    try {
+      // 消息 ack 落库（handled=0 + replay_json），但"崩溃"于 debounce flush 之前
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({ eventId: "crash-1", text: "崩溃窗口消息" })) + "\n"));
+      const row = db.prepare("SELECT handled, replay_json FROM inbox_events WHERE event_id='crash-1'").get();
+      expect(row.handled).toBe(0);
+      expect(JSON.parse(row.replay_json)).toMatchObject({ eventId: "crash-1", content: "崩溃窗口消息" });
+      wired.consumer.stop();   // 模拟进程死亡：debouncer 定时器从未 flush
+      vi.clearAllTimers();
+
+      // "重启"：同一 db 重新装配，boot 回放找回消息并走完整管道
+      const turns2 = [];
+      const spawnFn2 = vi.fn(() => fakeChild());
+      const wired2 = wireGateway({
+        db,
+        config: { botOpenId: "ou_bot", larkCliPath: "/fake/lark-cli" },
+        spawnFn: spawnFn2,
+        handleTurn: (t) => { turns2.push(t); },
+        actors: { enqueue: vi.fn((_, cb) => cb()) },
+        log: vi.fn(),
+      });
+      expect(wired2.replayUnhandled()).toEqual({ replayed: 1 });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(turns2).toHaveLength(1);
+      expect(turns2[0].items[0].content).toBe("崩溃窗口消息");
+      // flush 后置 handled，二次回放不重复
+      expect(db.prepare("SELECT handled FROM inbox_events WHERE event_id='crash-1'").get().handled).toBe(1);
+      expect(wired2.replayUnhandled()).toEqual({ replayed: 0 });
+      wired2.consumer.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("正常路径的入站事件在 flush/observe/拒绝三个终点都置 handled，不留回放残留", async () => {
+    const { db, children, wired } = setup({ handleTurn: vi.fn() });
+    try {
+      db.prepare("INSERT INTO group_policies (chat_id, policy, hourly_proactive_limit, updated_at) VALUES ('oc_1','mention_only',4,0)").run();
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({ eventId: "h-p2p" })) + "\n"));                       // flush 终点
+      children[0].stdout.emit("data", Buffer.from(JSON.stringify(rawMsg({ eventId: "h-observe", chatType: "group", text: "群里闲聊一句" })) + "\n")); // observe 终点
+      await vi.advanceTimersByTimeAsync(4000);
+      const handled = Object.fromEntries(
+        db.prepare("SELECT event_id, handled FROM inbox_events").all().map((r) => [r.event_id, r.handled])
+      );
+      expect(handled["h-p2p"]).toBe(1);
+      expect(handled["h-observe"]).toBe(1);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM inbox_events WHERE replay_json IS NOT NULL").get().n).toBe(0);
+    } finally {
+      wired.consumer.stop();
+      vi.useRealTimers();
+    }
+  });
+
   // ---- Task 5 C2: 生产装配链（env aliases → loadServerConfig → wireGateway → 扁平事件）----
   it("C2 装配链：旧名 @ 经 config/wire 转发在群里 addressed 且 content 规范化；@小达人 只 observe", async () => {
     vi.useFakeTimers();

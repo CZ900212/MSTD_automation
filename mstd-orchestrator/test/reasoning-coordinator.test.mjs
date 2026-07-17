@@ -377,6 +377,36 @@ describe("reasoning coordinator", () => {
     expect(nextLease).toBeTruthy();
   });
 
+  it("run 失败时运行期间新到达的 pending input 由 follow-up run 搬运，不随失败陪葬", async () => {
+    const deliverTerminal = vi.fn(async () => ({ messageId: "om_fail_carry" }));
+    let firstRunId = null;
+    brain.turn = vi.fn(async ({ taskId, runId }) => {
+      if (!firstRunId) {
+        firstRunId = runId;
+        // 模拟：run 执行中后台结果经 attachOrStart 落 pending input，随后 reasoner 崩溃
+        runStore.attachInput({
+          runId, taskId, originKind: "background", originId: "bg-carry-1",
+          sessionVersion: 0, brief: "后台检索结果已就绪",
+        });
+        throw new Error("reasoner crashed");
+      }
+      return { finalText: "带着后台结果完成" };
+    });
+    const c = makeCoordinator({ deliverTerminal, log: vi.fn() });
+    await c.applyDecision({
+      session,
+      sessionKey: "feishu:p2p:ou_a",
+      decision: { action: "spawn_new", title: "查报价", brief: "查", closure: "required", reason_code: "promise" },
+    });
+    await vi.waitFor(() => expect(brain.turn).toHaveBeenCalledTimes(2));
+    // 修复前：失败路径不搬运 pendingInputs，后台结果永久丢失
+    expect(brain.turn.mock.calls[1][0].brief).toContain("后台检索结果已就绪");
+    await vi.waitFor(() => {
+      const input = db.prepare("SELECT status FROM reasoning_run_inputs WHERE origin_id='bg-carry-1'").get();
+      expect(input.status).toBe("delivered");
+    });
+  });
+
   it("renders no-lifecycle finalText through Responder and never sends the raw reasoner text", async () => {
     const deliverTerminal = vi.fn(async () => ({ messageId: "om_rendered" }));
     const responder = {

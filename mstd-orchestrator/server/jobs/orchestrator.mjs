@@ -40,8 +40,14 @@ export async function runReadonlyPhase({ db, startPi, bus, buffer, registry, job
     return failIfRunning(err, "params_invalid");
   }
 
-  const workdir = jobWorkdir(join(piOptions.cwd ?? process.cwd(), "out"), job.id);
-  mkdirSync(workdir, { recursive: true });
+  // workdir 创建同样走 failed 终态：磁盘满/权限错时不得把 job 永久卡在 running_readonly 且吞错
+  let workdir;
+  try {
+    workdir = jobWorkdir(join(piOptions.cwd ?? process.cwd(), "out"), job.id);
+    mkdirSync(workdir, { recursive: true });
+  } catch (err) {
+    return failIfRunning(err, "workdir_failed");
+  }
 
   const client = startPi({
     provider: piOptions.provider ?? "cz-gpt",

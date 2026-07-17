@@ -315,6 +315,17 @@ export function createSessionStore(db) {
     db.prepare("UPDATE agent_messages SET active = 0 WHERE id = ?").run(messageId);
   }
 
+  // 压缩必须原子：softDelete×N 与摘要 append 之间崩溃会"删真留空"，早期历史静默丢失。
+  const compactTx = db.transaction((sessionId, messageIds, summaryMsg) => {
+    for (const id of messageIds) softDelete(id);
+    return append(sessionId, summaryMsg);
+  });
+
+  function compactMessages(sessionId, { messageIds, summary, ts }) {
+    if (typeof summary !== "string" || !summary.trim()) throw new Error("compactMessages: 摘要为空，拒绝删除历史");
+    return compactTx(sessionId, messageIds ?? [], { role: "system", content: summary, ts });
+  }
+
   function bumpVersion(sessionId) {
     db.prepare("UPDATE agent_sessions SET version = version + 1 WHERE id = ?").run(sessionId);
     return db.prepare("SELECT version FROM agent_sessions WHERE id = ?").get(sessionId).version;
@@ -361,6 +372,6 @@ export function createSessionStore(db) {
   return {
     getOrCreate, append, transcript, recent, promptRecent, memoryTranscript, replaySet,
     quarantine, readQuarantine, appendSecurityTombstone,
-    softDelete, bumpVersion, touch, peekMemoryNudge, claimMemoryNudge,
+    softDelete, compactMessages, bumpVersion, touch, peekMemoryNudge, claimMemoryNudge,
   };
 }

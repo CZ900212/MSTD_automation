@@ -5,6 +5,7 @@ export function createInbox(db, { botOpenId, botName = "", botNames = null, norm
   const names = botNames ?? (botName ? [botName] : []);
   const inboxCols = new Set(db.prepare("PRAGMA table_info(inbox_events)").all().map((c) => c.name));
   const hasPlatformCols = inboxCols.has("platform_message_id");
+  const hasHandledCols = inboxCols.has("handled");
 
   // C2：mention 检测与文本替换同源（normalize.mjs 单趟 replace）。
   // normalizer 异常时 content 回退原文，mentionsBot 只信结构化 bot open_id——
@@ -118,11 +119,15 @@ export function createInbox(db, { botOpenId, botName = "", botNames = null, norm
     const rawSha256 = evt.kind === "message"
       ? createHash("sha256").update(raw).digest("hex")
       : null;
+    // at-most-once 缺口收口：message 事件先落 handled=0 + 全量 replay_json（lark-cli 已 ack，
+    // debounce 窗口内崩溃靠启动回放兜底）。敏感事件不存回放体（fail-safe 不回放）；
+    // 非 message（card_action/minutes）紧跟同步 handleTurn，回放反而会双执行，直接 handled=1。
+    const replayable = evt.kind === "message" && !sensitive;
     if (hasPlatformCols) {
       db.prepare(
         `INSERT INTO inbox_events (event_id, chat_id, content_md5, raw_content, raw_sha256, ts,
-           platform_message_id, sender_app_id, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING`
+           platform_message_id, sender_app_id, source${hasHandledCols ? ", handled, replay_json" : ""})
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?${hasHandledCols ? ", ?, ?" : ""}) ON CONFLICT (event_id) DO NOTHING`
       ).run(
         evt.eventId,
         evt.chatId ?? null,
@@ -132,7 +137,8 @@ export function createInbox(db, { botOpenId, botName = "", botNames = null, norm
         now,
         evt.platformMessageId ?? null,
         evt.senderAppId ?? null,
-        evt.source ?? "feishu"
+        evt.source ?? "feishu",
+        ...(hasHandledCols ? [replayable ? 0 : 1, replayable ? JSON.stringify(evt) : null] : [])
       );
     } else {
       db.prepare(
@@ -149,9 +155,35 @@ export function createInbox(db, { botOpenId, botName = "", botNames = null, norm
     }
   }
 
+  // 事件已交付处理（进入 actor 队列/落 observed/被 admit 拒绝）：置 handled 并清回放体
+  function markHandled(eventIds) {
+    if (!hasHandledCols) return;
+    const ids = (Array.isArray(eventIds) ? eventIds : [eventIds]).filter(Boolean);
+    if (!ids.length) return;
+    db.prepare(
+      `UPDATE inbox_events SET handled = 1, replay_json = NULL WHERE event_id IN (${ids.map(() => "?").join(",")})`
+    ).run(...ids);
+  }
+
+  // 启动回放：上一进程 ack 后未处理完的 message 事件。无回放体的只能收口不回放。
+  function listUnhandled() {
+    if (!hasHandledCols) return [];
+    const rows = db.prepare("SELECT event_id, replay_json FROM inbox_events WHERE handled = 0 ORDER BY ts").all();
+    const replayable = [];
+    const dead = [];
+    for (const row of rows) {
+      let evt = null;
+      try { evt = row.replay_json ? JSON.parse(row.replay_json) : null; } catch { evt = null; }
+      if (evt) replayable.push(evt);
+      else dead.push(row.event_id);
+    }
+    if (dead.length) markHandled(dead);
+    return replayable;
+  }
+
   function recordVerdict(eventId, verdict) {
     db.prepare("UPDATE inbox_events SET verdict = ? WHERE event_id = ?").run(JSON.stringify(verdict), eventId);
   }
 
-  return { normalize, isDuplicate, markSeen, recordVerdict };
+  return { normalize, isDuplicate, markSeen, markHandled, listUnhandled, recordVerdict };
 }

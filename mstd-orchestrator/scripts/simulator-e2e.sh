@@ -73,22 +73,36 @@ if [[ "$TRANSPORT" == "bot" ]]; then
 fi
 
 SCENARIO="${SIM_SCENARIO:-simulator/scenarios/01-routing-core.yaml}"
-npm run -s sim:run -- --scenario "$SCENARIO" --transport "$TRANSPORT"
-
-# Fail on skip/pending markers in latest report
-LATEST="$(ls -1dt simulator-results/*/ 2>/dev/null | head -1 || true)"
-if [[ -z "$LATEST" ]]; then
-  echo "[sim-e2e] no report directory" >&2
+# 按本次 run 的 runId 定位结果目录——"最新目录"启发式必然命中 locks/（其 mtime 恒最新），
+# 会让下面全部门禁变成永久 no-op / 永不可达。
+SIM_OUT="$(npm run -s sim:run -- --scenario "$SCENARIO" --transport "$TRANSPORT")" || SIM_STATUS=$?
+echo "$SIM_OUT"
+RESULTS="$(node -e '
+  try {
+    const j = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    process.stdout.write(j.results ?? "");
+  } catch { /* empty */ }
+' <<<"$SIM_OUT")"
+if [[ -z "$RESULTS" || ! -f "$RESULTS/report.json" ]]; then
+  echo "[sim-e2e] no report for this run (results=$RESULTS)" >&2
   exit 5
 fi
-if grep -Eiq 'pending|todo|skip' "${LATEST}report.json" 2>/dev/null; then
+if grep -Eiq 'pending|todo|skip' "$RESULTS/report.json"; then
   echo "[sim-e2e] report contains skip/pending/todo — fail" >&2
   exit 6
 fi
-if ! grep -q '"status": "passed"' "${LATEST}report.json" 2>/dev/null; then
-  # allow failed reports to surface as non-zero from sim:run already
-  echo "[sim-e2e] report not passed: $LATEST" >&2
+# 顶层 status 精读（grep 会误匹配嵌套的 grade.status）
+TOP_STATUS="$(node -e '
+  const j = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  process.stdout.write(String(j.status ?? ""));
+' "$RESULTS/report.json")"
+if [[ "$TOP_STATUS" != "passed" ]]; then
+  echo "[sim-e2e] report not passed (status=$TOP_STATUS): $RESULTS" >&2
   exit 7
 fi
+if [[ "${SIM_STATUS:-0}" != 0 ]]; then
+  echo "[sim-e2e] sim:run exited ${SIM_STATUS} — fail" >&2
+  exit "${SIM_STATUS}"
+fi
 
-echo "[sim-e2e] ok report=$LATEST"
+echo "[sim-e2e] ok report=$RESULTS"

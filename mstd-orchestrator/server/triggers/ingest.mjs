@@ -11,3 +11,8 @@ export function recordTriggerEvent(db, { eventKey, eventId, dedupeKey, payloadJs
 export function bindTriggerJob(db, eventId, jobId) {
   db.prepare("UPDATE orch_events SET job_id = ? WHERE event_id = ?").run(jobId, eventId);
 }
+
+// 建 job 失败的补偿：只删尚未绑定 job 的墓碑，避免把已成功事件的去重记录误删
+export function releaseTriggerEvent(db, eventId) {
+  db.prepare("DELETE FROM orch_events WHERE event_id = ? AND job_id IS NULL").run(eventId);
+}

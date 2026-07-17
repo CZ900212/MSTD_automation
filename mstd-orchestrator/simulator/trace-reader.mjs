@@ -73,6 +73,13 @@ function safeArr(s) {
 export function actualRouteFromTrace(trace) {
   if (!trace) return "unknown";
   const action = trace.decision_action;
+  // active 流水线词表：dispatcher v2 决策回映 v1 标签（grader 对 v2 场景再映射回 v2），
+  // responder_* 状态作 dispatcher 未回写时的兜底——否则 active daemon 下评测全线 unknown。
+  if (action === "no_reasoning") return trace.ack_message_id ? "quick_reply" : "no_reply";
+  if (action === "spawn_new") return "escalate";
+  if (action === "attach_existing") return "steer";
+  if (trace.status === "responder_sent") return "quick_reply";
+  if (trace.status === "responder_no_reply") return "no_reply";
   if (action === "quick_reply" || trace.status === "quick_reply") return "quick_reply";
   if (action === "no_reply" || trace.status === "no_reply") return "no_reply";
   if (action === "steer" || trace.status === "steer") return "steer";

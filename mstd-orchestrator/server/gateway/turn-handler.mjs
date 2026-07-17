@@ -251,6 +251,7 @@ export function createTurnHandler({
         sessionKey,
         items,
         mode,
+        traceId: turn.traceId ?? null,
       });
       scheduleMaintenanceOutsideActor({ session, sessionKey, snapshot, emitEvent });
       return { action: "no_reply", dispatchId: dispatch.id };
@@ -306,6 +307,7 @@ export function createTurnHandler({
       sessionKey,
       items,
       mode,
+      traceId: turn.traceId ?? null,
     });
     scheduleMaintenanceOutsideActor({ session, sessionKey, snapshot, emitEvent });
     return { action: "reply", dispatchId: dispatch.id, messageId };

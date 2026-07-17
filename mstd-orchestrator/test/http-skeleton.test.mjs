@@ -19,7 +19,7 @@ describe("http skeleton", () => {
   it("GET /api/health -> 200 { ok:true }", async () => {
     const res = await request(app()).get("/api/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true });
+    expect(res.body).toEqual({ ok: true, pid: process.pid });   // pid = 启动脚本的进程身份信号
   });
   it("GET /api/ready is 503 until the Lark profile health check is ready", async () => {
     const res = await request(app()).get("/api/ready");

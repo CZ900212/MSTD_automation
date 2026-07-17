@@ -150,6 +150,24 @@ export function createTurnTrace(db, { now = Date.now, pipeline = "legacy" } = {}
       return;
     }
 
+    // active 流水线的调度器决策（v2 词表：no_reasoning/spawn_new/attach_existing）。
+    // 状态置 decided；responder 首答与否由 ack_* 列区分，评测端据此还原 v1/v2 路由。
+    if (type === "dispatcher_decision") {
+      const traceId = resolveTraceId(event);
+      if (!traceId) return;
+      updateDecision.run(
+        event.action ?? null,
+        event.action ?? null,
+        null,
+        null,
+        null,
+        "decided",
+        t,
+        traceId
+      );
+      return;
+    }
+
     if (type === "business_turn_admitted") {
       const traceId = resolveTraceId(event);
       if (!traceId || !event.turnId) return;

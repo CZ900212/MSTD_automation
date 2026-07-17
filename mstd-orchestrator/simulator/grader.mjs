@@ -53,7 +53,7 @@ export function createGrader({ db, waitMs = 0, sleep = (ms) => new Promise((r) =
         }
         continue;
       }
-      if (!trace.status || !["terminal", "quick_reply", "no_reply", "observe_only", "abandoned", "rate_limited", "steer", "escalate", "decided", "business_admitted"].includes(trace.status)) {
+      if (!trace.status || !["terminal", "quick_reply", "no_reply", "observe_only", "abandoned", "rate_limited", "steer", "escalate", "decided", "business_admitted", "responder_sent", "responder_no_reply"].includes(trace.status)) {
         // incomplete is fail-closed unless still in-flight after wait
         if (!trace.decision_action && !trace.terminal_message_id) {
           critical.push({ turnId: rec.turnId, error: "no_terminal", expected: rec.expected.route });

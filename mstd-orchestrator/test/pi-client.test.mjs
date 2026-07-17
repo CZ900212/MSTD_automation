@@ -78,7 +78,7 @@ describe("startPi 运行时（fake spawn）", () => {
     await expect(p).resolves.toBe("终稿");
   });
 
-  it("prompt() 超时 reject;close() 在子进程不退时 3s 后硬杀", async () => {
+  it("prompt() 超时 reject;close() 先礼后 SIGTERM、宽限升级 SIGKILL，且只在真实退出后归还", async () => {
     vi.useFakeTimers();
     const child = fakePiChild();
     const client = startPi({ spawnFn: () => child });
@@ -86,10 +86,20 @@ describe("startPi 运行时（fake spawn）", () => {
     vi.advanceTimersByTime(1000);
     await expect(p).rejects.toThrow(/timeout/);
     const closing = client.close();
-    expect(child.stdin.end).toHaveBeenCalled();   // 先礼:stdin EOF 优雅关停
+    expect(child.stdin.end).toHaveBeenCalled();               // 先礼:stdin EOF 优雅关停
     vi.advanceTimersByTime(3000);
-    expect(child.kill).toHaveBeenCalled();        // 后兵:3s 不退硬杀
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");       // 3s 不退 SIGTERM
+    vi.advanceTimersByTime(3000);
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");       // 再 3s 不退升级 SIGKILL
+    // 修复前：SIGTERM 后立刻 resolve，挂死 pi 永久泄漏且并发额度提前释放。
+    // 现在只有真实 close 事件才归还。
+    let settled = false;
+    void closing.then(() => { settled = true; });
+    await Promise.resolve(); await Promise.resolve();
+    expect(settled).toBe(false);
+    child.emit("close", null, "SIGKILL");                     // SIGKILL 不可捕获，close 必达
     await expect(closing).resolves.toBeUndefined();
+    vi.useRealTimers();
   });
 
   it.each(["exit", "close"])("%s immediately rejects a pending runJob and future calls", async (event) => {

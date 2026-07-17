@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { createTurnTrace } from "../server/gateway/turn-trace.mjs";
+import { actualRouteFromTrace } from "../simulator/trace-reader.mjs";
 
 describe("createTurnTrace", () => {
   it("freezes input IDs and updates decision/ack/terminal on same row", () => {
@@ -121,5 +122,19 @@ describe("createTurnTrace", () => {
       terminal_message_id: null,
       status: "responder_sent",
     });
+
+    // active 流水线可判分：dispatcher 决策带 traceId 回写 decision_*，
+    // trace-reader 据此还原 v1 路由（grader 对 v2 场景再做 v1→v2 映射）
+    expect(actualRouteFromTrace(trace.byTraceId(traceId))).toBe("quick_reply"); // responder 兜底
+    t = 1400;
+    trace.record({ type: "dispatcher_decision", traceId, action: "no_reasoning", dispatchId: "dispatch-1" });
+    let row = trace.byTraceId(traceId);
+    expect(row.decision_action).toBe("no_reasoning");
+    expect(actualRouteFromTrace(row)).toBe("quick_reply");   // 已首答 → reply 语义
+    trace.record({ type: "dispatcher_decision", traceId, action: "spawn_new", dispatchId: "dispatch-1" });
+    expect(actualRouteFromTrace(trace.byTraceId(traceId))).toBe("escalate");  // v2 spawn_new
+    // 无 traceId 的决策事件（legacy coordinator 内部 emit）静默忽略，不误写他人 trace
+    trace.record({ type: "dispatcher_decision", action: "attach_existing", dispatchId: "dispatch-2" });
+    expect(actualRouteFromTrace(trace.byTraceId(traceId))).toBe("escalate");
   });
 });

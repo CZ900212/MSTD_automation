@@ -46,9 +46,13 @@ export function wireGateway({
     return evt.senderName;
   }
 
-  function ingestNormalized(evt) {
-    if (!evt || inbox.isDuplicate(evt)) return { accepted: false, reason: "duplicate_or_null" };
-    inbox.markSeen(evt);
+  function ingestNormalized(evt, { replay = false } = {}) {
+    if (!evt) return { accepted: false, reason: "duplicate_or_null" };
+    // 回放路径：event_id 必然已在 inbox_events（就是靠它找回来的），跳过去重与再落库
+    if (!replay) {
+      if (inbox.isDuplicate(evt)) return { accepted: false, reason: "duplicate_or_null" };
+      inbox.markSeen(evt);
+    }
     if (evt.kind !== "message") {
       handleTurn({ kind: evt.kind, evt });
       return { accepted: true, kind: evt.kind };
@@ -57,7 +61,10 @@ export function wireGateway({
     const verdict = admitter.admit(evt);
     inbox.recordVerdict(evt.eventId, { ...verdict, gate: "admit", elapsedMs: Date.now() - t0 });
     const shouldObserve = !verdict.ok && verdict.reason === "bot_not_mentioned_observe";
-    if (!verdict.ok && !shouldObserve) return { accepted: false, reason: verdict.reason, verdict };
+    if (!verdict.ok && !shouldObserve) {
+      inbox.markHandled?.(evt.eventId);   // admit 拒绝即终态，不留回放残留
+      return { accepted: false, reason: verdict.reason, verdict };
+    }
 
     const senderName = resolveSenderName(evt);
     const enriched = { ...evt, senderName };
@@ -82,6 +89,7 @@ export function wireGateway({
         platformMessageId: evt.platformMessageId ?? null,
         ts: evt.ts,
       });
+      inbox.markHandled?.(evt.eventId);   // observed 已落库即终态
       return { accepted: true, observed: true, sessionKey };
     }
 
@@ -93,6 +101,8 @@ export function wireGateway({
     // batch key：同发送者合批；app 用 app_id，simulator 用 synthetic open id
     const batchIdentity = evt.senderOpenId ?? evt.senderAppId ?? "unknown";
     debouncer.push(`${sessionKey}|${batchIdentity}`, batched, (items, timing) => {
+      // flush 即交付边界：批次进入 actor 队列前置 handled，debounce 窗口崩溃由启动回放兜底
+      inbox.markHandled?.(items.map((item) => item.eventId));
       // observe_only 是会话级第三态（admit 按 chat policy 判定，同批必然同态），
       // 必须原样透传：折叠成 ambient 会让 turn-handler 的"绝不出站"门失效。
       const mode = items.some((item) => item.admittedMode === "observe_only")
@@ -165,6 +175,24 @@ export function wireGateway({
     return ingestNormalized(evt);
   }
 
+  // 启动回放：上一进程已 ack（lark-cli 不会重推）但死在 debounce 窗口内的消息。
+  // 走 replay 模式重进完整 admit/debounce 管道，flush 时照常置 handled。
+  function replayUnhandled() {
+    const events = inbox.listUnhandled?.() ?? [];
+    let replayed = 0;
+    for (const evt of events) {
+      try {
+        ingestNormalized(evt, { replay: true });
+        replayed += 1;
+      } catch (e) {
+        log(`[gateway] replay 失败 event=${evt?.eventId}: ${e?.message ?? e}`);
+        inbox.markHandled?.(evt?.eventId);   // 回放失败也收口，不无限重试
+      }
+    }
+    if (replayed) log(`[gateway] boot replay: ${replayed} 条未处理入站事件重新入管道`);
+    return { replayed };
+  }
+
   let consumer = null;
   if (startConsumer && spawnFn) {
     consumer = createGatewayConsumer({
@@ -177,5 +205,5 @@ export function wireGateway({
     consumer.start();
   }
 
-  return { consumer, store, actors, inbox, admitter, ingestRaw, ingestNormalized, debouncer };
+  return { consumer, store, actors, inbox, admitter, ingestRaw, ingestNormalized, replayUnhandled, debouncer };
 }

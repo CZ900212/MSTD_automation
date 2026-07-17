@@ -51,6 +51,12 @@ describe("parseResponderOutput", () => {
   ])("rejects invalid output %s", (raw) => {
     expect(() => parseResponderOutput(raw)).toThrow();
   });
+
+  it("正文含代码块合法（提示词自宣支持）——围栏守卫只拦整体包裹", () => {
+    const withFence = JSON.stringify({ action: "reply", text: "示例：\n```js\nconsole.log(1)\n```\n试试看" });
+    expect(parseResponderOutput(withFence)).toMatchObject({ action: "reply" });
+    expect(parseResponderOutput(withFence).text).toContain("```js");
+  });
 });
 
 describe("createResponder.answerTurn", () => {

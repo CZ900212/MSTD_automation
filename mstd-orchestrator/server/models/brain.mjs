@@ -298,8 +298,11 @@ export function createBrain({
   }
 
   // 池满时的 LRU 驱逐：回收最久未用的空闲 Pi(busy 的绝不动)。
-  // recycle 自带 busy 防护与幂等,这里只挑受害者。
+  // 在途驱逐记账：驱逐→permit 归还要等 close 完成（最长数秒），等位循环每 500ms
+  // 连环驱逐会在 burst-at-cap 下误杀整个热池——有在途驱逐时只等待，不再挑新受害者。
+  let evictionsInFlight = 0;
   function evictIdleForSlot() {
+    if (evictionsInFlight > 0) return;
     let victimKey = null;
     let victimAt = Infinity;
     for (const [key, entry] of pool) {
@@ -307,7 +310,12 @@ export function createBrain({
       const at = entry.lastUsedAt ?? 0;
       if (at < victimAt) { victimAt = at; victimKey = key; }
     }
-    if (victimKey) recycle(victimKey);
+    if (!victimKey) return;
+    const entry = pool.get(victimKey);
+    if (!entry || entry.busy) return;
+    pool.delete(victimKey);
+    evictionsInFlight += 1;
+    void closeEntryQuietly(entry, "idle-recycle").finally(() => { evictionsInFlight -= 1; });
   }
 
   function resolveTarget(sessionKeyOrIdentity, opts = {}) {

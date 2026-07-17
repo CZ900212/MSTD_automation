@@ -28,6 +28,32 @@ describe("上下文压缩 + flush + nudge", () => {
       });
     });
 
+    it("模型返回空摘要 → 跳过压缩，不删任何历史（防删真留空）", async () => {
+      compactor = createCompactor({
+        caller: { call: vi.fn(async () => ({ text: "   ", usage: null })) },
+        store, thresholdTokens: 10, keepRecent: 20, log: vi.fn(),
+      });
+      const brain = { turn: vi.fn(async () => ({ finalText: "", events: [] })), isBusy: () => false };
+      const r = await compactor.maybeCompact({ session, sessionKey: "feishu:p2p:ou_a", brain });
+      expect(r).toMatchObject({ compacted: false, reason: "empty_summary" });
+      expect(store.transcript(session.id)).toHaveLength(30);   // 一条没删
+    });
+
+    it("同会话并行触发只压一次（单飞守卫，防重复摘要污染重放）", async () => {
+      let releaseFlush;
+      const brain = {
+        turn: vi.fn(() => new Promise((r) => { releaseFlush = () => r({ finalText: "", events: [] }); })),
+        isBusy: () => false,
+      };
+      const p1 = compactor.maybeCompact({ session, sessionKey: "feishu:p2p:ou_a", brain });
+      const p2 = compactor.maybeCompact({ session, sessionKey: "feishu:p2p:ou_a", brain });
+      await expect(p2).resolves.toMatchObject({ compacted: false, reason: "in_flight" });
+      releaseFlush();
+      await expect(p1).resolves.toMatchObject({ compacted: true });
+      const summaries = store.transcript(session.id).filter((m) => m.role === "system");
+      expect(summaries).toHaveLength(1);   // 恰一条摘要
+    });
+
     it("flush 先于摘要；近 20 条原文保留；压缩点落 system 摘要", async () => {
       const brain = { turn: vi.fn(async () => { calls.push("flush"); return { finalText: "", events: [] }; }), isBusy: () => false };
       const r = await compactor.maybeCompact({ session, sessionKey: "feishu:p2p:ou_a", brain });

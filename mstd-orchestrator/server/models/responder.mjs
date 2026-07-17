@@ -70,9 +70,11 @@ function renderItems(items) {
 export function parseResponderOutput(text, { mode = null } = {}) {
   if (typeof text !== "string" || !text.trim()) throw new Error("empty responder output");
   const trimmed = text.trim();
-  // Reject fenced/mixed output — foreground contract is a single bare JSON object.
-  if (trimmed.startsWith("```") || /```/.test(trimmed)) {
-    throw new Error("fenced or mixed responder output");
+  // Reject fenced output — foreground contract is a single bare JSON object.
+  // 只拦"整体被围栏包裹"（startsWith）：提示词明确支持回复正文含代码块，
+  // JSON 字符串值内部的 ``` 是合法内容，不得整体判失败。
+  if (trimmed.startsWith("```")) {
+    throw new Error("fenced responder output");
   }
   const j = JSON.parse(trimmed);
   if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("bad responder schema");
@@ -96,8 +98,9 @@ export function parseResponderOutput(text, { mode = null } = {}) {
 export function parseProgressHandoffOutput(text) {
   if (typeof text !== "string" || !text.trim()) throw new Error("empty progress handoff output");
   const trimmed = text.trim();
-  if (trimmed.startsWith("```") || /```/.test(trimmed)) {
-    throw new Error("fenced or mixed progress handoff output");
+  // 同 parseResponderOutput：围栏守卫收窄到整体包裹；正文内代码块合法（提示词自宣支持）
+  if (trimmed.startsWith("```")) {
+    throw new Error("fenced progress handoff output");
   }
   let j;
   try {

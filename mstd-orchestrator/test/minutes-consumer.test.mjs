@@ -54,6 +54,30 @@ describe("minutes consumer", () => {
     c.stop();
   });
 
+  it("建 job 失败释放 dedupe 墓碑：同一妙记的下一次事件可重试（不再永久封死）", () => {
+    const db = freshDb();
+    let failFirst = true;
+    const submitted = [];
+    const launcher = {
+      submit: (o) => {
+        if (failFirst) { failFirst = false; throw new Error("瞬时故障"); }
+        submitted.push(o);
+        db.prepare(
+          "INSERT INTO orch_jobs (id, template_id, status, created_at, updated_at) VALUES ('job-retry','meeting_to_task','queued',1,1)"
+        ).run();
+        return { id: "job-retry" };
+      },
+    };
+    const c = startMinutesConsumer({ db, launcher, larkCli: "lark-cli", spawnFn: fakeSpawn, log: () => {} });
+    c.handleLine(JSON.stringify({ event_id: "e-fail", minute_token: "m9", title: "周会" }));
+    // 修复前：墓碑残留（job_id NULL），同 minute_token 永久不再触发
+    expect(db.prepare("SELECT COUNT(*) AS n FROM orch_events WHERE dedupe_key='minutes:m9'").get().n).toBe(0);
+    c.handleLine(JSON.stringify({ event_id: "e-retry", minute_token: "m9", title: "周会" }));
+    expect(submitted).toHaveLength(1);
+    expect(db.prepare("SELECT job_id FROM orch_events WHERE event_id='e-retry'").get().job_id).toBe("job-retry");
+    c.stop();
+  });
+
   it("非法 minute_token 在记录事件和启动 job 前被拒绝", () => {
     const db = freshDb();
     const submitted = [];

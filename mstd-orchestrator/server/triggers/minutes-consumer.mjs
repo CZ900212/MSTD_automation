@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { recordTriggerEvent, bindTriggerJob } from "./ingest.mjs";
+import { recordTriggerEvent, bindTriggerJob, releaseTriggerEvent } from "./ingest.mjs";
 import { normalizeMinuteToken } from "../safety/minute-token.mjs";
 
 export const MINUTES_EVENT_KEY = "minutes.minute.generated_v1";
@@ -56,7 +56,14 @@ export function startMinutesConsumer({
       bindTriggerJob(db, eventId, job.id);
       log(`[trigger] 妙记 ${minuteToken} → job ${job.id}`);
     } catch (e) {
-      log(`[trigger] 建 job 失败: ${e?.message ?? e}`);
+      // 补偿：撤销 dedupe 墓碑。否则该妙记被 event_id/dedupe_key 双 UNIQUE 永久封死
+      // （backfill 同样被挡），一次瞬时建 job 失败 = 该会议纪要永远不再触发，零告警。
+      try {
+        releaseTriggerEvent(db, eventId);
+        log(`[trigger] 建 job 失败，已释放墓碑待重试 minute=${minuteToken}: ${e?.message ?? e}`);
+      } catch (releaseErr) {
+        log(`[trigger] 建 job 失败且墓碑释放失败（该妙记将被封死，需人工处理）minute=${minuteToken}: ${e?.message ?? e} / ${releaseErr?.message ?? releaseErr}`);
+      }
     }
   }
 

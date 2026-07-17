@@ -335,11 +335,14 @@ export function createReasoningCoordinator({
   }) {
     trackStart(sessionKey, task.id);
     let closureAttempted = false;
+    let consumedInputIds = [];
     try {
       const turnId = `run:${run.id}:turn`;
       const residentKey = taskExecutionKey(task.id);
       run = runStore.startRun(run.id, { turnId, residentKey });
       const pendingInputs = runStore.pendingInputs(run.id);
+      consumedInputIds = pendingInputs.map((input) => input.id);
+      if (inputId && !consumedInputIds.includes(inputId)) consumedInputIds.push(inputId);
       const pendingEnvelopes = pendingInputs.map(parseInputEnvelope).filter(Boolean);
       const effectiveEnvelopes = pendingEnvelopes.length
         ? pendingEnvelopes
@@ -444,6 +447,25 @@ export function createReasoningCoordinator({
         });
       }
       emit({ type: "run_failed", sessionKey, taskId: task.id, runId: run.id, dispatchId: run.origin_dispatch_id ?? dispatchId, error: e?.message ?? e });
+      // 失败路径镜像成功路径搬运 pending input：run 执行期间新到达的后台结果/用户纠正
+      // 不得随失败 run 陪葬（origin 唯一绑定不可重入，丢了就永久丢）。本 run 已消费
+      // （进过 prompt）的 input 标 delivered——失败已向用户闭合，自动重放会造成重试死循环。
+      try {
+        for (const id of consumedInputIds) runStore.markInputDelivered(id);
+        const followup = preparePendingFollowup({ session, sessionKey, task, run });
+        if (followup) {
+          const scheduled = await startReasoner(followup);
+          emit({
+            type: scheduled.queued ? "reasoner_followup_queued" : "reasoner_followup_started",
+            sessionKey,
+            taskId: task.id,
+            parentRunId: run.id,
+            runId: followup.run.id,
+          });
+        }
+      } catch (carryError) {
+        emit({ type: "reasoner_inputs_carry_failed", sessionKey, taskId: task.id, runId: run.id, error: carryError?.message ?? String(carryError) });
+      }
       throw e;
     } finally {
       scheduledRunIds.delete(run.id);
@@ -739,6 +761,7 @@ export function createReasoningCoordinator({
     sessionKey,
     items = [],
     mode = "p2p",
+    traceId = null,
   }) {
     const claimed = taskStore.claimDispatchForReview(dispatchId);
     const sourceMessageIds = JSON.parse(claimed.source_message_ids_json ?? "[]");
@@ -776,6 +799,16 @@ export function createReasoningCoordinator({
         dispatchId,
       });
       taskStore.completeDispatch(dispatchId, { status: "done", verdict: decision });
+      // 回接 turn_trace：active 流水线的调度器决策带 traceId 落 decision_*，
+      // 评测（trace-reader）据此判 v2 路由——没有它 active daemon 全线 unknown 不可判分。
+      emit({
+        type: "dispatcher_decision",
+        traceId,
+        sessionKey,
+        dispatchId,
+        action: decision?.action ?? "no_reasoning",
+        reason_code: decision?.reason_code ?? null,
+      });
       return { ok: true, decision, result };
     } catch (e) {
       taskStore.completeDispatch(dispatchId, {

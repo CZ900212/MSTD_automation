@@ -157,13 +157,29 @@ export function startPi({ provider, model, extensions = [], capabilityProfile = 
   function close() {
     if (closePromise) return closePromise;
     if (terminalError) return Promise.resolve();
+    // 只等 close 事件才 resolve：SIGTERM 后立刻 resolve 会提前释放并发额度，
+    // 挂死的 pi 进程永久泄漏。宽限期后升级 SIGKILL（同 stopOwnedProcessTree 的升级模式）。
     closePromise = new Promise((res) => {
       let settled = false;
-      let timer = null;
-      const finish = () => { if (!settled) { settled = true; clearTimeout(timer); res(); } };
+      let termTimer = null;
+      let killTimer = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(termTimer);
+        clearTimeout(killTimer);
+        res();
+      };
       child.once("close", finish);
+      if (child.exitCode != null || child.signalCode != null) return finish();
       try { child.stdin.end(); } catch { /* ignore */ }
-      timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish(); }, 3000);
+      termTimer = setTimeout(() => {
+        try { child.kill("SIGTERM"); } catch { /* ignore */ }
+        killTimer = setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch { /* ignore */ }
+          // SIGKILL 不可捕获，close 事件必达；此处不再直接 finish，保证额度随真实退出释放
+        }, 3000);
+      }, 3000);
     });
     return closePromise;
   }

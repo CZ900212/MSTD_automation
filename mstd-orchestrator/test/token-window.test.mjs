@@ -35,6 +35,16 @@ describe("token-window", () => {
     expect(fitted.text).not.toContain("�");
   });
 
+  it("ASCII 截断按 0.25/字符累加，不再被逐码点 ceil 过砍至预算 1/4", () => {
+    const fitted = truncateToTokenBudget("a".repeat(400), 50, { marker: "" });
+    expect(fitted.truncated).toBe(true);
+    expect(fitted.tokens).toBeLessThanOrEqual(50);
+    // 50 token 预算 ≈ 200 个 ASCII 字符；修复前逐码点 Math.ceil 只留 50 个
+    expect(fitted.text.length).toBe(200);
+    const tail = truncateToTokenBudget("b".repeat(400), 50, { marker: "", keep: "tail" });
+    expect(tail.text.length).toBe(200);
+  });
+
   it("keeps system instructions and newest message content under the total input cap", () => {
     const fitted = fitModelInput({
       system: "SYSTEM",

@@ -16,7 +16,9 @@ export function createApp(deps) {
   // Express needs this for correct req.ip when not behind proxy; we still reject X-Forwarded-For on C routes.
   app.set("trust proxy", false);
 
-  app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  // pid 是启动脚本的进程身份信号：端口被他进程截胡（已知 8787 坑）时，
+  // 裸 200 会让 bin/mstd 报假成功并残留 PID 文件。
+  app.get("/api/health", (_req, res) => res.json({ ok: true, pid: process.pid }));
   // Simulator director preflight. This endpoint is always mounted so a director
   // can distinguish a current, trace-capable daemon from a healthy but stale
   // process before it sends any real Feishu messages.

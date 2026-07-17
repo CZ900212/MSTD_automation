@@ -32,11 +32,15 @@ export function truncateToTokenBudget(value, budget, {
   const points = Array.from(text);
   let clipped = "";
 
+  // 逐码点成本必须累加分数、仅比较时取整：对单码点调 estimateTokens 会把 ASCII 的
+  // 0.25 ceil 成 1，ASCII 重的文本被过砍至预算约 1/4。
+  const costOf = (point) => (point.codePointAt(0) > 0x2e7f ? 1 : 0.25);
+
   if (keep === "tail") {
     let used = 0;
     for (let i = points.length - 1; i >= 0; i--) {
-      const cost = estimateTokens(points[i]);
-      if (used + cost > contentBudget) break;
+      const cost = costOf(points[i]);
+      if (Math.ceil(used + cost) > contentBudget) break;
       clipped = points[i] + clipped;
       used += cost;
     }
@@ -44,8 +48,8 @@ export function truncateToTokenBudget(value, budget, {
   } else {
     let used = 0;
     for (const point of points) {
-      const cost = estimateTokens(point);
-      if (used + cost > contentBudget) break;
+      const cost = costOf(point);
+      if (Math.ceil(used + cost) > contentBudget) break;
       clipped += point;
       used += cost;
     }

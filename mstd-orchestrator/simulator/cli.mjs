@@ -62,7 +62,10 @@ const transport = createTransport({
 const dbPath = process.env.MSTD_DB_PATH || join(HERE, "..", "db", "mstd.sqlite");
 const db = openDb(dbPath);
 migrate(db);
-const grader = createGrader({ db, waitMs: args.waitMs });
+// grader 等待不得短于场景声明的最大终答时限：waitMs 偏小时，慢而未超时的终答会在
+// trace 落库前被判 terminal_missing（假红）。
+const maxTerminalMs = Math.max(0, ...(scenario.turns ?? []).map((t) => t.expect?.terminal_within_ms ?? 0));
+const grader = createGrader({ db, waitMs: Math.max(args.waitMs, maxTerminalMs) });
 let improviser = null;
 if (scenario.mode === "improv") {
   if (!process.env.CZ_GPT_KEY) {

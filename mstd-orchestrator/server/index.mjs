@@ -540,6 +540,8 @@ if (config.enableAgent && config.botOpenId) {
       return turnHandler.handleTurn(turn);
     },
   });
+  // 入站 at-most-once 收口：回放上一进程 ack 后死在 debounce 窗口内的消息
+  gatewayHandle.replayUnhandled();
   // ---- Phase E：主动层（单 ticker 多周期）----
   const memoryDir = process.env.MSTD_MEMORY_DIR || join(ROOT, "agent-memory");
   // E2E 提速旋钮（默认即生产值）：tick 间隔 / 心跳频率与活跃时段
