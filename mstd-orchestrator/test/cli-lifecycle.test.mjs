@@ -72,4 +72,33 @@ describe("mstd CLI process ownership", () => {
   it("keeps the runtime PID file out of release worktree state", () => {
     expect(gitignore.split(/\r?\n/)).toContain("daemon.pid");
   });
+
+  it("service mode reuses ownership checks via the hidden run entry", () => {
+    // run() 先写 $$ 再 exec：exec 保 PID，owned_pid/http_ready_owned 判定零改动复用
+    expect(source).toMatch(/printf '%s\\n' "\$\$" > "\$PID_FILE"/);
+    expect(source).toMatch(/exec "\$\{MSTD_NODE_BIN:-node\}" --env-file-if-exists=\.env "\$ENTRY"/);
+  });
+
+  it("stops via the service manager when installed (KeepAlive would revive plain kills)", () => {
+    expect(source).toMatch(/service\.mjs" installed-as/);
+    expect(source).toMatch(/service\.mjs" service-stop/);
+    expect(source).toMatch(/service\.mjs" service-start/);
+  });
+
+  it("delegates install/uninstall to service.mjs and documents them in help", () => {
+    expect(source).toMatch(/install\)\s+shift; exec "\$\{MSTD_NODE_BIN:-node\}" "\$SCRIPT_DIR\/service\.mjs" install/);
+    expect(source).toMatch(/uninstall\)\s+shift; exec "\$\{MSTD_NODE_BIN:-node\}" "\$SCRIPT_DIR\/service\.mjs" uninstall/);
+    const output = execFileSync(fileURLToPath(new URL("../bin/mstd", import.meta.url)), ["--help"], { encoding: "utf8" });
+    expect(output).toContain("mstd install");
+    expect(output).toContain("mstd uninstall");
+  });
+
+  it("never resolves node from the bare service PATH", () => {
+    // launchd/systemd 的精简 PATH 里没有 node；除 nohup 交互路径外必须走 MSTD_NODE_BIN 兜底
+    const bareNodeCalls = source
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .filter((line) => /(^|[^A-Za-z_$"{-])node /.test(line) && !line.includes("MSTD_NODE_BIN") && !line.includes("nohup"));
+    expect(bareNodeCalls).toEqual([]);
+  });
 });

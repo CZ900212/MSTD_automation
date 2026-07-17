@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # mstd — 民商通达常驻编排服务启停器。任意目录一个词启动/停止/看状态。
 #   mstd            启动当前目录拥有的 daemon，并核验消费者（默认）
-#   mstd start      同上
+#   mstd start      同上（已注册系统服务时改经服务管理器拉起）
 #   mstd stop       停止服务及其飞书事件消费子进程
 #   mstd restart    stop + start
 #   mstd status     看运行状态与消费者健康
 #   mstd logs       实时跟随 daemon.log
 #   mstd tui        打开只读监控 TUI（mstd tui --probe 只做自检，不进 UI）
+#   mstd install    注册为系统服务（launchd/systemd）：开机自启 + 崩溃自动拉起
+#   mstd uninstall  注销系统服务（不自动回退拉起 nohup daemon）
 set -euo pipefail
 
 # —— 定位 orchestrator 根目录（跟随 symlink，任意位置调用都对）——
@@ -19,7 +21,9 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-RUNTIME_CONFIG="$(node --env-file-if-exists="$ROOT/.env" "$SCRIPT_DIR/runtime-config.mjs")"
+# MSTD_NODE_BIN：服务模式下由服务定义注入的 node 绝对路径。
+# launchd/systemd 的精简 PATH 里没有 node（本机在 ~/.hermes/node/bin），裸 node 会直接失败。
+RUNTIME_CONFIG="$("${MSTD_NODE_BIN:-node}" --env-file-if-exists="$ROOT/.env" "$SCRIPT_DIR/runtime-config.mjs")"
 PORT="$(printf '%s\n' "$RUNTIME_CONFIG" | sed -n '1p')"
 PROFILE="$(printf '%s\n' "$RUNTIME_CONFIG" | sed -n '2p')"
 ENABLE_AGENT="$(printf '%s\n' "$RUNTIME_CONFIG" | sed -n '3p')"
@@ -43,6 +47,19 @@ owned_pid() {
 }
 
 running() { owned_pid >/dev/null; }
+
+# 本 ROOT 是否已注册系统服务：none|launchd|systemd（Windows 走 bin/mstd.cmd，不经此脚本）
+service_state() {
+  "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" installed-as "$ROOT" 2>/dev/null || printf 'none\n'
+}
+
+# 隐藏子命令：服务管理器（launchd/systemd）的 ExecStart 入口。
+# 先写 PID 再 exec：exec 保 PID，owned_pid/http_ready_owned/verify 整套判定零改动复用。
+run() {
+  cd "$ROOT"
+  printf '%s\n' "$$" > "$PID_FILE"
+  exec "${MSTD_NODE_BIN:-node}" --env-file-if-exists=.env "$ENTRY"
+}
 
 child_matches() {
   local pid="$1" pattern="$2"
@@ -123,29 +140,40 @@ start() {
     red "发现不属于当前 PID 文件的 daemon；为避免误杀，拒绝启动第二个 consumer。"
     exit 1
   fi
+  local svc
+  svc="$(service_state)"
   # ${ROOT} 带大括号：紧跟全角括号时部分 bash 会把多字节字符并入变量名
   echo "▶ 启动 orchestrator（${ROOT}）…"
   cd "$ROOT"
-  nohup node --env-file-if-exists=.env "$ENTRY" > "$LOG" 2>&1 &
-  printf '%s\n' "$!" > "$PID_FILE"
-  local started_pid="$!"
-  disown || true
+  local started_pid=""
+  if [ "$svc" != none ]; then
+    dim "  管理方式: ${svc}（系统服务）"
+    # 服务模式日志是追加写；先截断，保证下方 "agent gateway on" 判定不吃到旧行
+    : > "$LOG"
+    "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" service-start "$ROOT"
+  else
+    nohup node --env-file-if-exists=.env "$ENTRY" > "$LOG" 2>&1 &
+    printf '%s\n' "$!" > "$PID_FILE"
+    started_pid="$!"
+    disown || true
+  fi
   # 轮询等 gateway 起来（正常 ~6s，给到 25s）；进程若启动即退出则报错
   local up=0
   for _ in $(seq 1 25); do
     sleep 1
-    if http_ready_owned "$started_pid" && { [ "$ENABLE_AGENT" != 1 ] || grep -q "agent gateway on" "$LOG" 2>/dev/null; }; then
+    # 服务模式 PID 由 run() 写入，且崩溃重启会换 pid，每轮重读
+    [ "$svc" = none ] || started_pid="$(owned_pid || true)"
+    if [ -n "$started_pid" ] && http_ready_owned "$started_pid" && { [ "$ENABLE_AGENT" != 1 ] || grep -q "agent gateway on" "$LOG" 2>/dev/null; }; then
       up=1; break
     fi
-    if ! running; then
+    if [ "$svc" = none ] && ! running; then
       cleanup_failed_start "$started_pid"
       red "进程启动即退出，日志尾部："; echo; tail -20 "$LOG"; exit 1
     fi
   done
   echo
   if [ "$up" != 1 ]; then
-    cleanup_failed_start "$started_pid"
-    red "等待 25s 服务仍未就绪，日志尾部："; echo; tail -20 "$LOG"; exit 1
+    fail_start "$svc" "$started_pid" "等待 25s 服务仍未就绪，日志尾部："
   fi
   green "已启动。核验："
   if verify; then
@@ -153,21 +181,44 @@ start() {
     dim "日志: mstd logs   状态: mstd status   停止: mstd stop"
   else
     echo
-    cleanup_failed_start "$started_pid"
-    red "部分组件未就绪，已停止本次 daemon；日志尾部："; echo; tail -20 "$LOG"; exit 1
+    fail_start "$svc" "$started_pid" "部分组件未就绪，已停止本次 daemon；日志尾部："
   fi
 }
 
+# 启动失败清理：nohup 模式走 cleanup_failed_start；
+# 服务模式必须经服务管理器停（直接 kill 会被 KeepAlive/Restart 秒拉起，越清越乱）。
+fail_start() {
+  local svc="$1" started_pid="$2" message="$3"
+  if [ "$svc" != none ]; then
+    "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" service-stop "$ROOT" >/dev/null 2>&1 || true
+    rm -f "$PID_FILE"
+  else
+    cleanup_failed_start "$started_pid"
+  fi
+  red "$message"; echo; tail -20 "$LOG"; exit 1
+}
+
 stop() {
-  local pid children
+  local pid children svc
+  svc="$(service_state)"
   if ! pid="$(owned_pid)"; then
     rm -f "$PID_FILE"
+    if [ "$svc" != none ]; then
+      # 服务在册但没有存活 daemon（崩溃重启循环/PID 文件丢失）：仍要求服务管理器停下，防复活
+      "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" service-stop "$ROOT" >/dev/null 2>&1 || true
+    fi
     dim "当前 CLI 没有拥有运行中的 daemon；未终止任何进程。"
     return 0
   fi
   echo "▶ 停止 pid ${pid}…"
   children="$(pgrep -P "$pid" 2>/dev/null || true)"
-  kill "$pid" 2>/dev/null || true
+  if [ "$svc" != none ]; then
+    # 直接 kill 会被 KeepAlive/Restart 拉回来；经服务管理器停（bootout / systemctl stop）。
+    # launchd/systemd 不保证清理孙进程，下方仍按现有逻辑逐个补杀 children。
+    "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" service-stop "$ROOT"
+  else
+    kill "$pid" 2>/dev/null || true
+  fi
   for _ in $(seq 1 10); do
     kill -0 "$pid" 2>/dev/null || break
     sleep 1
@@ -184,6 +235,9 @@ stop() {
 status() {
   if running; then
     green "orchestrator 运行中（pid $(owned_pid)，profile=${PROFILE:-由 .env 提供}）"
+    local svc
+    svc="$(service_state)"
+    dim "  管理方式: $([ "$svc" = none ] && echo "nohup（未注册系统服务，mstd install 可升级）" || echo "${svc}（系统服务）")"
     # verify 失败必须非 0 退出，否则脚本化巡检（status || alert）会漏报装聋降级态。
     # exit 3 = degraded（进程在但 HTTP/消费者不健康）；exit 1 = 未运行。
     if ! verify; then
@@ -198,7 +252,7 @@ status() {
 # 只读监控 TUI。直连只读 DB，daemon 不在也能开（会显示 down）。透传额外参数（如 --probe）。
 tui() {
   cd "$ROOT"
-  exec node --env-file-if-exists=.env tui/index.mjs "$@"
+  exec "${MSTD_NODE_BIN:-node}" --env-file-if-exists=.env tui/index.mjs "$@"
 }
 
 case "${1:-start}" in
@@ -208,6 +262,9 @@ case "${1:-start}" in
   status)   status ;;
   logs)     exec tail -f "$LOG" ;;
   tui)      shift; tui "$@" ;;
-  -h|--help|help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) red "未知命令: $1"; echo "用法: mstd [start|stop|restart|status|logs|tui]"; exit 1 ;;
+  run)      run ;;
+  install)   shift; exec "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" install "$ROOT" "$@" ;;
+  uninstall) shift; exec "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" uninstall "$ROOT" "$@" ;;
+  -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) red "未知命令: $1"; echo "用法: mstd [start|stop|restart|status|logs|tui|install|uninstall]"; exit 1 ;;
 esac
