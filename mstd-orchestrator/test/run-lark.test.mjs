@@ -78,3 +78,19 @@ describe("makeRunLark spawn 包装", () => {
     await expect(p).resolves.toMatchObject({ exitCode: 137 });
   });
 });
+
+describe("DEFAULT_LARK_CLI 路径解析", () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+
+  it("MSTD_LARK_CLI 已设时覆盖 hermes 默认路径;未设时回落 ~/.hermes", async () => {
+    vi.stubEnv("MSTD_LARK_CLI", "/opt/mstd/tools/node_modules/.bin/lark-cli");
+    vi.resetModules();
+    const withOverride = await import("../server/execute/run-lark.mjs");
+    expect(withOverride.DEFAULT_LARK_CLI).toBe("/opt/mstd/tools/node_modules/.bin/lark-cli");
+
+    vi.stubEnv("MSTD_LARK_CLI", "");
+    vi.resetModules();
+    const withoutOverride = await import("../server/execute/run-lark.mjs");
+    expect(withoutOverride.DEFAULT_LARK_CLI).toMatch(/\.hermes\/node\/bin\/lark-cli$/);
+  });
+});

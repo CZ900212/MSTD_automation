@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const DEFAULT_LARK_CLI = join(homedir(), ".hermes", "node", "bin", "lark-cli");
+// 服务器部署时 lark-cli 不在 hermes 路径下，MSTD_LARK_CLI 指向实际安装位置（见根 README 部署节）。
+export const DEFAULT_LARK_CLI =
+  process.env.MSTD_LARK_CLI || join(homedir(), ".hermes", "node", "bin", "lark-cli");
 
 export function makeRunLark({ larkCli = DEFAULT_LARK_CLI, profile = "", timeoutMs = 60000, spawnFn = spawn } = {}) {
   return function runLark(argv) {
