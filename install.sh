@@ -5,13 +5,13 @@
 # 可调环境变量：
 #   MSTD_HOME  安装目录，默认 ~/mstd
 #   MSTD_REPO  仓库地址，默认 https://github.com/CZ900212/MSTD_automation.git
-#   MSTD_REF   检出的分支或 tag，默认 main
+#   MSTD_REF   检出的分支或 tag，默认与本脚本同版本的 tag（每次发 release 时同步改）
 # 脚本只准备运行环境，不接触任何密钥。装完后按屏幕提示补 .env 再 mstd install。
 set -euo pipefail
 
 MSTD_HOME="${MSTD_HOME:-$HOME/mstd}"
 MSTD_REPO="${MSTD_REPO:-https://github.com/CZ900212/MSTD_automation.git}"
-MSTD_REF="${MSTD_REF:-main}"
+MSTD_REF="${MSTD_REF:-v0.1.0}"
 APP_DIR="$MSTD_HOME/app"
 ORCH_DIR="$APP_DIR/mstd-orchestrator"
 TOOLS_DIR="$MSTD_HOME/tools"
