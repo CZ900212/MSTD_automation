@@ -31,7 +31,82 @@ curl -fsSL .../install.sh | MSTD_HOME=/opt/mstd bash
 
 - Linux x64 或 arm64，glibc 发行版。Alpine（musl）需要自备构建工具链编译 better-sqlite3。
 - Node 22.19 及以上、23 以下。缺失时安装脚本会把 Node 下载到安装目录内，不改动系统环境。
-- 一个飞书企业自建应用。建应用、批量导入 scope、配置长连接事件订阅、发版的完整清单见 [mstd-prod-onboarding.md](docs/superpowers/runbooks/mstd-prod-onboarding.md)。
+- 一个飞书企业自建应用，按下节"飞书应用配置"逐步配好。
+- 国内服务器注意：安装过程需要访问 github.com、nodejs.org、npm registry 三个境外源。直连拉不动时先配好代理或镜像再跑脚本。
+
+## 飞书应用配置（详细教程）
+
+小达接入飞书走的是"企业自建应用 + 机器人 + 长连接事件订阅"这条路，全程不需要公网回调地址。
+本节按**纯聊天最小权限**口径写（只收消息、只回消息，不读云文档/日历/任务，不写任何东西），
+这是新租户接入的推荐起点；读写全能力的升级流程见
+[mstd-prod-onboarding.md](docs/superpowers/runbooks/mstd-prod-onboarding.md) 阶段二。
+以下操作需要**飞书租户管理员**权限，总耗时约 15 分钟。
+
+### 第 1 步：创建（或复用）企业自建应用
+
+1. 用管理员账号登录 [open.feishu.cn](https://open.feishu.cn) → 开发者后台。
+2. 点"创建企业自建应用"，名称随意（建议"小达"），传个头像。
+   已有闲置的企业自建应用也可以直接复用，跳过创建，从第 2 步开始把配置补齐即可。
+   注意**商店应用 / ISV 应用不能用**，必须是本租户的自建应用。
+3. 进入应用详情页 → 左侧"凭证与基础信息"，记下 **App ID**（`cli_` 开头）和 **App Secret**。
+   这两样是部署时的唯一凭证，走安全渠道交付（密码管理器/当面），不要在聊天里明文发。
+
+### 第 2 步：开启机器人能力
+
+左侧"应用能力"→"机器人"→ 开启。不开这一项，应用收不到消息也发不出消息。
+
+### 第 3 步：导入权限（scope）
+
+1. 左侧"权限管理"→ 右上"批量处理"→"批量导入"。
+2. 粘贴仓库内 [mstd-prod-scope-import.chat-only.json](docs/superpowers/runbooks/mstd-prod-scope-import.chat-only.json) 的完整内容，确认导入。共 5 项 tenant 权限：
+
+   | scope | 用途 |
+   |---|---|
+   | `application:bot.basic_info:read` | 查机器人自身 open_id（填 `.env` 的 `MSTD_BOT_OPEN_ID` 用） |
+   | `im:message:send_as_bot` | 回复消息 |
+   | `im:message.p2p_msg:readonly` | 接收私聊消息事件 |
+   | `im:message.group_at_msg:readonly` | 接收群聊中 @机器人 的消息事件 |
+   | `im:message.group_msg` | 接收群聊全部消息事件（敏感权限，见下） |
+
+3. `im:message.group_msg` 是**敏感权限**，导入后需要管理员在管理后台单独审批一次。
+   它的用途是让小达看到群聊完整上下文，从而在被 @ 时给出贴合语境的回复
+   （群策略仍是 @ 才应答，不会主动插话）。管理员对这一项有顾虑可以先不开——
+   代价是小达在群里只能看到 @它 的那一条消息，回复会缺上下文；私聊不受影响。
+4. "数据权限范围"选**全部成员**。
+
+### 第 4 步：配置事件订阅（长连接）
+
+1. 左侧"事件与回调"→"事件配置"→ 订阅方式选**使用长连接接收事件**。
+   选了长连接就不需要配置任何回调 URL，服务器也不需要公网入口。
+2. "添加事件"→ 搜索并添加**接收消息 `im.message.receive_v1`**。
+   页面会提示该事件依赖的权限，第 3 步已导入，直接确认。
+3. 切到"回调配置"→ 同样选长连接 → 添加**卡片回传交互 `card.action.trigger`**。
+   纯聊天阶段不会有任何带按钮的卡片发出，但服务端消费者按固定事件集建立长连接，
+   缺这一项订阅会导致消费子进程反复重启刷日志，**必须订上**。
+
+### 第 5 步：创建版本并发布
+
+左侧"版本管理与发布"→"创建版本"→ 填个版本号（如 1.0.0）→ 申请发布。
+企业自建应用免飞书审核，管理员在管理后台自行通过即可，分钟级生效。
+
+> ⚠️ 这是最容易漏的一步，也是"部署完机器人不回话"的头号原因：
+> **权限和事件订阅只对已发布版本生效，之后每次增删 scope 或事件都要重新创建版本并发布。**
+
+### 第 6 步：把机器人拉进会话
+
+- 群聊：群设置 → 群机器人 → 添加机器人 → 搜应用名添加。建议先拉进 1-2 个试点群。
+- 私聊：成员在飞书搜索应用名，直接发起对话即可。
+
+### 应用侧就绪自查清单
+
+- [ ] App ID / App Secret 已安全交付给部署方
+- [ ] 机器人能力已开启
+- [ ] 5 项 scope 已导入，`im:message.group_msg` 已过管理员审批（或明确决定不开）
+- [ ] 事件订阅为长连接模式，已订 `im.message.receive_v1` 与 `card.action.trigger`
+- [ ] **已创建版本并发布**
+- [ ] 机器人已加入试点群
+
+应用侧到此完毕，接下来回到服务器执行上面的"一键安装"和下面的"填配置"。
 
 ### 手动部署
 
@@ -73,6 +148,9 @@ curl -fsSL .../install.sh | MSTD_HOME=/opt/mstd bash
 | `MSTD_BOT_OPEN_ID` | `lark-cli --profile <名> api get /open-apis/bot/v3/info --as bot` 返回的机器人 open_id |
 | `MSTD_BOT_NAME` | 机器人展示名，群聊点名判定依赖它 |
 | `MSTD_SESSION_SECRET` | `openssl rand -hex 32` 生成 |
+
+纯聊天最小权限部署时，同时确认三闸全关（与应用侧权限面一致）：
+`MSTD_ENABLE_WRITE=0`、`MSTD_ENABLE_TRIGGER=0`、`MSTD_BACKFILL=0`。
 
 开关类配置必须写进 `.env`。只在 shell 里 export 的值会随服务重启丢失，之后小达会静默不回话。
 
