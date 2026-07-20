@@ -219,7 +219,36 @@ mstd tui         # 只读监控台；mstd tui --probe 只做自检
 | `mstd status` | 运行状态与消费者健康 |
 | `mstd logs` | 实时跟随日志 |
 | `mstd tui` | 终端监控台 |
+| `mstd policy` | 群应答策略开关（见下节） |
 | `mstd install` / `mstd uninstall` | 注册、注销系统服务 |
+
+## 群应答策略开关（不用 @ 也回复）
+
+小达在群里的参与度按群逐个控制，四档：
+
+| 档位 | 行为 |
+|---|---|
+| `mention_only` | 默认。只在被 @ 时应答 |
+| `ambient` | 不用 @ 也可以回复（旁听档：仍保持沉默倾向，只在明确求助、确知答案、纠正重要错误时开口，且受每小时主动发言限额约束，默认 4 条/时） |
+| `observe_only` | 全链路照跑但一律不发消息（灰度观察用） |
+| `disabled` | 整群关闭，@ 也不理 |
+
+操作（在部署机上执行）：
+
+```bash
+mstd policy                          # 列出所有已知群与当前档位（群收到过消息才会出现）
+mstd policy set <chat_id> ambient    # 给某群打开"不用 @ 也回复"
+mstd policy set <chat_id> mention_only   # 收回到默认档
+mstd policy set <chat_id> ambient 2  # 升 ambient 同时把每小时主动发言限额改为 2
+```
+
+改动即时生效，无需重启。写入走的是 daemon 的受守卫管理端点
+（同 web 调试台 `/api/admin/group-policies`，需要 `.env` 配好
+`MSTD_SESSION_SECRET` 与 `MSTD_ADMIN_OPEN_IDS`，且管理员在调试台登录过一次），
+因此 `set` 要求 daemon 在运行；`mstd policy` 列表为只读，daemon 不在也能看。
+
+建议节奏：新群先 `mention_only` 用一阵，确认语气和边界符合预期后，
+再对少数活跃群升 `ambient`；升档同时可以调低限额兜底。
 
 ## 常见问题
 

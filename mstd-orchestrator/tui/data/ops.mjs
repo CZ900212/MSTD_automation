@@ -45,5 +45,11 @@ export function createOps({ config, queries }) {
     dreamingRun: () => call("POST", "/api/admin/dreaming/run", {}),
     cronList: () => call("GET", "/api/admin/cron-jobs"),
     toggleCron: (id, enabled) => call("PUT", `/api/admin/cron-jobs/${id}`, { enabled }),
+    groupPolicies: () => call("GET", "/api/admin/group-policies"),
+    setGroupPolicy: (chatId, policy, limit = null) => call(
+      "PUT",
+      `/api/admin/group-policies/${encodeURIComponent(chatId)}`,
+      { policy, ...(limit != null ? { hourly_proactive_limit: limit } : {}) },
+    ),
   };
 }

@@ -131,4 +131,59 @@ export function mountAdminRoutes(app, { db, config, files, agentStore, cronStore
     if (!dreaming) return res.status(501).json({ error: "dreaming 未启用" });
     res.json(await dreaming.run());
   }));
+
+  // 群应答策略开关：mention_only（默认，@ 才回）/ ambient（不用 @ 也可回）/
+  // observe_only（全链路照跑但不出站）/ disabled（整群关闭）。
+  // admit 每条消息现查库，改完即时生效，无需重启。
+  const GROUP_POLICY_VALUES = new Set(["disabled", "mention_only", "observe_only", "ambient"]);
+
+  app.get("/api/admin/group-policies", guard((req, res) => {
+    // 已知群（出现过群会话）LEFT JOIN 策略行，未配置的按默认 mention_only 展示；
+    // 再并上"配置过但还没会话"的策略行，保证 set 过的群一定可见。
+    const policies = db.prepare(`
+      SELECT COALESCE(p.chat_id, g.chat_id) AS chat_id,
+             g.title,
+             COALESCE(p.policy, 'mention_only') AS policy,
+             COALESCE(p.hourly_proactive_limit, 4) AS hourly_proactive_limit,
+             p.updated_at
+      FROM (SELECT chat_id, MAX(title) AS title FROM agent_sessions
+            WHERE kind = 'group' AND chat_id IS NOT NULL GROUP BY chat_id) g
+      LEFT JOIN group_policies p ON p.chat_id = g.chat_id
+      UNION
+      SELECT p.chat_id, NULL, p.policy, p.hourly_proactive_limit, p.updated_at
+      FROM group_policies p
+      WHERE p.chat_id NOT IN (SELECT chat_id FROM agent_sessions
+                              WHERE kind = 'group' AND chat_id IS NOT NULL)
+      ORDER BY chat_id
+    `).all();
+    res.json({ policies });
+  }));
+
+  app.put("/api/admin/group-policies/:chatId", guard((req, res) => {
+    const chatId = String(req.params.chatId ?? "").trim();
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(chatId)) {
+      return res.status(400).json({ error: "非法 chat_id" });
+    }
+    const { policy, hourly_proactive_limit: rawLimit } = req.body ?? {};
+    if (!GROUP_POLICY_VALUES.has(policy)) {
+      return res.status(400).json({ error: "policy 必须是 disabled | mention_only | observe_only | ambient" });
+    }
+    let limit = null;
+    if (rawLimit != null) {
+      limit = Math.floor(Number(rawLimit));
+      if (!Number.isFinite(limit) || limit < 0 || limit > 60) {
+        return res.status(400).json({ error: "hourly_proactive_limit 取值 0-60" });
+      }
+    }
+    db.prepare(`
+      INSERT INTO group_policies (chat_id, policy, hourly_proactive_limit, updated_at)
+      VALUES (?, ?, COALESCE(?, 4), ?)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        policy = excluded.policy,
+        hourly_proactive_limit = COALESCE(?, group_policies.hourly_proactive_limit),
+        updated_at = excluded.updated_at
+    `).run(chatId, policy, limit, Date.now(), limit);
+    const row = db.prepare("SELECT chat_id, policy, hourly_proactive_limit, updated_at FROM group_policies WHERE chat_id = ?").get(chatId);
+    res.json({ ok: true, ...row });
+  }));
 }
