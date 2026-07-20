@@ -11,7 +11,7 @@ set -euo pipefail
 
 MSTD_HOME="${MSTD_HOME:-$HOME/mstd}"
 MSTD_REPO="${MSTD_REPO:-https://github.com/CZ900212/MSTD_automation.git}"
-MSTD_REF="${MSTD_REF:-v0.1.1}"
+MSTD_REF="${MSTD_REF:-v0.1.2}"
 APP_DIR="$MSTD_HOME/app"
 ORCH_DIR="$APP_DIR/mstd-orchestrator"
 TOOLS_DIR="$MSTD_HOME/tools"

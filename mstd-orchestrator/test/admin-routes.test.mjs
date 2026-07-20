@@ -137,4 +137,37 @@ describe("调试台管理 API（admin 白名单）", () => {
     expect(byId["ev-good"]).toMatchObject({ ok: true, mode: "addressed" }); // 好行照常解析
     expect(byId["ev-bad"]).toBe("{broken");                                 // 坏行保留原串
   });
+
+  it("群策略：已知群默认 mention_only，set ambient 即列表可见；非管理员 403", async () => {
+    store.getOrCreate("feishu:group:oc_known", { kind: "group", chatId: "oc_known", title: "试点群" });
+    let list = (await asAdmin(request(app).get("/api/admin/group-policies"))).body.policies;
+    expect(list).toEqual([expect.objectContaining({ chat_id: "oc_known", title: "试点群", policy: "mention_only", hourly_proactive_limit: 4 })]);
+
+    const put = await asAdmin(request(app).put("/api/admin/group-policies/oc_known").send({ policy: "ambient" }));
+    expect(put.status).toBe(200);
+    expect(put.body).toMatchObject({ ok: true, chat_id: "oc_known", policy: "ambient" });
+
+    list = (await asAdmin(request(app).get("/api/admin/group-policies"))).body.policies;
+    expect(list[0]).toMatchObject({ chat_id: "oc_known", policy: "ambient" });
+
+    expect((await asUser(request(app).put("/api/admin/group-policies/oc_known").send({ policy: "ambient" }))).status).toBe(403);
+    expect((await request(app).get("/api/admin/group-policies")).status).toBe(401);
+  });
+
+  it("群策略：配置过但尚无会话的群也出现在列表；不传限额时保留原值", async () => {
+    await asAdmin(request(app).put("/api/admin/group-policies/oc_nosession").send({ policy: "ambient", hourly_proactive_limit: 2 }));
+    let list = (await asAdmin(request(app).get("/api/admin/group-policies"))).body.policies;
+    expect(list).toEqual([expect.objectContaining({ chat_id: "oc_nosession", title: null, policy: "ambient", hourly_proactive_limit: 2 })]);
+
+    // 降回 mention_only 不带限额 → 限额 2 不被冲回默认 4
+    await asAdmin(request(app).put("/api/admin/group-policies/oc_nosession").send({ policy: "mention_only" }));
+    list = (await asAdmin(request(app).get("/api/admin/group-policies"))).body.policies;
+    expect(list[0]).toMatchObject({ policy: "mention_only", hourly_proactive_limit: 2 });
+  });
+
+  it("群策略：非法 policy / 限额越界 / 非法 chat_id 一律 400", async () => {
+    expect((await asAdmin(request(app).put("/api/admin/group-policies/oc_x1234").send({ policy: "yolo" }))).status).toBe(400);
+    expect((await asAdmin(request(app).put("/api/admin/group-policies/oc_x1234").send({ policy: "ambient", hourly_proactive_limit: 999 }))).status).toBe(400);
+    expect((await asAdmin(request(app).put(`/api/admin/group-policies/${encodeURIComponent("oc_bad id!")}`).send({ policy: "ambient" }))).status).toBe(400);
+  });
 });
