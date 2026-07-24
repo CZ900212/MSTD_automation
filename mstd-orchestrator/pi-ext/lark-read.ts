@@ -3,14 +3,14 @@
  * 读飞书走 buildLarkReadArgs 白名单；read_file 只读 job 工作目录内文件。无任何写能力。
  */
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { buildLarkReadArgsScoped, resolveLarkScope } from "../server/safety/lark-read.mjs";
+import { resolveLarkCliPath } from "../server/execute/lark-cli-path.mjs";
 import { readJobArtifactUtf8 } from "../server/execute/job-workdir.mjs";
 
-const LARK_CLI = join(homedir(), ".hermes", "node", "bin", "lark-cli");
+// Pi 子进程内只有 LARK_CLI_BIN 能到（守护侧 MSTD_LARK_CLI 经 buildPiEnv 桥接为它）。
+const LARK_CLI = resolveLarkCliPath(process.env);
 const CLIP = 20000;
 
 const LARK_TIMEOUT_MS = 60_000;
@@ -39,7 +39,11 @@ function runLark(args: string[], signal?: AbortSignal): Promise<{
     child.on("error", (e) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      reject(e);
+      // spawn 缺二进制（ENOENT）说人话：这正是 2026-07-22 妙记建任务静默失败的现场。
+      const err = (e as NodeJS.ErrnoException)?.code === "ENOENT"
+        ? new Error(`lark-cli 未找到于 ${LARK_CLI}，请配置 MSTD_LARK_CLI 或 LARK_CLI_BIN`)
+        : e;
+      reject(err);
     });
     child.on("close", (code, closeSignal) => {
       clearTimeout(timer);

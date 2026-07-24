@@ -53,7 +53,9 @@ export function startLarkHealth({
   };
 }
 
-export function makeDmAlert({ runLark, openId }) {
+// title 可定制：同一条 DM 告警通道被 profile 健康检查 / needs_attention 积压 / 无确认人
+// 兜底共用（出站护栏只放行 reply-pipeline 与 confirm-flow，运维告警一律走这里）。
+export function makeDmAlert({ runLark, openId, title = "lark profile 健康检查失败" }) {
   if (!openId) return null;
   return async (detail) => {
     await runLark([
@@ -66,7 +68,7 @@ export function makeDmAlert({ runLark, openId }) {
       "--msg-type",
       "text",
       "--content",
-      JSON.stringify({ text: `⚠️ mstd：lark profile 健康检查失败\n${detail}` }),
+      JSON.stringify({ text: `⚠️ mstd：${title}\n${detail}` }),
     ]);
   };
 }

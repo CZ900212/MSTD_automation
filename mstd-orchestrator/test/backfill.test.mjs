@@ -44,4 +44,14 @@ describe("backfillMinutes", () => {
     expect(submitted[0].params.minute_token).toBe("m2");
     expect(submitted[0].readPrincipal).toEqual({ source: "minutes_backfill", privateDataAuthorized: true });
   });
+
+  it("补捞 0 条也打日志（静默是 2026-07-22 故障帮凶）", async () => {
+    const db = freshDb();
+    const logs = [];
+    const launcher = { submit: () => ({ id: "j0" }) };
+    const runLark = async () => ({ exitCode: 0, stdout: JSON.stringify({ items: [] }), stderr: "" });
+    const out = await backfillMinutes({ db, launcher, runLark, log: (m) => logs.push(m) });
+    expect(out.created).toBe(0);
+    expect(logs.some((l) => /补建 0 个 job/.test(l))).toBe(true);
+  });
 });

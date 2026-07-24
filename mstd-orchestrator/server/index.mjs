@@ -21,6 +21,7 @@ import { startMinutesConsumer } from "./triggers/minutes-consumer.mjs";
 import { resolveMinutesInitiator, makeFetchMinutesOwner, createMinutesBroadcast } from "./triggers/minutes-agent.mjs";
 import { createTokenWatch } from "./ticker/token-watch.mjs";
 import { backfillMinutes } from "./triggers/backfill.mjs";
+import { reportNeedsAttentionOnBoot } from "./health/needs-attention.mjs";
 import { startLarkHealth, makeDmAlert } from "./health/lark-profile.mjs";
 import { wireGateway } from "./gateway/wire.mjs";
 import { spawn } from "node:child_process";
@@ -154,6 +155,15 @@ const feishu = makeFeishuClient(config.feishu);
 const bootLark = config.larkProfile ? makeRunLark({ profile: config.larkProfile }) : null;
 const boot = await reconcileOnBoot(db, { runLark: config.enableWrite ? bootLark : null });
 console.error(`[mstd] boot reconcile: ${JSON.stringify(boot)}`);
+
+// 启动自检：needs_attention 积压可见化（抽取失败/schema 不过的 job 此前无人可见）。
+// 只读计数 + 可选一次性告警；DB 异常降级为日志，不阻断启动。
+await reportNeedsAttentionOnBoot({
+  db,
+  alert: config.alertOpenId && bootLark
+    ? makeDmAlert({ runLark: bootLark, openId: config.alertOpenId, title: "needs_attention 积压" })
+    : null,
+}).catch((e) => console.error(`[needs-attention] ${e?.message ?? e}`));
 
 const readonlyJobProfile = buildCapabilityProfile(ROOT, "readonly_job");
 let agentOnActionsReady = null;   // enableAgent 时由 Phase E 装配段赋值（E7 卡片确认链路）
@@ -649,7 +659,21 @@ if (config.enableAgent && config.botOpenId) {
       fetchOwner: bootLark ? makeFetchMinutesOwner({ runLark: bootLark }) : null,
       alertOpenId: config.alertOpenId,
     });
-    if (!initiator) return console.error(`[agent] job ${job.id} 无确认人（host_open_id/owner 反查/alertOpenId 全空），跳过发卡`);
+    if (!initiator) {
+      console.error(`[agent] job ${job.id} 无确认人（host_open_id/owner 反查/alertOpenId 全空），跳过发卡`);
+      // 兜底告警：把静默的"抽取完成却发不出卡"暴露出来（2026-07-22 事故堵口）。
+      // 注意：resolveMinutesInitiator 在 alertOpenId 非空时会以它兜底，故本分支仅在 alertOpenId
+      // 为空时到达；此处的发送是对未来 resolver 变更的防御。走 makeDmAlert 运维告警通道
+      // （出站护栏只放行 reply-pipeline/confirm-flow 直调 outbound）。
+      const noInitiatorAlert = config.alertOpenId && bootLark
+        ? makeDmAlert({ runLark: bootLark, openId: config.alertOpenId, title: "会议纪要无确认人" })
+        : null;
+      if (noInitiatorAlert) {
+        await noInitiatorAlert(`job ${job.id}「${job.title ?? ""}」抽取完成但无确认人（host_open_id/owner/alertOpenId 全空），已跳过发卡，请手动跟进。`)
+          .catch((e) => console.error(`[agent] job ${job.id} 无确认人告警发送失败: ${e?.message ?? e}`));
+      }
+      return;
+    }
     await confirmFlow.startConfirmFlowForJob({
       jobId: job.id, actions, initiatorOpenId: initiator, deliverTo: initiator, title: job.title ?? "会议纪要确认",
     });

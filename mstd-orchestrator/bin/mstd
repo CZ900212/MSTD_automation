@@ -7,6 +7,7 @@
 #   mstd status     看运行状态与消费者健康
 #   mstd logs       实时跟随 daemon.log
 #   mstd tui        打开只读监控 TUI（mstd tui --probe 只做自检，不进 UI）
+#   mstd doctor     部署自检：.env/lark-cli 路径/Pi 环境冒烟/auth/SOUL/积压/开关（全只读）
 #   mstd policy     群应答策略开关：列出/设置 mention_only|ambient|observe_only|disabled
 #   mstd install    注册为系统服务（launchd/systemd）：开机自启 + 崩溃自动拉起
 #   mstd uninstall  注销系统服务（不自动回退拉起 nohup daemon）
@@ -264,9 +265,10 @@ case "${1:-start}" in
   logs)     exec tail -f "$LOG" ;;
   tui)      shift; tui "$@" ;;
   policy)   shift; cd "$ROOT"; exec "${MSTD_NODE_BIN:-node}" --env-file-if-exists=.env bin/policy.mjs "$@" ;;
+  doctor)   shift; cd "$ROOT"; exec "${MSTD_NODE_BIN:-node}" --env-file-if-exists=.env bin/doctor.mjs "$@" ;;
   run)      run ;;
   install)   shift; exec "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" install "$ROOT" "$@" ;;
   uninstall) shift; exec "${MSTD_NODE_BIN:-node}" "$SCRIPT_DIR/service.mjs" uninstall "$ROOT" "$@" ;;
-  -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) red "未知命令: $1"; echo "用法: mstd [start|stop|restart|status|logs|tui|policy|install|uninstall]"; exit 1 ;;
+  -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) red "未知命令: $1"; echo "用法: mstd [start|stop|restart|status|logs|tui|doctor|policy|install|uninstall]"; exit 1 ;;
 esac
