@@ -11,7 +11,7 @@ set -euo pipefail
 
 MSTD_HOME="${MSTD_HOME:-$HOME/mstd}"
 MSTD_REPO="${MSTD_REPO:-https://github.com/CZ900212/MSTD_automation.git}"
-MSTD_REF="${MSTD_REF:-v0.1.2}"
+MSTD_REF="${MSTD_REF:-v0.1.3}"
 APP_DIR="$MSTD_HOME/app"
 ORCH_DIR="$APP_DIR/mstd-orchestrator"
 TOOLS_DIR="$MSTD_HOME/tools"
@@ -101,8 +101,13 @@ else
   say "▶ 生成 .env 骨架（$ORCH_DIR/.env）…"
   cp "$ORCH_DIR/.env.example" "$ORCH_DIR/.env"
   chmod 600 "$ORCH_DIR/.env"
-  awk -v cli="$LARK_CLI_BIN" '/^MSTD_LARK_CLI=/ { print "MSTD_LARK_CLI=" cli; next } { print }' \
-    "$ORCH_DIR/.env" > "$ORCH_DIR/.env.tmp" && mv "$ORCH_DIR/.env.tmp" "$ORCH_DIR/.env"
+  # 空赋值行（KEY= 后为空）会让开关静默失效、模型名/base URL 变空串（2026-07 真机踩坑），
+  # 模板应全注释；这里对残留的空赋值再兜底注释一层。[[:space:]] 覆盖 Tab（真机教训）。
+  awk -v cli="$LARK_CLI_BIN" '
+    /^MSTD_LARK_CLI=/            { print "MSTD_LARK_CLI=" cli; next }
+    /^[A-Za-z_]+=[[:space:]]*(#.*)?$/ { print "# " $0; next }
+    { print }
+  ' "$ORCH_DIR/.env" > "$ORCH_DIR/.env.tmp" && mv "$ORCH_DIR/.env.tmp" "$ORCH_DIR/.env"
   chmod 600 "$ORCH_DIR/.env"
 fi
 
@@ -132,18 +137,51 @@ case ":$PATH:" in
   *) mstd_hint="$HOME/.local/bin/mstd"; say "提示：~/.local/bin 不在 PATH 里，请把它加进 shell 配置。" ;;
 esac
 
+# —— CentOS 7 类环境预警：root 无 systemd --user 会话时 mstd install 会挂 ——
+SYSTEM_UNIT_HINT=""
+if [ "$OS" = Linux ] && ! systemctl --user show-environment >/dev/null 2>&1; then
+  SYSTEM_UNIT_HINT=1
+fi
+
 say ""
 say "安装完成。剩余步骤需要你手工执行："
 say ""
-say "1. 配置 lark-cli profile（应用凭证在飞书开放平台后台获取）："
-say "   $LARK_CLI_BIN config init --profile mstd-prod --app-id <cli_...> --app-secret-stdin"
+say "1. 配置 lark-cli profile（应用凭证在飞书开放平台后台获取；命名参数是 --name，"
+say "   建议直接用 app id 作 profile 名）："
+say "   $LARK_CLI_BIN config init --name <cli_...> --app-id <cli_...> --app-secret-stdin"
 say ""
 say "2. 编辑 $ORCH_DIR/.env，至少填齐："
 say "   DEEPSEEK_KEY / CZ_GPT_KEY、LARK_PROFILE、MSTD_ENABLE_AGENT=1、"
-say "   MSTD_BOT_OPEN_ID、MSTD_BOT_NAME、MSTD_SESSION_SECRET"
+say "   MSTD_BOT_OPEN_ID、MSTD_BOT_NAME、MSTD_SESSION_SECRET、MSTD_ALERT_OPEN_ID"
+say "   注意：不用的项保持注释，绝不留 KEY= 空赋值（会让开关静默失效）。"
 say "   字段说明与飞书应用侧清单见仓库 README 与 docs/superpowers/runbooks/。"
 say ""
-say "3. 注册系统服务（开机自启、崩溃拉起）："
-say "   $mstd_hint install"
+say "3. 投放人格文件：$ORCH_DIR/agent-memory/SOUL.md（gitignore 不随仓库分发，"
+say "   缺失或为空时 agent 拒绝启动）。"
 say ""
-say "4. 验证：$mstd_hint status；日志：$mstd_hint logs"
+if [ -n "$SYSTEM_UNIT_HINT" ]; then
+  say "4. 注册服务——检测到本机没有 systemd --user 会话（CentOS 7 root 常见），"
+  say "   mstd install 会失败，请手写系统级 unit /etc/systemd/system/mstd-orchestrator.service："
+  say "   ------------------------------------------------------------"
+  say "   [Unit]"
+  say "   Description=MSTD orchestrator"
+  say "   After=network-online.target"
+  say "   [Service]"
+  say "   Environment=HOME=$HOME"
+  say "   WorkingDirectory=$ORCH_DIR"
+  say "   # 旧 systemd(<240) 不支持 StandardOutput=append:，用 bash 重定向落 daemon.log"
+  say "   ExecStart=/bin/bash -c 'exec $ORCH_DIR/bin/mstd run >> $ORCH_DIR/daemon.log 2>&1'"
+  say "   Restart=on-failure"
+  say "   RestartSec=5"
+  say "   [Install]"
+  say "   WantedBy=multi-user.target"
+  say "   ------------------------------------------------------------"
+  say "   然后 systemctl daemon-reload && systemctl enable --now mstd-orchestrator"
+else
+  say "4. 注册系统服务（开机自启、崩溃拉起）："
+  say "   $mstd_hint install"
+fi
+say ""
+say "5. 自检（红灯必须清零才算装好）：$mstd_hint doctor"
+say "   然后开一场 1 分钟云录制会议，确认飞书收到任务确认卡——这才是完整验收。"
+say "   日常：$mstd_hint status / $mstd_hint logs"

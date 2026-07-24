@@ -36,12 +36,13 @@ function contextEnvelopeMode(env) {
   return enumEnv(env, "MSTD_CONTEXT_ENVELOPE_MODE", "enforce", CONTEXT_ENVELOPE_MODES);
 }
 
-function agentArchitectureMode(env) {
+// 导出供 doctor 复用（与启动 fail-fast 同一事实来源，见 loadServerConfig 的 active 组合校验）。
+export function agentArchitectureMode(env) {
   // Migration default remains legacy until shadow evaluation and canary complete.
   return enumEnv(env, "MSTD_AGENT_ARCHITECTURE_MODE", "legacy", AGENT_ARCHITECTURE_MODES);
 }
 
-function architectureTargets(env, key) {
+export function architectureTargets(env, key) {
   const targets = new Set();
   for (const raw of String(env[key] ?? "").split(",").map((value) => value.trim()).filter(Boolean)) {
     const canonical = canonicalDeliverableKey(raw);

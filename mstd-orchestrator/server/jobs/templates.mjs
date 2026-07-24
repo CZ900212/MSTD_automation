@@ -9,6 +9,9 @@ const INTENT_CONTRACT = [
   `你必须在最终回复中只输出一个 JSON 对象（可包在 ${FENCE}json 代码块里），形如：`,
   '{"card_text":"<给审批人看的中文卡片文案>","items":[{"owner_name":"张三","task":"...","due":"2026-07-15 或 null","suggested_open_id":"ou_xxx 或 null","confidence":"high|low"}]}',
   "无法确定负责人 open_id 时填 null 且 confidence 设 low。严禁任何写操作（只允许只读工具）。",
+  // 2026-07-24 真机：9 秒无待办会议 → 模型只回纯文本 → 校验"不是对象"→ needs_attention。
+  // 产品拍板（2026-07-24）：无实质待办也要回应——提炼知悉式待办保证 items 非空、必发确认卡。
+  "会议没有明确待办时，也必须提炼至少一条知会式待办：owner_name 用会议所有者，task 写成【知悉：<一句话内容摘要>】，due 填 null、confidence 填 low，照常输出上述 JSON 对象。任何情况下都不得以纯文本收尾。",
 ].join("\n");
 
 export function buildPrompt(templateId, params = {}) {

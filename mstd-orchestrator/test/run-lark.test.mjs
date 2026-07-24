@@ -93,4 +93,12 @@ describe("DEFAULT_LARK_CLI 路径解析", () => {
     const withoutOverride = await import("../server/execute/run-lark.mjs");
     expect(withoutOverride.DEFAULT_LARK_CLI).toMatch(/\.hermes\/node\/bin\/lark-cli$/);
   });
+
+  it("LARK_CLI_BIN 优先于 MSTD_LARK_CLI（Pi 侧唯一能收到的覆盖）", async () => {
+    vi.stubEnv("LARK_CLI_BIN", "/pi/side/lark-cli");
+    vi.stubEnv("MSTD_LARK_CLI", "/daemon/side/lark-cli");
+    vi.resetModules();
+    const m = await import("../server/execute/run-lark.mjs");
+    expect(m.DEFAULT_LARK_CLI).toBe("/pi/side/lark-cli");
+  });
 });

@@ -20,5 +20,10 @@ export function buildPiEnv(baseEnv, overrides = {}) {
   const out = {};
   for (const k of ENV_ALLOW) if (baseEnv[k] !== undefined) out[k] = baseEnv[k];
   for (const k of Object.keys(baseEnv)) if (k.startsWith("LARK_") || k.startsWith("PI_")) out[k] = baseEnv[k];
+  // MSTD_LARK_CLI 不在白名单、传不进 Pi 子进程 → Pi 内 lark_read spawn ENOENT
+  // （2026-07-22 妙记建任务静默失败根因）。守护侧配的 MSTD_LARK_CLI 在此桥接为 LARK_CLI_BIN
+  // （过 LARK_ 前缀白名单），Pi 内 resolveLarkCliPath 优先认它——用户只配 MSTD_LARK_CLI 即可。
+  // 显式 LARK_CLI_BIN（daemon env 直配或 overrides）仍优先，不被覆盖。
+  if (out.LARK_CLI_BIN === undefined && baseEnv.MSTD_LARK_CLI) out.LARK_CLI_BIN = baseEnv.MSTD_LARK_CLI;
   return { ...out, ...overrides };
 }

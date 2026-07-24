@@ -10,6 +10,14 @@ describe("parseIntentFromText", () => {
     expect(parseIntentFromText(`\n${B}json\n${raw}\n${B}\n`)).toEqual({ card_text: "x", items: [] });
   });
 
+  it("tolerates prose around a single json fence, discarding the prose (2026-07-24 真机)", () => {
+    const raw = '{"card_text":"x","items":[]}';
+    expect(parseIntentFromText(`所有步骤完成。输出最终 JSON：\n\n${B}json\n${raw}\n${B}`))
+      .toEqual({ card_text: "x", items: [] });
+    expect(parseIntentFromText(`${B}json\n${raw}\n${B}\n以上就是结果。`))
+      .toEqual({ card_text: "x", items: [] });
+  });
+
   it.each([
     ['结果：{"card_text":"y","items":[]} 完毕'],
     [`${B}json\n{"card_text":"x","items":[]}\n${B}\n${B}json\n{"card_text":"y","items":[]}\n${B}`],

@@ -44,4 +44,26 @@ describe("buildPiEnv", () => {
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(env.RANDOM).toBeUndefined();
   });
+
+  it("桥接 MSTD_LARK_CLI → LARK_CLI_BIN（守护侧变量传导进 Pi；2026-07-22 事故治本）", () => {
+    const env = buildPiEnv({ PATH: "/bin", MSTD_LARK_CLI: "/opt/lark/bin/lark-cli" });
+    expect(env.LARK_CLI_BIN).toBe("/opt/lark/bin/lark-cli");
+    // 原 MSTD_ 变量本身仍不进子进程（白名单不放行）
+    expect(env.MSTD_LARK_CLI).toBeUndefined();
+  });
+
+  it("显式 LARK_CLI_BIN 优先于 MSTD_LARK_CLI 桥接（不被覆盖）", () => {
+    const env = buildPiEnv({ PATH: "/bin", LARK_CLI_BIN: "/explicit/lark-cli", MSTD_LARK_CLI: "/opt/lark-cli" });
+    expect(env.LARK_CLI_BIN).toBe("/explicit/lark-cli");
+  });
+
+  it("overrides 里的 LARK_CLI_BIN 覆盖桥接值", () => {
+    const env = buildPiEnv({ PATH: "/bin", MSTD_LARK_CLI: "/opt/lark-cli" }, { LARK_CLI_BIN: "/override/lark-cli" });
+    expect(env.LARK_CLI_BIN).toBe("/override/lark-cli");
+  });
+
+  it("两者都未配时不凭空造 LARK_CLI_BIN", () => {
+    const env = buildPiEnv({ PATH: "/bin" });
+    expect(env.LARK_CLI_BIN).toBeUndefined();
+  });
 });

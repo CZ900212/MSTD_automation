@@ -71,6 +71,12 @@ curl -fsSL .../install.sh | MSTD_HOME=/opt/mstd bash
 3. `im:message.group_msg` 是**敏感权限**，导入后需要管理员单独审批一次，
    完整操作见下面"敏感权限审批教程"。
 4. "数据权限范围"选**全部成员**。
+5. 补充两个真机踩过的坑：
+   - 部署时要用 `contact/v3/users/batch_get_id` 反查成员 open_id（填写白名单/告警人），
+     该接口实际需要 **`contact:user.id:readonly`**——`contact:user.employee_id:readonly` 不顶用，
+     报 99991672 就是缺它，单独申请并发版后生效。
+   - **open_id 是按应用隔离的**：同一个人在不同 app 下 open_id 不同。中途更换 App ID，
+     `.env` 里所有 `ou_` 开头的配置（BOT_OPEN_ID、白名单、ALERT）全部作废，必须重新反查。
 
 ### 敏感权限审批教程（`im:message.group_msg`）
 
@@ -197,9 +203,41 @@ mstd install
 
 `mstd install` 在 Linux 上注册 systemd user 服务，效果是开机自启加崩溃自动拉起。注册过程会执行 `loginctl enable-linger`；这一步失败时服务会随用户登出被杀，需要有权限的管理员补执行 `loginctl enable-linger <用户名>`。
 
+**CentOS 7 / 无 systemd --user 会话的机器**（root 直接部署最常见）：`mstd install` 会报
+"Failed to get D-Bus connection"，此时手写系统级 unit `/etc/systemd/system/mstd-orchestrator.service`：
+
+```ini
+[Unit]
+Description=MSTD orchestrator
+After=network-online.target
+
+[Service]
+# 必加：系统服务不带 HOME，lark-cli 找不到 ~/.lark-cli 配置会 not_configured 循环崩
+Environment=HOME=/root
+WorkingDirectory=/opt/mstd/app/mstd-orchestrator
+# systemd<240 不支持 StandardOutput=append:，用 bash 重定向落 daemon.log
+ExecStart=/bin/bash -c 'exec /opt/mstd/app/mstd-orchestrator/bin/mstd run >> /opt/mstd/app/mstd-orchestrator/daemon.log 2>&1'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+路径按实际检出位置替换，然后 `systemctl daemon-reload && systemctl enable --now mstd-orchestrator`。
+
 只想先试跑、不注册服务：直接执行 `mstd`。
 
 ### 验证
+
+先跑自检，**红灯清零是硬门槛**：
+
+```bash
+mstd doctor      # .env 空赋值/lark-cli 路径/Pi 环境冒烟/auth/SOUL/积压/架构组合
+```
+
+尤其注意"Pi 环境冒烟"这一项：守护进程能找到 lark-cli **不代表** Pi 推理子进程也能
+（环境变量白名单不同），聊天正常但妙记建任务静默失败就是这个原因。
 
 ```bash
 mstd status      # 进程与消费者健康
@@ -207,7 +245,11 @@ mstd logs        # 跟随 daemon.log
 mstd tui         # 只读监控台；mstd tui --probe 只做自检
 ```
 
-日志出现 `agent gateway on` 表示事件消费已就绪。在测试群里 @机器人 发一句话，收到回复即部署完成。
+日志出现 `agent gateway on` 表示事件消费已就绪。完整验收标准是两条都过：
+
+1. 测试群里 @机器人 发一句话，收到回复（聊天链路）；
+2. 开一场 **1 分钟云录制会议**，结束后几分钟内收到任务确认卡片（妙记→job→发卡全链）。
+   注意妙记必须开录制才会生成；只验聊天不算装好。
 
 ## 日常运维
 
@@ -219,6 +261,7 @@ mstd tui         # 只读监控台；mstd tui --probe 只做自检
 | `mstd status` | 运行状态与消费者健康 |
 | `mstd logs` | 实时跟随日志 |
 | `mstd tui` | 终端监控台 |
+| `mstd doctor` | 部署自检（全只读；红灯非零退出，可接告警脚本） |
 | `mstd policy` | 群应答策略开关（见下节） |
 | `mstd install` / `mstd uninstall` | 注册、注销系统服务 |
 
@@ -252,9 +295,47 @@ mstd policy set <chat_id> ambient 2  # 升 ambient 同时把每小时主动发�
 
 ## 常见问题
 
+先跑 `mstd doctor`——下面大半问题它都能直接点名。
+
+**CentOS 7 六坑速查**（老 systemd 219 环境全数踩过，症状 → 原因）：
+
+| 症状 | 原因与修法 |
+|---|---|
+| lark-cli `not_configured` 循环 | 系统级 unit 不带 HOME → unit 加 `Environment=HOME=/root` |
+| `mstd install` 报 D-Bus 失败 | root 无 systemd --user 会话 → 手写系统级 unit（见"注册系统服务"节） |
+| daemon.log 恒空 | `StandardOutput=append:` 需 systemd≥240 → ExecStart 用 bash 重定向 |
+| 聊天正常但妙记建任务静默失败 | lark-cli 路径没传进 Pi 子进程 → `.env` 配 `MSTD_LARK_CLI`（会自动桥接进 Pi），`mstd doctor` 的"Pi 环境冒烟"专查此项 |
+| 开关配了却不生效 | `.env` 里 `KEY=` 空赋值毒 → 不用的项注释掉，绝不留空赋值 |
+| agent 拒绝启动说人格为空 | `agent-memory/SOUL.md` 被 gitignore，不随仓库分发 → 手工投放 |
+
+**妙记链路排障（会议结束后没反应，2026-07-24 实战沉淀）**
+
+按顺序查，每一步都能把嫌疑范围砍一半：
+
+1. **妙记生成了吗**——会议必须**开云录制**才有妙记；生成还有几分钟延迟；妙记必须对
+   授权人可见。妙记网页端都没有 → 不是系统问题，重录并点录制。
+2. **事件到了吗**——`grep -a "trigger" daemon.log | tail`。有 `[trigger] 妙记 xxx → job <id>`
+   说明事件→建 job 通了；没有则查妙记消费者进程（`ps | grep "event consume"`，应有
+   `minutes.minute.generated_v1`）和用户授权（`lark-cli auth status`）。注意：服务重启窗口内
+   推送的事件会**永久丢失**（长连接断线不补推，backfill 的搜索接口也漏近期妙记），只能重录。
+3. **job 跑成什么样**——job 状态与事件流在 DB（`db/mstd.sqlite`）：
+   `orch_jobs.status`、`job_events`（逐工具调用）、`confirm_cards`（发卡记录）。
+   `awaiting_confirm` + confirm_cards 有 `om_` message_id = 卡已发到飞书，去消息里找。
+4. **needs_attention("不是对象")**——模型最终输出没过 JSON 契约。原始输出存在
+   `job_draft.raw_output`，直接看它长什么样。已知两种病：无待办会议模型只回纯文本
+   （契约已补"知悉式待办"条款）；完美 JSON 前后带引导语散文（解析器已放宽为
+   "唯一 json 围栏 + 丢弃围栏外散文"，多围栏/未知 key 仍 fail-closed）。
+5. **验证修复用 1 分钟小会即可**——口播一句带负责人和期限的待办（如"朱国印月底前
+   完成商城开发"），提炼、期限、open_id 对齐都能一次验到。
+
+- `PI_THINKING` 合法值只有 off/minimal/low/medium/high/**xhigh**——填 `max` 不报错启动，
+  但 Pi 每次运行都警告并回退默认档，等于白配。
 - 端口冲突：默认端口 8787。同机有其他服务占用时改 `.env` 里的 `PORT`。
 - systemd 环境里找不到 node：`mstd install` 生成的服务定义已写入 node 绝对路径，无需处理；手工改过服务文件的话请保留 `MSTD_NODE_BIN` 一项。
 - 改了 `.env` 不生效：执行 `mstd restart`。
+- 改成 `MSTD_AGENT_ARCHITECTURE_MODE=active` 后服务反复重启：active 必须同时设
+  `MSTD_AGENT_ACTIVE_ALL=1` 或非空 `MSTD_AGENT_ACTIVE_TARGETS`，否则启动 fail-fast
+  崩溃循环（`systemctl is-active` 的瞬时快照看不出来，`mstd doctor` 的"架构模式组合"会拦）。
 - 部署完成后机器人不回消息：按 runbook 核对应用是否已发版、事件订阅是否为长连接模式、`MSTD_ENABLE_AGENT` 是否写在 `.env` 里。
 
 ## 开发

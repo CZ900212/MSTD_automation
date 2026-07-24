@@ -6,10 +6,10 @@
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
 import { openDb, migrate } from "../server/db/index.mjs";
 import { runWritePhase } from "../server/execute/write-phase.mjs";
 import { testTargetFromEnv } from "../server/execute/write-target.mjs";
+import { resolveLarkCliPath } from "../server/execute/lark-cli-path.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const jobId = process.argv[2];
@@ -23,7 +23,8 @@ if (process.env.MSTD_ENABLE_WRITE !== "1") {
   process.exit(2);
 }
 
-const LARK_CLI = join(homedir(), ".hermes", "node", "bin", "lark-cli");
+// 守护侧脚本：LARK_CLI_BIN → MSTD_LARK_CLI → hermes 默认（见 lark-cli-path.mjs）。
+const LARK_CLI = resolveLarkCliPath(process.env);
 function runLark(argv) {
   return new Promise((resolve) => {
     const profile = process.env.LARK_PROFILE;
@@ -35,7 +36,13 @@ function runLark(argv) {
       try { child.kill(); } catch { /* 忽略 */ }
       resolve({ exitCode: -1, stdout: Buffer.concat(out).toString(), stderr: "lark-cli 超时（60s）" });
     }, 60_000);
-    child.on("error", (e) => { clearTimeout(timer); resolve({ exitCode: -1, stdout: "", stderr: `spawn 失败: ${e?.message ?? e}` }); });
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      const stderr = e?.code === "ENOENT"
+        ? `lark-cli 未找到于 ${LARK_CLI}，请配置 MSTD_LARK_CLI 或 LARK_CLI_BIN`
+        : `spawn 失败: ${e?.message ?? e}`;
+      resolve({ exitCode: -1, stdout: "", stderr });
+    });
     child.stdout.on("data", (d) => out.push(d));
     child.stderr.on("data", (d) => err.push(d));
     child.on("close", (code) => { clearTimeout(timer); resolve({ exitCode: code, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() }); });

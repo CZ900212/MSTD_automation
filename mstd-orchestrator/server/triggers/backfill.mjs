@@ -53,6 +53,8 @@ export async function backfillMinutes({
     bindTriggerJob(db, eventId, job.id);
     created += 1;
   }
+  // 补捞 0 条也要说：静默是 2026-07-22 妙记链路故障藏了一天多的帮凶之一。
   if (created > 0) log(`[backfill] 回扫补建 ${created} 个 job`);
+  else log(`[backfill] 回扫完成，补建 0 个 job（扫描 ${items.length} 条妙记，均已建或无可建）`);
   return { created };
 }
